@@ -132,7 +132,7 @@ archive.export(session.summary.id, sys.stdout.buffer)   # the bytes Claude Code 
 
 ### The archive is the file's bytes
 
-One SQLite file holds two layers. The archive layer is append-only and is migrated in place, never dropped. The projection layer is a pure function of the archive and is dropped and rebuilt when its version changes. The `-- @projection` marker in `claudinator/schema.sql` separates them.
+One SQLite file holds two layers. The archive layer is append-only and is never dropped or migrated. The projection layer is a pure function of the archive and is dropped and rebuilt when its version changes. The `-- @projection` marker in `claudinator/schema.sql` separates them.
 
 The archive layer has four tables.
 
@@ -170,7 +170,7 @@ The ingest unit is one delta of one transcript, meaning the complete lines betwe
 
 `record.parse` is the drift boundary, per boundary-discipline. It is a total function and the only code that reads Claude Code field names. Unknown record types become `Other`, which is archived and not indexed. A line that is not a JSON object becomes `Unparsed`. Unknown content block types are dropped from the projection and kept in the archive. Code past `parse` trusts the `Record` union.
 
-When claudinator learns a new shape, it bumps `PROJECTION_VERSION`. The next `open()` drops the projection and replays every segment in one transaction. Readers in other processes keep their WAL snapshot until it commits. A golden-digest test over a fixture corpus fails with "bump PROJECTION_VERSION" when projection output changes without a bump. The archive layer has its own `ARCHIVE_SCHEMA` with ordered in-place migrations. Version 1 has none. An older claudinator that opens a newer database reads it and refuses to sweep, so two installed versions cannot rebuild over each other.
+When claudinator learns a new shape, it bumps `PROJECTION_VERSION`. The next `open()` drops the projection and replays every segment in one transaction. Readers in other processes keep their WAL snapshot until it commits. A golden-digest test over a fixture corpus fails with "bump PROJECTION_VERSION" when projection output changes without a bump. The archive layer has its own `ARCHIVE_SCHEMA`. A new database is stamped with it, and there are no migrations. A claudinator refuses a database with an older archive schema. An older claudinator that opens a newer database reads it and refuses to sweep, so two installed versions cannot rebuild over each other.
 
 ### Sessions, subagents, forks
 
@@ -269,7 +269,8 @@ The implementation lives in `claudinator/` and follows `sketch.py`. Each place i
 - **Session listing.** The `main` CTE takes `MAX(id)` per `session_id` among main transcripts, which is the latest generation of the newest path. A session that Claude Code moved between project directories (the `relocated` record type) then lists once. The SQL adds `:prefix` so `session(ref)` resolves prefixes in the same query. `--project` uses `instr(lower(cwd), lower(:project))`, so `_` and `%` in the argument are literal.
 - **`Config.from_env` derives every default from `$HOME`**, the desktop directory included. Tests sandbox all three paths by setting `HOME` and need no extra variable.
 - **launchd.** The module is `launchd.py` as the sketch names it. `install` boots the agent out and in only when the plist changed or the agent is not loaded, so a second `install` changes nothing. `launchctl()` is a module function that the tests replace, and a failed bootstrap raises `LaunchdError`.
-- **Small ones.** `ARCHIVE_SCHEMA` is `1 + len(_MIGRATIONS)`, derived rather than kept in sync. `export` to a terminal exits 2. `search` with no match prints nothing and exits 0.
+- **No migration machinery.** The sketch ran the current archive DDL and then ordered migrations on every older database. That order breaks any migration that adds a column or a table, and no migration existed to test it. It is deleted. A new database gets the DDL and the stamp, a database at `ARCHIVE_SCHEMA` needs nothing, and an older stamp is refused with an `ArchiveError`.
+- **Small ones.** `export` to a terminal exits 2. `search` with no match prints nothing and exits 0.
 
 Measured after implementation (2026-10-29, read-only sweep of this Mac's `~/.claude` into a temporary database):
 

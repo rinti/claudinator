@@ -49,11 +49,10 @@ _ARCHIVE_DDL, _MARKER, _PROJECTION_DDL = (
 )
 assert _MARKER, "schema.sql lost its -- @projection marker"
 
-_MIGRATIONS: tuple[str, ...] = ()
-"""In-place archive-layer migrations, oldest first. Entry i takes a database
-from archive schema i + 1 to i + 2. The archive layer is never dropped."""
-
-ARCHIVE_SCHEMA = 1 + len(_MIGRATIONS)
+ARCHIVE_SCHEMA = 1
+"""The shape of the archive layer. A new database is stamped with it, and a
+database stamped with any other value is not written. There are no
+migrations: none has been needed, and an untested one would be worse."""
 
 SEGMENT_BYTES = 1 << 20
 """Target uncompressed segment size. Measured on 82.9 MB of this Mac's
@@ -415,17 +414,17 @@ class Archive:
         if (schema or 0) > ARCHIVE_SCHEMA or (projection or 0) > PROJECTION_VERSION:
             self._writable = False
             return
+        if schema is not None and schema < ARCHIVE_SCHEMA:
+            raise ArchiveError(
+                f"{self.cfg.db} has archive schema {schema}, and this claudinator reads schema {ARCHIVE_SCHEMA} only"
+            )
         if schema == ARCHIVE_SCHEMA and projection == PROJECTION_VERSION:
             return
-        with self._write(wait=True):
-            self._db.executescript(_ARCHIVE_DDL)
-            schema = self._meta_int("archive_schema")
-            if schema is not None and schema > ARCHIVE_SCHEMA:
-                self._writable = False
-                return
-            for script in _MIGRATIONS[(schema or ARCHIVE_SCHEMA) - 1 :]:
-                self._db.executescript(script)
-            self._set_meta("archive_schema", str(ARCHIVE_SCHEMA))
+        if schema is None:
+            with self._write(wait=True):
+                self._db.executescript(_ARCHIVE_DDL)
+                if self._meta_int("archive_schema") is None:
+                    self._set_meta("archive_schema", str(ARCHIVE_SCHEMA))
         try:
             self.rebuild()
         except NewerArchive:

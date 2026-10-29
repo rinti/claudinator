@@ -1,8 +1,9 @@
 -- claudinator: one SQLite file, two layers.
 --
 -- Archive layer (above the @projection marker). The durable copy of every
--- transcript byte. Append-only, migrated in place, never dropped. Its tables
--- are created with IF NOT EXISTS on every open.
+-- transcript byte. Append-only and never dropped. It is created once, with
+-- the database, and has no migrations: claudinator refuses a database whose
+-- meta.archive_schema differs from archive.ARCHIVE_SCHEMA.
 --
 -- Projection layer (below the marker). A pure function of the archive layer
 -- (claudinator/record.py). Dropped and recreated in one transaction whenever

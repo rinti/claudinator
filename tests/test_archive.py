@@ -1,7 +1,9 @@
 import sqlite3
 from pathlib import Path
 
-from claudinator.archive import SEGMENT_BYTES, Config, DocRole, SideFile, TranscriptFile, classify
+import pytest
+
+from claudinator.archive import SEGMENT_BYTES, ArchiveError, Config, DocRole, SideFile, TranscriptFile, classify
 from helpers import (
     AID,
     SID,
@@ -215,3 +217,17 @@ def test_missing_claude_directories_are_not_errors():
         assert (archive.sweep().transcripts_seen, archive.sweep().errors) == (0, ())
         append(transcript(), user("no desktop app on this machine"))
         assert (archive.sweep().transcripts_seen, archive.sweep().errors) == (1, ())
+
+
+def test_an_archive_stamped_with_an_older_schema_is_refused_not_migrated():
+    with open_archive():
+        pass
+    db = sqlite3.connect(Config.from_env().db)
+    db.execute("UPDATE meta SET value = '0' WHERE key = 'archive_schema'")
+    db.commit()
+    db.close()
+    with pytest.raises(ArchiveError, match="archive schema 0"):
+        open_archive()
+    db = sqlite3.connect(Config.from_env().db)
+    assert db.execute("SELECT value FROM meta WHERE key = 'archive_schema'").fetchone() == ("0",)
+    db.close()
