@@ -31,6 +31,7 @@ from helpers import (
     user,
 )
 
+REAL_EXECUTABLE = cli._executable
 NOW = 1790848800000 + 60_000  # a minute after the fixtures' 2026-10-01T10:00Z
 
 
@@ -240,7 +241,7 @@ def test_uninstall_unloads_the_agent_and_keeps_the_archive(capsys, home, launchc
 
 
 def test_plist_runs_sweep_hourly_and_at_login_in_the_background():
-    body = launchd.plist(Path("/Users/me/.local/bin/claudinator"), Path("/Users/me/.claudinator/sweep.log"))
+    body = launchd.plist(Path("/Users/me/.local/bin/claudinator"), Path("/Users/me/.claudinator/sweep.log"), {})
     assert plistlib.loads(body) == {
         "Label": "com.claudinator.sweep",
         "ProgramArguments": ["/Users/me/.local/bin/claudinator", "sweep"],
@@ -458,3 +459,42 @@ def test_a_sweep_after_a_restore_archives_no_new_generation(capsys, tmp_path, ex
         assert (report.new_generations, report.transcripts_changed) == (0, 1)
         assert archive.status().multi_generation == 0
         assert exported(archive) == transcript().read_bytes()
+
+
+def installed_plist(home) -> dict:
+    return plistlib.loads((home / "Library" / "LaunchAgents" / "com.claudinator.sweep.plist").read_bytes())
+
+
+def test_install_hands_the_sweeper_the_paths_it_was_installed_with(capsys, home, tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDINATOR_DB", str(tmp_path / "elsewhere" / "archive.db"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/claude-work")
+    assert run(capsys, "install")[0] == 0
+    assert installed_plist(home)["EnvironmentVariables"] == {
+        "CLAUDINATOR_DB": str(tmp_path / "elsewhere" / "archive.db"),
+        "CLAUDE_CONFIG_DIR": str(home / "claude-work"),
+    }
+
+
+def test_install_with_default_paths_sets_no_environment(capsys, home):
+    assert run(capsys, "install")[0] == 0
+    assert "EnvironmentVariables" not in installed_plist(home)
+
+
+def test_install_runs_the_claudinator_that_is_running(capsys, home, tmp_path, monkeypatch):
+    script = tmp_path / "venv" / "bin" / "claudinator"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(cli, "_executable", REAL_EXECUTABLE)
+    monkeypatch.setattr(sys, "argv", [str(script), "install"])
+    assert run(capsys, "install")[0] == 0
+    assert installed_plist(home)["ProgramArguments"][0] == str(script)
+
+
+def test_install_without_a_claudinator_executable_writes_no_plist(capsys, home, tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_executable", REAL_EXECUTABLE)
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "gone" / "claudinator"), "install"])
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    code, _, err = run(capsys, "install")
+    assert code == 1
+    assert err.startswith("claudinator: cannot find the claudinator executable")
+    assert not (home / "Library" / "LaunchAgents" / "com.claudinator.sweep.plist").exists()

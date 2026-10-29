@@ -244,7 +244,10 @@ def cmd_status(archive: Archive, args: argparse.Namespace) -> int:
 
 def cmd_install(archive: Archive, args: argparse.Namespace) -> int:
     executable = _executable()
-    changed = launchd.install(executable, archive.cfg.db.parent / "sweep.log")
+    cfg = archive.cfg
+    paths = {"CLAUDINATOR_DB": cfg.db, "CLAUDE_CONFIG_DIR": cfg.claude_dir}
+    env = {var: str(path) for var, path in paths.items() if os.environ.get(var)}
+    changed = launchd.install(executable, cfg.db.parent / "sweep.log", env)
     state = "installed" if changed else "already installed"
     print(f"{state} {launchd.LABEL}: `{executable} sweep` hourly and at login")
     progress = _progress if sys.stderr.isatty() else None
@@ -355,11 +358,16 @@ def _exec(cwd: str, argv: list[str]) -> None:
 
 
 def _executable() -> Path:
-    if Path(sys.argv[0]).name == "claudinator":
-        return Path(sys.argv[0]).absolute()
-    if found := shutil.which("claudinator"):
-        return Path(found)
-    raise launchd.LaunchdError("claudinator is not on PATH; install it with `uv tool install` first")
+    """The claudinator the sweeper will run: the console script running now,
+    so the sweeper is the version that wrote its plist, else the one on
+    PATH. The tests replace this."""
+    running = Path(sys.argv[0])
+    for candidate in (running if running.name == "claudinator" else None, shutil.which("claudinator")):
+        if candidate and Path(candidate).is_file():
+            return Path(candidate).absolute()
+    raise launchd.LaunchdError(
+        "cannot find the claudinator executable for the sweeper to run; install it with `uv tool install` first"
+    )
 
 
 def _note(report: SweepReport) -> None:

@@ -18,30 +18,33 @@ def launchctl(*args: str) -> int:
     return subprocess.run(["launchctl", *args], capture_output=True).returncode
 
 
-def plist(executable: Path, log: Path) -> bytes:
-    return plistlib.dumps(
-        {
-            "Label": LABEL,
-            "ProgramArguments": [str(executable), "sweep"],
-            "StartInterval": SWEEP_INTERVAL_SECONDS,
-            "RunAtLoad": True,
-            "ProcessType": "Background",
-            "LowPriorityIO": True,
-            "Nice": 10,
-            "StandardOutPath": str(log),
-            "StandardErrorPath": str(log),
-        }
-    )
+def plist(executable: Path, log: Path, env: dict[str, str]) -> bytes:
+    """The agent's plist. env holds the variables the sweeper needs to see
+    the same paths as the claudinator that installed it."""
+    agent = {
+        "Label": LABEL,
+        "ProgramArguments": [str(executable), "sweep"],
+        "StartInterval": SWEEP_INTERVAL_SECONDS,
+        "RunAtLoad": True,
+        "ProcessType": "Background",
+        "LowPriorityIO": True,
+        "Nice": 10,
+        "StandardOutPath": str(log),
+        "StandardErrorPath": str(log),
+    }
+    if env:
+        agent["EnvironmentVariables"] = env
+    return plistlib.dumps(agent)
 
 
 def plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 
 
-def install(executable: Path, log: Path) -> bool:
+def install(executable: Path, log: Path, env: dict[str, str]) -> bool:
     """Write the plist if its bytes differ, and load the agent if it changed
     or is not loaded. Idempotent. Returns True if the plist changed."""
-    path, body = plist_path(), plist(executable, log)
+    path, body = plist_path(), plist(executable, log, env)
     changed = not path.exists() or path.read_bytes() != body
     if changed:
         path.parent.mkdir(parents=True, exist_ok=True)

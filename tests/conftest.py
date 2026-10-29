@@ -67,3 +67,14 @@ def claude_on_path(tmp_path, monkeypatch):
     claude.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     return claude
+
+
+@pytest.fixture(autouse=True)
+def executable(tmp_path, monkeypatch):
+    """The claudinator install writes into the plist, so the suite needs no
+    claudinator on PATH."""
+    script = tmp_path / "installed" / "claudinator"
+    script.parent.mkdir()
+    script.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(cli, "_executable", lambda: script)
+    return script
