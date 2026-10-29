@@ -146,35 +146,53 @@ def cmd_show(archive: Archive, args: argparse.Namespace) -> int:
 
 
 def cmd_resume(archive: Archive, args: argparse.Namespace) -> int:
-    """Restore the main transcript if Claude Code deleted it (create-only,
-    never overwriting a file), then replace this process with
-    `claude --resume` in the session's directory. The only writer under
+    """Restore the main transcript if Claude Code deleted it, then replace
+    this process with `claude --resume` in the session's directory. Checks
+    that both can work before it writes anything. The only writer under
     ~/.claude."""
     s = archive.session(args.id).summary
-    s.transcript.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        restore = open(s.transcript, "xb")
-    except FileExistsError:
-        pass
-    else:
-        try:
-            with restore:
-                archive.export(s.id, restore)
-        except BaseException:
-            s.transcript.unlink()
-            raise
-        print(f"restored {_short(str(s.transcript))} from the archive")
     command = ["claude", "--resume", s.id]
     if not s.cwd or not os.path.isdir(s.cwd):
         print(f"claudinator: the session's directory {_short(s.cwd)} no longer exists. Resume it from another one with:")
         print(f"  {shlex.join(command)}")
         return 1
-    try:
-        _exec(s.cwd, command)
-    except FileNotFoundError:
+    if shutil.which("claude") is None:
         print(f"claudinator: claude is not on PATH. Run: cd {shlex.quote(s.cwd)} && {shlex.join(command)}")
         return 1
+    try:
+        _restore(archive, s)
+    except OSError as e:
+        print(f"claudinator: cannot restore {_short(str(s.transcript))}: {e.strerror or e}", file=sys.stderr)
+        return 1
+    _exec(s.cwd, command)
     return 0
+
+
+def _restore(archive: Archive, s: SessionSummary) -> None:
+    """Write the archived transcript back to its path if nothing is there.
+
+    The bytes go to a hidden sibling that classify() ignores, are synced,
+    and are published with os.link, which never replaces a file. So the
+    transcript path never holds a partial file, and a transcript that
+    appears in the meantime is left as it is."""
+    final = s.transcript
+    if final.exists():
+        return
+    final.parent.mkdir(parents=True, exist_ok=True)
+    staged = final.with_name(f".{final.name}.restore-{os.getpid()}")
+    staged.unlink(missing_ok=True)  # only a dead process with this pid can have left it
+    try:
+        with os.fdopen(os.open(staged, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as f:
+            archive.export(s.id, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.link(staged, final)
+    except FileExistsError:
+        print(f"{_short(str(final))} appeared while restoring it; resuming with that file as it is")
+    else:
+        print(f"restored {_short(str(final))} from the archive")
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def cmd_export(archive: Archive, args: argparse.Namespace) -> int:

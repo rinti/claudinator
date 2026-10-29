@@ -2,6 +2,7 @@ import json
 import os
 import plistlib
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,8 @@ from helpers import (
     ai_title,
     append,
     assistant,
+    exported,
+    open_archive,
     projects,
     reply,
     tool_call,
@@ -377,3 +380,81 @@ def test_show_into_a_pipe_that_closes_early_exits_0_quietly():
     assert reader.stdout.readline().startswith(b"8f2d43fe")
     reader.stdout.close()
     assert (reader.wait(timeout=60), reader.stderr.read()) == (0, b"")
+
+
+def deleted_session(capsys, tmp_path) -> tuple[Path, bytes]:
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    append(transcript(), user("hello", cwd=str(workdir)), reply("hi"))
+    run(capsys, "sweep")
+    original = transcript().read_bytes()
+    transcript().unlink()
+    return workdir, original
+
+
+def test_resume_never_shows_a_partial_transcript_at_its_path(capsys, tmp_path, monkeypatch, execs):
+    workdir, original = deleted_session(capsys, tmp_path)
+    seen_while_writing = []
+    real_export = archive_module.Archive.export
+
+    def export(self, *args, **kwargs):
+        seen_while_writing.append(transcript().exists())
+        return real_export(self, *args, **kwargs)
+
+    monkeypatch.setattr(archive_module.Archive, "export", export)
+    assert run(capsys, "resume", "8f2d")[0] == 0
+    assert seen_while_writing == [False]
+    assert transcript().read_bytes() == original
+    assert stat.S_IMODE(transcript().stat().st_mode) == 0o600
+    assert sorted(p.name for p in transcript().parent.iterdir()) == [transcript().name]
+
+
+def test_resume_without_claude_on_path_writes_nothing_and_exits_1(capsys, tmp_path, monkeypatch, execs):
+    deleted_session(capsys, tmp_path)
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    code, out, _ = run(capsys, "resume", "8f2d")
+    assert code == 1
+    assert "claude is not on PATH" in out
+    assert not transcript().exists()
+    assert execs == []
+
+
+def test_resume_without_its_directory_writes_nothing(capsys, tmp_path, execs):
+    workdir, _ = deleted_session(capsys, tmp_path)
+    workdir.rmdir()
+    assert run(capsys, "resume", "8f2d")[0] == 1
+    assert not transcript().exists()
+
+
+def test_resume_replaces_a_staged_file_left_by_a_dead_process_with_its_pid(capsys, tmp_path, execs):
+    _, original = deleted_session(capsys, tmp_path)
+    stale = transcript().with_name(f".{transcript().name}.restore-{os.getpid()}")
+    stale.write_bytes(b"half of an earlier restore")
+    assert run(capsys, "resume", "8f2d")[0] == 0
+    assert transcript().read_bytes() == original
+    assert not stale.exists()
+
+
+def test_resume_that_cannot_write_the_transcript_says_so_and_exits_1(capsys, tmp_path, execs):
+    deleted_session(capsys, tmp_path)
+    transcript().parent.chmod(0o500)
+    try:
+        code, _, err = run(capsys, "resume", "8f2d")
+    finally:
+        transcript().parent.chmod(0o700)
+    assert code == 1
+    assert err.startswith(f"claudinator: cannot restore ~/.claude/projects/{SLUG}/{SID}.jsonl: Permission denied")
+    assert execs == []
+
+
+def test_a_sweep_after_a_restore_archives_no_new_generation(capsys, tmp_path, execs):
+    deleted_session(capsys, tmp_path)
+    run(capsys, "resume", "8f2d")
+    append(transcript(), user("the resumed session goes on"))
+    with open_archive() as archive:
+        report = archive.sweep()
+        assert (report.new_generations, report.transcripts_changed) == (0, 1)
+        assert archive.status().multi_generation == 0
+        assert exported(archive) == transcript().read_bytes()

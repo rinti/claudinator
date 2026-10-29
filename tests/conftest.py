@@ -1,3 +1,4 @@
+import os
 import time
 
 import pytest
@@ -53,3 +54,16 @@ def execs(monkeypatch):
     calls: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(cli, "_exec", lambda cwd, argv: calls.append((cwd, argv)))
     return calls
+
+
+@pytest.fixture(autouse=True)
+def claude_on_path(tmp_path, monkeypatch):
+    """A `claude` executable on PATH, so resume's check finds one. Tests of
+    a missing claude set PATH themselves."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude = bin_dir / "claude"
+    claude.write_text("#!/bin/sh\nexit 0\n")
+    claude.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return claude
