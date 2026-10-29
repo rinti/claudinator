@@ -150,11 +150,20 @@ def test_processes_that_open_a_new_archive_at_once_all_succeed(tmp_path, monkeyp
 
 def test_a_sweep_that_gives_up_on_the_lock_leaves_the_readers_lock_wait_alone():
     append(transcript(), user("quokka"))
-    with open_archive() as archive:
-        (default,) = archive._db.execute("PRAGMA busy_timeout").fetchone()
-        archive.sweep(wait=False)
-        assert archive._db.execute("PRAGMA busy_timeout").fetchone() == (default,)
-        assert default >= 1000
+    open_archive().close()
+    locker = subprocess.Popen(
+        [sys.executable, "-c", LOCKER, str(Config.from_env().db)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert locker.stdout.readline() == "locked\n"
+        with open_archive() as archive:
+            (default,) = archive._db.execute("PRAGMA busy_timeout").fetchone()
+            assert archive.sweep(wait=False).busy
+            assert archive._db.execute("PRAGMA busy_timeout").fetchone() == (default,)
+    finally:
+        locker.stdin.close()
+        locker.wait(timeout=10)
+    assert default >= 1000
 
 
 def test_a_reader_does_not_wait_for_the_lock_when_only_an_unfinished_line_is_new():
