@@ -304,3 +304,12 @@ def test_project_filter_ignores_case_beyond_ascii():
         archive.sweep()
         assert [s.id for s in archive.sessions(Filters(project="FÖRSTA"))] == [SID]
         assert matching(archive, "hej", filters=Filters(project="Första-Projektet")) == [SID]
+
+
+def test_search_prefers_an_excerpt_with_every_word_over_a_stronger_match_of_one():
+    filler = " ".join(f"word{i}" for i in range(200))
+    append(transcript(), user("agent agent agent agent"), reply(f"the launchd agent {filler}"))
+    with open_archive() as archive:
+        archive.sweep()
+        (hit,) = archive.search(Query(("launchd", "agent")))
+    assert hit.best.text.startswith("the launchd agent")

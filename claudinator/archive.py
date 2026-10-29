@@ -582,8 +582,9 @@ class Archive:
 
     def search(self, q: Query) -> list[SessionHit]:
         """Sessions in which every term matches some eligible unit, best
-        first by the summed bm25 of their matches, each with the unit that
-        matches best rendered as an excerpt from its raw line. A unit is
+        first by the summed bm25 of their matches, each with an excerpt from
+        the raw line of its best unit: the one matching the most terms, then
+        the best summed bm25. A unit is
         eligible when its kind is in scope and its time in the window. A
         phrase matches inside one unit. Terms without a letter or digit are
         dropped; EmptyQuery if none is left."""
@@ -1063,7 +1064,7 @@ matched AS (
 ),
 best AS (
   SELECT session_id, entry_id,
-         ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY SUM(rank), entry_id) AS place
+         ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY COUNT(DISTINCT term) DESC, SUM(rank), entry_id) AS place
     FROM hit
    WHERE session_id IN (SELECT session_id FROM matched)
    GROUP BY session_id, entry_id
