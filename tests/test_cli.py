@@ -533,3 +533,31 @@ def test_status_reports_a_directory_its_own_sweep_cannot_list_and_exits_1(capsys
         hidden.parent.chmod(0o700)
     assert code == 1
     assert f"\n          {hidden.parent}: PermissionError(13, 'Permission denied')\n" in out
+
+
+def no_archive(path: Path) -> None:
+    pass
+
+
+def not_a_database(path: Path) -> None:
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"this is not sqlite" * 100)
+
+
+def an_older_archive(path: Path) -> None:
+    open_archive().close()
+    db = sqlite3.connect(path)
+    db.execute("UPDATE meta SET value = '0' WHERE key = 'archive_schema'")
+    db.commit()
+    db.close()
+
+
+@pytest.mark.parametrize("archive", [no_archive, not_a_database, an_older_archive])
+def test_uninstall_unloads_the_sweeper_whatever_state_the_archive_is_in(capsys, launchctl, archive):
+    db = Config.from_env().db
+    archive(db)
+    before = db.read_bytes() if db.exists() else None
+    launchctl.loaded = True
+    code, out, _ = run(capsys, "uninstall")
+    assert (code, launchctl.loaded) == (0, False)
+    assert (db.read_bytes() if db.exists() else None) == before

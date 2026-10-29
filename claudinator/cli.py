@@ -2,6 +2,7 @@
 environment is parsed here, and every line a person reads is formatted here."""
 
 import argparse
+import enum
 import os
 import re
 import shlex
@@ -43,13 +44,16 @@ def main(argv: list[str] | None = None) -> int:
         return e.code if isinstance(e.code, int) else 2
     cfg = Config.from_env()
     try:
-        with Archive.open(cfg) as archive:
-            swept = archive.sweep(wait=False) if args.sweep_first else None
-            if swept:
-                _note(swept)
-            code = args.run(archive, args, swept)
-            sys.stdout.flush()
-            return code
+        if args.needs is _Needs.CONFIG:
+            code = args.run(cfg, args)
+        else:
+            with Archive.open(cfg) as archive:
+                swept = archive.sweep(wait=False) if args.needs is _Needs.FRESH else None
+                if swept:
+                    _note(swept)
+                code = args.run(archive, args, swept)
+        sys.stdout.flush()
+        return code
     except BrokenPipeError:
         # The reader (head, a closed less) is gone, which is how a pipe ends. Point stdout at
         # /dev/null so the flush at exit does not fail again and turn exit 0 into 120.
@@ -66,6 +70,15 @@ def main(argv: list[str] | None = None) -> int:
     except sqlite3.Error as e:
         print(f"claudinator: {cfg.db}: {e}", file=sys.stderr)
         return 1
+
+
+class _Needs(enum.Enum):
+    """What a command needs before it runs, which also fixes how it is
+    called."""
+
+    CONFIG = enum.auto()  # run(cfg, args): the paths only, whatever state the archive is in
+    ARCHIVE = enum.auto()  # run(archive, args, None)
+    FRESH = enum.auto()  # run(archive, args, swept): new bytes archived first with wait=False
 
 
 def parse_when(text: str, now: Millis) -> Millis:
@@ -265,9 +278,10 @@ def cmd_install(archive: Archive, args: argparse.Namespace, swept: SweepReport |
     return _print_status(archive, archive.status(), None)
 
 
-def cmd_uninstall(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
+def cmd_uninstall(cfg: Config, args: argparse.Namespace) -> int:
     launchd.uninstall()
-    print(f"unloaded {launchd.LABEL}; the archive stays at {_short(str(archive.cfg.db))}")
+    kept = f"; the archive stays at {_short(str(cfg.db))}" if cfg.db.exists() else ""
+    print(f"unloaded {launchd.LABEL}{kept}")
     return 0
 
 
@@ -307,18 +321,12 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
-    def command(
-        name: str,
-        run: Callable[[Archive, argparse.Namespace, SweepReport | None], int],
-        about: str,
-        *,
-        sweep_first: bool = False,
-    ) -> argparse.ArgumentParser:
-        """sweep_first: a read command archives new bytes with wait=False
-        before it answers, so it sees the turn that just finished in another
-        terminal without any hook."""
+    def command(name: str, run: Callable[..., int], about: str, needs: _Needs) -> argparse.ArgumentParser:
+        """A read command needs FRESH: it archives new bytes before it
+        answers, so it sees the turn that just finished in another terminal
+        without any hook."""
         p = sub.add_parser(name, help=about)
-        p.set_defaults(run=run, sweep_first=sweep_first)
+        p.set_defaults(run=run, needs=needs)
         return p
 
     def window(p: argparse.ArgumentParser, limit: int) -> None:
@@ -327,26 +335,26 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
         p.add_argument("--until", type=when, metavar="WHEN")
         p.add_argument("--limit", type=checked(positive), default=limit, metavar="N")
 
-    p = command("search", cmd_search, "find sessions where every word appears", sweep_first=True)
+    p = command("search", cmd_search, "find sessions where every word appears", _Needs.FRESH)
     p.add_argument("words", nargs="+", metavar="WORDS", help='"a phrase" in quotes, deploy* for a prefix')
     p.add_argument("--tools", action="store_true", help="also search tool calls and tool output")
     window(p, 20)
-    window(command("sessions", cmd_sessions, "list sessions by last activity", sweep_first=True), 30)
-    p = command("show", cmd_show, "print a conversation from the archive", sweep_first=True)
+    window(command("sessions", cmd_sessions, "list sessions by last activity", _Needs.FRESH), 30)
+    p = command("show", cmd_show, "print a conversation from the archive", _Needs.FRESH)
     p.add_argument("id", type=ref, metavar="ID")
     p.add_argument("--agent", type=ref, metavar="AID", help="print one subagent's transcript")
     p.add_argument("--full", action="store_true", help="print tool output in full")
-    p = command("resume", cmd_resume, "run claude --resume, restoring a deleted transcript first", sweep_first=True)
+    p = command("resume", cmd_resume, "run claude --resume, restoring a deleted transcript first", _Needs.FRESH)
     p.add_argument("id", type=ref, metavar="ID")
-    p = command("export", cmd_export, "write the archived transcript byte for byte", sweep_first=True)
+    p = command("export", cmd_export, "write the archived transcript byte for byte", _Needs.FRESH)
     p.add_argument("id", type=ref, metavar="ID")
     p.add_argument("--agent", type=ref, metavar="AID")
     p.add_argument("--generation", type=int, metavar="N", help="an earlier generation of a rewritten file")
-    command("status", cmd_status, "archive size, coverage, and sweeper health", sweep_first=True)
-    command("sweep", cmd_sweep, "archive new bytes now")
-    command("rebuild", cmd_rebuild, "re-derive the search index from the archive")
-    command("install", cmd_install, "load the hourly sweeper and archive everything on disk")
-    command("uninstall", cmd_uninstall, "unload the sweeper; the database stays")
+    command("status", cmd_status, "archive size, coverage, and sweeper health", _Needs.FRESH)
+    command("sweep", cmd_sweep, "archive new bytes now", _Needs.ARCHIVE)
+    command("rebuild", cmd_rebuild, "re-derive the search index from the archive", _Needs.ARCHIVE)
+    command("install", cmd_install, "load the hourly sweeper and archive everything on disk", _Needs.ARCHIVE)
+    command("uninstall", cmd_uninstall, "unload the sweeper; the database stays", _Needs.CONFIG)
     return parser
 
 
