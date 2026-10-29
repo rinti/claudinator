@@ -150,3 +150,23 @@ def test_a_sweep_that_gives_up_on_the_lock_leaves_the_readers_lock_wait_alone():
         archive.sweep(wait=False)
         assert archive._db.execute("PRAGMA busy_timeout").fetchone() == (default,)
         assert default >= 1000
+
+
+def test_a_reader_does_not_wait_for_the_lock_when_only_an_unfinished_line_is_new():
+    path = transcript()
+    append(path, user("archived"))
+    append(transcript(SID2), user("a new file still on its first line")[:20])
+    with open_archive() as archive:
+        archive.sweep()
+    append(path, user("Claude Code is still writing this")[:25])
+    locker = subprocess.Popen(
+        [sys.executable, "-c", LOCKER, str(Config.from_env().db)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert locker.stdout.readline() == "locked\n"
+        with open_archive() as archive:
+            report = archive.sweep(wait=False)
+    finally:
+        locker.stdin.close()
+        locker.wait(timeout=10)
+    assert (report.busy, report.bytes_archived) == (False, 0)

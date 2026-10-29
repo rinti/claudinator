@@ -429,6 +429,38 @@ def _look(fd: int, a: _Archived, size: int, settled: bool) -> tuple[Plan, bytes]
     return plan(a.head, a.tail, a.cursor, size, settled, _pread(fd, len(a.head), 0), window), window
 
 
+def _worth_locking(path: Path, a: _Archived | None) -> bool:
+    """Outside any lock: would _ingest archive anything now? False when the
+    file is unchanged, is a restore still being written, or has no complete
+    new line and has not settled, which is every live session mid-write. So
+    a read command takes the write lock only for files with work to do.
+    _ingest decides again under the lock."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        st = os.fstat(fd)
+        settled = _settled(st)
+        start = 0
+        if a is not None:
+            match _look(fd, a, st.st_size, settled)[0]:
+                case Plan.UNCHANGED | Plan.WAIT:
+                    return False
+                case Plan.APPEND:
+                    start = a.cursor
+        return settled or _has_newline(fd, start, st.st_size)
+    finally:
+        os.close(fd)
+
+
+def _has_newline(fd: int, start: int, end: int, step: int = 1 << 16) -> bool:
+    for offset in range(start, end, step):
+        if b"\n" in os.pread(fd, min(step, end - offset), offset):
+            return True
+    return False
+
+
 def _settled(st: os.stat_result) -> bool:
     return _now() - st.st_mtime_ns // 1_000_000 >= SETTLE_SECONDS * 1000
 
@@ -580,7 +612,7 @@ class Archive:
         refused = None
         for loc in found.transcripts:
             try:
-                if (a := known.get(loc.path)) is not None and self._unchanged(loc.path, a):
+                if not _worth_locking(loc.path, known.get(loc.path)):
                     continue
                 delta = self._ingest(loc, wait)
             except FileNotFoundError:
@@ -867,19 +899,6 @@ class Archive:
                 self._project(source_id, _records([(start, chunk)], not window or window.endswith(b"\n")))
                 window = chunk
             return _Delta(take, body.count(b"\n") + (not body.endswith(b"\n")), generation > 0 and cursor == 0)
-
-    def _unchanged(self, path: Path, a: _Archived) -> bool:
-        """Outside any lock: is the file still exactly what is archived? A
-        cheap filter; _ingest decides again under the lock."""
-        try:
-            fd = os.open(path, os.O_RDONLY)
-        except FileNotFoundError:
-            return True
-        try:
-            st = os.fstat(fd)
-            return _look(fd, a, st.st_size, _settled(st))[0] is Plan.UNCHANGED
-        finally:
-            os.close(fd)
 
     def _project(self, source_id: int, records: Iterable[tuple[int, Record]]) -> None:
         """Fold records into the projection. Shared by _ingest and rebuild;
