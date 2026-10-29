@@ -637,3 +637,17 @@ def test_install_gives_up_on_a_bootstrap_that_keeps_failing(capsys, home, launch
     code, _, err = run(capsys, "install")
     assert (code, launchctl.loaded) == (1, False)
     assert err.startswith(f"claudinator: launchctl bootstrap gui/{os.getuid()} ") and err.endswith(" exited 5\n")
+
+
+def test_sweep_stamps_its_log_line_with_the_archives_clock(capsys, monkeypatch):
+    monkeypatch.setattr(archive_module, "now", lambda: NOW)
+    assert run(capsys, "sweep")[1].startswith("2026-10-01T10:01:00 0 of 0 transcripts changed")
+
+
+def test_rebuild_says_how_many_transcript_generations_it_replayed(capsys):
+    path = transcript()
+    append(path, user("first words"))
+    run(capsys, "sweep")
+    path.write_bytes(user("rewritten words"))
+    run(capsys, "sweep")
+    assert run(capsys, "rebuild")[1] == "rebuilt the search index from 2 archived transcript generations\n"

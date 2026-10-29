@@ -289,14 +289,14 @@ def cmd_uninstall(cfg: Config, args: argparse.Namespace) -> int:
 
 def cmd_sweep(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
     report = archive.sweep(wait=True)
-    _emit(f"{datetime.now().isoformat(timespec='seconds')} {_report(report)}")
+    _emit(f"{datetime.fromtimestamp(report.finished / 1000).isoformat(timespec='seconds')} {_report(report)}")
     for error in report.errors:
         _emit(f"  {error}")
     return 1 if report.errors or report.refused else 0
 
 
 def cmd_rebuild(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
-    _emit(f"rebuilt the search index from {archive.rebuild(force=True)} archived transcripts")
+    _emit(f"rebuilt the search index from {archive.rebuild(force=True)} archived transcript generations")
     return 0
 
 

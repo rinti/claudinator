@@ -593,7 +593,8 @@ class Archive:
         """Drop and re-derive the projection from the archive in one write
         transaction. open() runs it after an upgrade; `claudinator rebuild`
         runs it with force=True. Readers in other processes keep seeing the
-        old projection (WAL snapshot) until commit."""
+        old projection (WAL snapshot) until commit. Returns how many sources
+        it replayed: one per transcript file and generation."""
         with self._write(wait=True):
             if not force and self._projection_current():
                 return 0
