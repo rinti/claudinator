@@ -6,6 +6,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -561,3 +562,15 @@ def test_uninstall_unloads_the_sweeper_whatever_state_the_archive_is_in(capsys, 
     code, out, _ = run(capsys, "uninstall")
     assert (code, launchctl.loaded) == (0, False)
     assert (db.read_bytes() if db.exists() else None) == before
+
+
+@pytest.mark.parametrize("ts", ["0001-01-01T00:00:00.000Z", "9999-12-31T23:59:59.000Z", "1969-12-31T23:59:59.000Z"])
+def test_a_timestamp_outside_1970_to_9999_reads_as_missing(capsys, monkeypatch, ts):
+    monkeypatch.setenv("TZ", "Europe/Stockholm")
+    time.tzset()
+    append(transcript(), user("dated quokka", ts=ts))
+    for argv in (["sessions"], ["search", "quokka"]):
+        assert run(capsys, *argv)[::2] == (0, ""), argv
+    code, out, err = run(capsys, "show", "8f2d")
+    assert (code, err) == (0, "")
+    assert "\n? to ?, 1 prompt, on disk" in out and "\n\n?  you\n  dated quokka\n" in out
