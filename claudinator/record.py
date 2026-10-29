@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NewType
 
-PROJECTION_VERSION = 2
+PROJECTION_VERSION = 3
 """Bump when parse() or project() would produce different rows for the same
 bytes. An edit to the projection section of schema.sql needs no bump: meta
 keeps a digest of that DDL, and open() rebuilds when it differs.
@@ -71,6 +71,7 @@ class Turn:
 class Title:
     text: str
     custom: bool  # custom-title (/rename) outranks ai-title
+    ts: Millis | None = None  # the title line's own timestamp; none of this Mac's title lines has one
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,9 +130,9 @@ def parse(line: bytes) -> Record:
     cwd = _str(obj.get("cwd"))
     match obj.get("type"):
         case "ai-title":
-            return _title(obj.get("aiTitle"), False) or Other(ts, cwd)
+            return _title(obj.get("aiTitle"), False, ts) or Other(ts, cwd)
         case "custom-title":
-            return _title(obj.get("customTitle"), True) or Other(ts, cwd)
+            return _title(obj.get("customTitle"), True, ts) or Other(ts, cwd)
         case "assistant":
             return _turn(obj.get("message"), Kind.REPLY, ts, cwd)
         case "user" if _typed_by_a_person(obj):
@@ -154,14 +155,14 @@ def project(facts: Facts, record: Record) -> tuple[Facts, list[EntryDraft]]:
         case Turn(ts, cwd, blocks):
             drafts = [EntryDraft(i, b.kind, ts) for i, b in blocks if b.text.strip()]
             return _observe(facts, ts, cwd), drafts
-        case Title(text, custom=True):
+        case Title(text, custom=True, ts=ts):
             if text == facts.custom_title:
                 return facts, []
-            return replace(facts, custom_title=text), [EntryDraft(0, Kind.TITLE, facts.last_ts)]
-        case Title(text, custom=False):
+            return replace(facts, custom_title=text), [EntryDraft(0, Kind.TITLE, _or(ts, facts.last_ts))]
+        case Title(text, custom=False, ts=ts):
             if text == facts.ai_title:
                 return facts, []
-            return replace(facts, ai_title=text), [EntryDraft(0, Kind.TITLE, facts.last_ts)]
+            return replace(facts, ai_title=text), [EntryDraft(0, Kind.TITLE, _or(ts, facts.last_ts))]
 
 
 def text_of(record: Record, block: int) -> str:
@@ -284,8 +285,14 @@ def _block(raw: object, text_kind: Kind) -> Block | None:
             return None
 
 
-def _title(value: object, custom: bool) -> Title | None:
-    return Title(_text(value), custom) if isinstance(value, str) and value.strip() else None
+def _title(value: object, custom: bool, ts: Millis | None) -> Title | None:
+    return Title(_text(value), custom, ts) if isinstance(value, str) and value.strip() else None
+
+
+def _or(ts: Millis | None, fallback: Millis | None) -> Millis | None:
+    """A title entry's time: its own line's timestamp, else the latest
+    activity before it."""
+    return ts if ts is not None else fallback
 
 
 def _observe(facts: Facts, ts: Millis | None, cwd: str | None) -> Facts:

@@ -332,3 +332,10 @@ def test_parse_replaces_lone_surrogates_in_every_string_it_returns():
     assert subagent_meta(r'{"description":"d\ud800"}').description == "d�"
     assert desktop_session(r'{"cliSessionId":"s","title":"t\udc00"}').title == "t�"
     assert parse("😀".encode()) == Unparsed()
+
+
+def test_a_title_entry_takes_its_own_timestamp_and_falls_back_to_the_last_activity():
+    with_ts = parse(b'{"type":"custom-title","customTitle":"Mine","timestamp":"2026-10-01T10:00:00.000Z"}')
+    assert with_ts == Title("Mine", custom=True, ts=1790848800000)
+    assert project(Facts(last_ts=5), with_ts)[1] == [EntryDraft(0, Kind.TITLE, 1790848800000)]
+    assert project(Facts(last_ts=5), Title("Other", custom=False))[1] == [EntryDraft(0, Kind.TITLE, 5)]
