@@ -23,7 +23,7 @@ from typing import BinaryIO
 
 from compression import zstd
 
-from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, discover
+from claudinator.layout import Config, Discovery, DocRole, SideFile, TranscriptFile, discover
 from claudinator.record import (
     CONVERSATION,
     PROJECTION_VERSION,
@@ -220,6 +220,7 @@ class Pending:
 
 @dataclass(frozen=True, slots=True)
 class Status:
+    checked_at: Millis
     db_path: Path
     db_bytes: int
     archived_bytes: int  # sum of byte_end - byte_start
@@ -341,7 +342,7 @@ def _has_newline(fd: int, start: int, end: int, step: int = 1 << 16) -> bool:
 
 
 def _settled(st: os.stat_result) -> bool:
-    return _now() - st.st_mtime_ns // 1_000_000 >= SETTLE_SECONDS * 1000
+    return now() - st.st_mtime_ns // 1_000_000 >= SETTLE_SECONDS * 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,7 +353,8 @@ class _Delta:
     busy: bool = False  # wait=False found the lock taken after some segments committed
 
 
-def _now() -> Millis:
+def now() -> Millis:
+    """The clock, for archive.py and cli.py alike."""
     return Millis(time.time_ns() // 1_000_000)
 
 
@@ -471,7 +473,13 @@ class Archive:
 
     # -- writing ------------------------------------------------------------
 
-    def sweep(self, *, wait: bool = True, progress: Callable[[Path, int], None] | None = None) -> SweepReport:
+    def sweep(
+        self,
+        *,
+        wait: bool = True,
+        progress: Callable[[Path], None] | None = None,
+        found: Discovery | None = None,
+    ) -> SweepReport:
         """Archive every byte on disk that is not archived yet. Idempotent:
         a second run with no file changes archives nothing.
 
@@ -482,10 +490,11 @@ class Archive:
         archived.
 
         A file that fails for any reason becomes one entry in errors and the
-        sweep moves on, so one bad file never keeps the rest unarchived."""
-        started = _now()
+        sweep moves on, so one bad file never keeps the rest unarchived.
+        found is a walk the caller already made; None walks now."""
+        started = now()
         known = self._archived()
-        found = discover(self.cfg)
+        found = found or discover(self.cfg)
         seen = len(found.transcripts)
         changed = archived = archived_lines = generations = docs_changed = 0
         errors = list(found.errors)
@@ -516,7 +525,7 @@ class Archive:
                 archived_lines += delta.lines
                 generations += delta.rewritten
             if progress:
-                progress(loc.path, delta.bytes)
+                progress(loc.path)
             if delta.busy:
                 busy = True
                 break
@@ -532,7 +541,7 @@ class Archive:
                 errors.append(f"side files: {e!r}")
         report = SweepReport(
             started=started,
-            finished=_now(),
+            finished=now(),
             transcripts_seen=seen,
             transcripts_changed=changed,
             bytes_archived=archived,
@@ -553,19 +562,21 @@ class Archive:
                 report = replace(report, errors=(*report.errors, f"recording this sweep: {e!r}"))
         return report
 
-    def rebuild(self, *, force: bool = False) -> None:
+    def rebuild(self, *, force: bool = False) -> int:
         """Drop and re-derive the projection from the archive in one write
         transaction. open() runs it after an upgrade; `claudinator rebuild`
         runs it with force=True. Readers in other processes keep seeing the
         old projection (WAL snapshot) until commit."""
         with self._write(wait=True):
             if not force and self._projection_current():
-                return
+                return 0
             self._db.executescript(_PROJECTION_DDL)
-            for (source_id,) in self._db.execute("SELECT id FROM source ORDER BY id").fetchall():
+            sources = self._db.execute("SELECT id FROM source ORDER BY id").fetchall()
+            for (source_id,) in sources:
                 self._project(source_id, _records(self._segments(source_id)))
             for key, value in _projection_stamp().items():
                 self._set_meta(key, value)
+        return len(sources)
 
     # -- reading ------------------------------------------------------------
 
@@ -580,7 +591,9 @@ class Archive:
         if not terms:
             raise EmptyQuery("nothing to search for: every word lacks a letter or a digit")
         kinds = CONVERSATION | (TOOLS if q.tools else frozenset())
-        rows = self._db.execute(
+        rows = self._db.cursor()
+        rows.row_factory = sqlite3.Row
+        rows.execute(
             _SEARCH_SQL,
             {
                 "exprs": json.dumps([fts_expr(term) for term in terms]),
@@ -589,13 +602,14 @@ class Archive:
                 "until": q.filters.until,
             },
         )
-        sessions = {row[0]: row for row in self._session_rows(Filters(project=q.filters.project), None)}
+        sessions = {row["session_id"]: row for row in self._session_rows(Filters(project=q.filters.project), None)}
         hits = []
-        for session_id, count, source_id, line_off, block, kind, ts, agent_id in rows:
-            if session_id not in sessions:
+        for row in rows:
+            if row["session_id"] not in sessions:
                 continue
-            text, marks = excerpt(self._entry_text(source_id, line_off, block), terms)
-            hits.append(SessionHit(self._summary(sessions[session_id]), count, Excerpt(Kind(kind), ts, agent_id, text, marks)))
+            text, marks = excerpt(self._entry_text(row["source_id"], row["line_off"], row["block"]), terms)
+            best = Excerpt(Kind(row["kind"]), row["ts"], row["agent_id"], text, marks)
+            hits.append(SessionHit(self._summary(sessions[row["session_id"]]), row["hits"], best))
             if len(hits) == q.limit:
                 break
         return hits
@@ -655,7 +669,9 @@ class Archive:
             written += len(chunk)
         return written
 
-    def status(self) -> Status:
+    def status(self, found: Discovery | None = None) -> Status:
+        """found is a walk the caller already made, as when it swept just
+        before; None walks now."""
         archived, stored = self._db.execute(
             "SELECT COALESCE(SUM(byte_end - byte_start), 0), COALESCE(SUM(length(zstd)), 0) FROM segment"
         ).fetchone()
@@ -666,7 +682,7 @@ class Archive:
         (unparsed,) = self._db.execute("SELECT COALESCE(SUM(unparsed), 0) FROM transcript").fetchone()
         mains = [Path(p) for (p,) in self._db.execute("SELECT DISTINCT path FROM source WHERE agent_id IS NULL")]
         known = self._archived()
-        found = discover(self.cfg)
+        found = found or discover(self.cfg)
         pending = []
         for loc in found.transcripts:
             try:
@@ -677,6 +693,7 @@ class Archive:
                 pending.append(Pending(loc.path, unarchived, Millis(st.st_mtime_ns // 1_000_000)))
         last = self._meta("last_sweep")
         return Status(
+            checked_at=now(),
             db_path=self.cfg.db,
             db_bytes=sum(p.stat().st_size for p in (self.cfg.db, Path(f"{self.cfg.db}-wal")) if p.exists()),
             archived_bytes=archived,
@@ -782,19 +799,19 @@ class Archive:
             os.close(fd)
         if not chunk:
             return None
-        now = _now()
+        archived_at = now()
         if cursor == 0:
             (source_id,) = self._db.execute(
                 "INSERT INTO source (path, generation, session_id, agent_id, head, first_seen)"
                 " VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
-                (str(f.path), generation, f.session_id, f.agent_id, chunk[:1024], now),
+                (str(f.path), generation, f.session_id, f.agent_id, chunk[:1024], archived_at),
             ).fetchone()
         else:
             source_id = a.source_id
         tail = hashlib.sha256((window + chunk[-TAIL_BYTES:])[-TAIL_BYTES:]).digest()
         self._db.execute(
             "INSERT INTO segment (source_id, byte_start, byte_end, tail, zstd, archived_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (source_id, cursor, cursor + len(chunk), tail, zstd.compress(chunk), now),
+            (source_id, cursor, cursor + len(chunk), tail, zstd.compress(chunk), archived_at),
         )
         self._project(source_id, _records([(cursor, chunk)], not window or window.endswith(b"\n")))
         return _Delta(len(chunk), chunk.count(b"\n") + (not chunk.endswith(b"\n")), generation > 0 and cursor == 0)
@@ -859,8 +876,10 @@ class Archive:
         ):
             yield start, zstd.decompress(blob)
 
-    def _session_rows(self, filters: Filters, limit: int | None, prefix: str | None = None) -> list[tuple]:
-        return self._db.execute(
+    def _session_rows(self, filters: Filters, limit: int | None, prefix: str | None = None) -> list[sqlite3.Row]:
+        cursor = self._db.cursor()
+        cursor.row_factory = sqlite3.Row
+        return cursor.execute(
             _SESSIONS_SQL,
             {
                 "prompt": Kind.PROMPT.value,
@@ -873,14 +892,23 @@ class Archive:
             },
         ).fetchall()
 
-    def _summary(self, row: tuple) -> SessionSummary:
-        sid, cwd, custom, desktop_body, ai, first_prompt, first_ts, last_ts, prompts, subagents, path = row
-        desktop = desktop_session(desktop_body) if desktop_body else None
-        title = custom or (desktop and desktop.title) or ai
-        if title is None and first_prompt is not None:
-            entry = self._db.execute("SELECT source_id, line_off, block FROM entry WHERE id = ?", (first_prompt,))
+    def _summary(self, row: sqlite3.Row) -> SessionSummary:
+        desktop = desktop_session(row["desktop"]) if row["desktop"] else None
+        title = row["custom_title"] or (desktop and desktop.title) or row["ai_title"]
+        if title is None and row["first_prompt"] is not None:
+            entry = self._db.execute("SELECT source_id, line_off, block FROM entry WHERE id = ?", (row["first_prompt"],))
             title = " ".join(self._entry_text(*entry.fetchone()).split())[:200]
-        return SessionSummary(sid, cwd, title, first_ts, last_ts, prompts, subagents, Path(path), os.path.exists(path))
+        return SessionSummary(
+            id=row["session_id"],
+            cwd=row["cwd"],
+            title=title,
+            first_ts=row["first_ts"],
+            last_ts=row["last_ts"],
+            prompts=row["prompts"],
+            subagents=row["subagents"],
+            transcript=Path(row["path"]),
+            on_disk=os.path.exists(row["path"]),
+        )
 
     def _entry_text(self, source_id: int, line_off: int, block: int) -> str:
         return text_of(parse(self._line_at(source_id, line_off)), block)
@@ -922,7 +950,7 @@ class Archive:
         rows = self._db.execute("SELECT path, size, mtime_ns, sha256 FROM doc")
         known = {path: (size, mtime_ns, sha) for path, size, mtime_ns, sha in rows}
         changed, restat, errors = [], [], []
-        now = _now()
+        archived_at = now()
         for d in docs:
             stored = known.get(str(d.path))
             try:
@@ -942,7 +970,9 @@ class Archive:
             session_id = d.session_id
             if d.role is DocRole.DESKTOP and (desktop := desktop_session(body)) is not None:
                 session_id = desktop.cli_session_id
-            changed.append((str(d.path), d.role.value, session_id, d.agent_id, sha, body, st.st_size, st.st_mtime_ns, now))
+            changed.append(
+                (str(d.path), d.role.value, session_id, d.agent_id, sha, body, st.st_size, st.st_mtime_ns, archived_at)
+            )
         if not changed and not restat:
             return 0, errors
         with self._write(wait=wait):

@@ -273,9 +273,8 @@ def test_status_exits_1_when_the_sweeper_is_not_loaded(capsys, launchctl):
 
 def test_status_exits_1_when_the_last_sweep_is_older_than_two_intervals(capsys, monkeypatch):
     run(capsys, "install")
-    later = cli._now_ms() + 2 * 3600 * 1000 + 60_000
-    monkeypatch.setattr(cli, "_now_ms", lambda: later)
-    monkeypatch.setattr("claudinator.archive._now", lambda: later)
+    later = archive_module.now() + 2 * 3600 * 1000 + 60_000
+    monkeypatch.setattr(archive_module, "now", lambda: later)
     code, out, _ = run(capsys, "status")
     assert (code, "last sweep 2 h ago" in out) == (1, True)
 
