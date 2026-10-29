@@ -29,10 +29,6 @@ from claudinator.archive import (
 from claudinator.layout import Config
 from claudinator.record import AgentId, Kind, Millis, cleanup_period_days
 
-READ_COMMANDS = frozenset({"search", "sessions", "show", "resume", "export", "status"})
-"""Commands that sweep with wait=False before answering, so results include
-the turn that just finished in another terminal without any hook."""
-
 _NOTE_ARCHIVED_BYTES = 4 << 20
 
 
@@ -47,9 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.from_env()
     try:
         with Archive.open(cfg) as archive:
-            if args.command in READ_COMMANDS:
+            if args.sweep_first:
                 _note(archive.sweep(wait=False))
-            code = HANDLERS[args.command](archive, args)
+            code = args.run(archive, args)
             sys.stdout.flush()
             return code
     except BrokenPipeError:
@@ -278,19 +274,6 @@ def cmd_rebuild(archive: Archive, args: argparse.Namespace) -> int:
     return 0
 
 
-HANDLERS: dict[str, Callable[[Archive, argparse.Namespace], int]] = {
-    "search": cmd_search,
-    "sessions": cmd_sessions,
-    "show": cmd_show,
-    "resume": cmd_resume,
-    "export": cmd_export,
-    "status": cmd_status,
-    "install": cmd_install,
-    "uninstall": cmd_uninstall,
-    "sweep": cmd_sweep,
-    "rebuild": cmd_rebuild,
-}
-
 
 def _parser(now: Millis) -> argparse.ArgumentParser:
     def checked(parse: Callable[[str], object]) -> Callable[[str], object]:
@@ -314,32 +297,42 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
+    def command(
+        name: str, run: Callable[[Archive, argparse.Namespace], int], about: str, *, sweep_first: bool = False
+    ) -> argparse.ArgumentParser:
+        """sweep_first: a read command archives new bytes with wait=False
+        before it answers, so it sees the turn that just finished in another
+        terminal without any hook."""
+        p = sub.add_parser(name, help=about)
+        p.set_defaults(run=run, sweep_first=sweep_first)
+        return p
+
     def window(p: argparse.ArgumentParser, limit: int) -> None:
         p.add_argument("--project", metavar="P", help="part of the session's directory")
         p.add_argument("--since", type=when, metavar="WHEN", help="2026-10-01, 2026-10-01T14:00, 7d, or 12h")
         p.add_argument("--until", type=when, metavar="WHEN")
         p.add_argument("--limit", type=checked(positive), default=limit, metavar="N")
 
-    p = sub.add_parser("search", help="find sessions where every word appears")
+    p = command("search", cmd_search, "find sessions where every word appears", sweep_first=True)
     p.add_argument("words", nargs="+", metavar="WORDS", help='"a phrase" in quotes, deploy* for a prefix')
     p.add_argument("--tools", action="store_true", help="also search tool calls and tool output")
     window(p, 20)
-    window(sub.add_parser("sessions", help="list sessions by last activity"), 30)
-    p = sub.add_parser("show", help="print a conversation from the archive")
+    window(command("sessions", cmd_sessions, "list sessions by last activity", sweep_first=True), 30)
+    p = command("show", cmd_show, "print a conversation from the archive", sweep_first=True)
     p.add_argument("id", type=ref, metavar="ID")
     p.add_argument("--agent", type=ref, metavar="AID", help="print one subagent's transcript")
     p.add_argument("--full", action="store_true", help="print tool output in full")
-    p = sub.add_parser("resume", help="run claude --resume, restoring a deleted transcript first")
+    p = command("resume", cmd_resume, "run claude --resume, restoring a deleted transcript first", sweep_first=True)
     p.add_argument("id", type=ref, metavar="ID")
-    p = sub.add_parser("export", help="write the archived transcript byte for byte")
+    p = command("export", cmd_export, "write the archived transcript byte for byte", sweep_first=True)
     p.add_argument("id", type=ref, metavar="ID")
     p.add_argument("--agent", type=ref, metavar="AID")
     p.add_argument("--generation", type=int, metavar="N", help="an earlier generation of a rewritten file")
-    sub.add_parser("status", help="archive size, coverage, and sweeper health")
-    sub.add_parser("sweep", help="archive new bytes now")
-    sub.add_parser("rebuild", help="re-derive the search index from the archive")
-    sub.add_parser("install", help="load the hourly sweeper and archive everything on disk")
-    sub.add_parser("uninstall", help="unload the sweeper; the database stays")
+    command("status", cmd_status, "archive size, coverage, and sweeper health", sweep_first=True)
+    command("sweep", cmd_sweep, "archive new bytes now")
+    command("rebuild", cmd_rebuild, "re-derive the search index from the archive")
+    command("install", cmd_install, "load the hourly sweeper and archive everything on disk")
+    command("uninstall", cmd_uninstall, "unload the sweeper; the database stays")
     return parser
 
 
