@@ -203,6 +203,13 @@ def desktop_session(body: str) -> DesktopSession | None:
     return DesktopSession(SessionId(sid), _str(obj.get("title"))) if sid else None
 
 
+def cleanup_period_days(settings: str) -> int | None:
+    """<claude>/settings.json -> how many days Claude Code keeps a transcript
+    after its last write, when the user set it."""
+    days = _json_object(settings).get("cleanupPeriodDays")
+    return days if isinstance(days, int) and not isinstance(days, bool) else None
+
+
 def _typed_by_a_person(obj: dict) -> bool:
     origin = obj.get("origin")
     kind = origin.get("kind") if isinstance(origin, dict) else None
