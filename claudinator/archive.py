@@ -117,13 +117,15 @@ def _records(segments: Iterable[tuple[int, bytes]], after_newline: bool = True) 
     """Every line of consecutive segments as (file offset, Record).
 
     A segment that follows one without a trailing newline starts with the
-    torn continuation of a settled tail. That line is Unparsed whatever its
-    bytes say, because a later writer may have glued a whole record onto the
-    torn bytes. Ingest and rebuild both read lines through here, so they
+    continuation of a settled tail: the rest of the line the tail began,
+    which a restarted writer may have glued a whole record onto. It yields
+    no record. The tail already stands for that line, as one Unparsed when
+    it was torn. Ingest and rebuild both read lines through here, so they
     agree on every line."""
     for start, chunk in segments:
         for off, line in lines(chunk, start):
-            yield off, parse(line) if after_newline or off != start else Unparsed()
+            if after_newline or off != start:
+                yield off, parse(line)
         after_newline = chunk.endswith(b"\n")
 
 

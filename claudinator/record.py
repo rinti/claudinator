@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NewType
 
-PROJECTION_VERSION = 3
+PROJECTION_VERSION = 4
 """Bump when parse() or project() would produce different rows for the same
 bytes. An edit to the projection section of schema.sql needs no bump: meta
 keeps a digest of that DDL, and open() rebuilds when it differs.
@@ -87,8 +87,8 @@ class Other:
 
 @dataclass(frozen=True, slots=True)
 class Unparsed:
-    """Not a JSON object: a torn line from a crash, a settled partial tail, or
-    the continuation that a later append glued onto that tail."""
+    """Not a JSON object: a torn line from a crash, or a settled partial
+    tail."""
 
 
 Record = Turn | Title | Other | Unparsed

@@ -71,7 +71,7 @@ def test_partial_last_line_waits_until_completed():
         assert found(archive, "zebracorn") == 1
 
 
-def test_settled_tail_is_archived_and_a_glued_continuation_is_unparsed():
+def test_settled_tail_is_archived_and_a_glued_continuation_is_part_of_its_unparsed_line():
     path = transcript()
     append(path, user("before the crash"), user("torn by a crash")[:30])
     settle(path)
@@ -83,7 +83,7 @@ def test_settled_tail_is_archived_and_a_glued_continuation_is_unparsed():
         append(path, user("glued onto the torn bytes"), user("after the restart"))
         archive.sweep()
         assert exported(archive) == path.read_bytes()
-        assert archive.status().unparsed_lines == 2
+        assert archive.status().unparsed_lines == 1
         assert found(archive, "glued") == 0
         assert found(archive, "restart") == 1
 
