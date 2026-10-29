@@ -287,14 +287,15 @@ def test_a_title_entry_carries_the_title_lines_own_timestamp():
     append(
         transcript(),
         user("start", ts="2026-10-01T10:00:00.000Z"),
-        line({"type": "ai-title", "aiTitle": "Zebracorn hunt", "timestamp": "2026-10-20T10:00:00.000Z"}),
         ai_title("Quokka hunt"),
+        line({"type": "ai-title", "aiTitle": "Zebracorn hunt", "timestamp": "2026-10-20T10:00:00.000Z"}),
     )
     with open_archive() as archive:
         archive.sweep()
         late = Filters(since=OCT_1 + 10 * 86_400_000)
         assert matching(archive, "zebracorn", filters=late) == [SID]
         assert matching(archive, "quokka", filters=Filters(until=OCT_1 + 86_400_000)) == [SID]
+        assert archive.sessions()[0].last_ts == OCT_1 + 19 * 86_400_000 + 10 * 3_600_000
 
 
 def test_project_filter_ignores_case_beyond_ascii():

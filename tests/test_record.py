@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -339,3 +340,15 @@ def test_a_title_entry_takes_its_own_timestamp_and_falls_back_to_the_last_activi
     assert with_ts == Title("Mine", custom=True, ts=1790848800000)
     assert project(Facts(last_ts=5), with_ts)[1] == [EntryDraft(0, Kind.TITLE, 1790848800000)]
     assert project(Facts(last_ts=5), Title("Other", custom=False))[1] == [EntryDraft(0, Kind.TITLE, 5)]
+
+
+def test_a_dated_title_line_widens_the_transcripts_activity_like_any_dated_line():
+    ten = 1790848800000
+    custom = parse(b'{"type":"custom-title","customTitle":"Mine","timestamp":"2026-10-01T10:00:00.000Z"}')
+    ai = parse(b'{"type":"ai-title","aiTitle":"Later","timestamp":"2026-10-01T11:00:00.000Z"}')
+    facts, _ = project(Facts(first_ts=ten + 5000, last_ts=ten + 5000), custom)
+    assert (facts.first_ts, facts.last_ts, facts.custom_title) == (ten, ten + 5000, "Mine")
+    facts, _ = project(facts, ai)
+    assert (facts.first_ts, facts.last_ts, facts.ai_title) == (ten, ten + 3_600_000, "Later")
+    again = parse(b'{"type":"ai-title","aiTitle":"Later","timestamp":"2026-10-01T12:00:00.000Z"}')
+    assert project(facts, again) == (replace(facts, last_ts=ten + 7_200_000), [])

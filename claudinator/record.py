@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NewType
 
-PROJECTION_VERSION = 6
+PROJECTION_VERSION = 7
 """Bump when parse() or project() would produce different rows for the same
 bytes, or when the projection section of schema.sql changes. open() compares
 this number only, so two builds that share it never rebuild over each other.
@@ -158,12 +158,14 @@ def project(facts: Facts, record: Record) -> tuple[Facts, list[EntryDraft]]:
             return _observe(facts, ts, cwd), drafts
         case Title(text, custom=True, ts=ts):
             if text == facts.custom_title:
-                return facts, []
-            return replace(facts, custom_title=text), [EntryDraft(0, Kind.TITLE, _or(ts, facts.last_ts))]
+                return _observe(facts, ts, None), []
+            entry = EntryDraft(0, Kind.TITLE, _or(ts, facts.last_ts))
+            return replace(_observe(facts, ts, None), custom_title=text), [entry]
         case Title(text, custom=False, ts=ts):
             if text == facts.ai_title:
-                return facts, []
-            return replace(facts, ai_title=text), [EntryDraft(0, Kind.TITLE, _or(ts, facts.last_ts))]
+                return _observe(facts, ts, None), []
+            entry = EntryDraft(0, Kind.TITLE, _or(ts, facts.last_ts))
+            return replace(_observe(facts, ts, None), ai_title=text), [entry]
 
 
 def text_of(record: Record, block: int) -> str:

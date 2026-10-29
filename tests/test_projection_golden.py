@@ -12,11 +12,11 @@ from helpers import projection_dump
 CORPUS = Path(__file__).parent / "fixtures" / "corpus"
 
 GOLDEN = {
-    6: "6f14f11974a85ce9aea3ecccadaabc51287a00690227347cce75b19bf3743cb2",
+    7: "6f14f11974a85ce9aea3ecccadaabc51287a00690227347cce75b19bf3743cb2",
 }
 
 GOLDEN_DDL = {
-    6: "a03aed599c71ce8cccce523155aee0c76c7eff32f40a8e9049a3aa4660d14c19",
+    7: "a03aed599c71ce8cccce523155aee0c76c7eff32f40a8e9049a3aa4660d14c19",
 }
 
 
