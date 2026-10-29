@@ -132,7 +132,7 @@ archive.export(session.summary.id, sys.stdout.buffer)   # the bytes Claude Code 
 
 ### The archive is the file's bytes
 
-One SQLite file holds two layers. The archive layer is append-only and is migrated in place, never dropped. The projection layer is a pure function of the archive and is dropped and rebuilt when its version changes. The `-- @projection` marker in `schema.sql` separates them.
+One SQLite file holds two layers. The archive layer is append-only and is migrated in place, never dropped. The projection layer is a pure function of the archive and is dropped and rebuilt when its version changes. The `-- @projection` marker in `claudinator/schema.sql` separates them.
 
 The archive layer has four tables.
 
@@ -304,4 +304,4 @@ Implement `chunk_lines`, `lines`, `Archive.open`, and `Archive._ingest` against 
 - Indexable text. Tool output 130.7 MB, tool calls 30.2 MB, prompts 3.9 MB, replies 3.2 MB, thinking 0.2 MB, attachments 72.0 MB (not indexed).
 - Duplicate uuids. 153 uuids appear in more than one file, and all 249 extra copies differ from the first.
 - Discovery walk with stat. 1,545 files in 96 ms.
-- Concurrent ingest prototype (`proto/concurrent_ingest.py`, the `_ingest` transaction without projection). Four sweeper processes ran against one writer that split every line into two writes, for 3 s. The writer produced 2,290 lines and 22.4 MB. The archive matched the file byte for byte. The bytes archived by the four sweepers summed to the file size exactly, so nothing was archived twice, and no transaction hit an integrity error. A replayed segment insert was rejected by the contiguity trigger. Rerun it with `python3 -I -B proto/concurrent_ingest.py schema.sql`. It writes `p.db` and `t.jsonl` next to itself.
+- Concurrent ingest prototype (`proto/concurrent_ingest.py`, the `_ingest` transaction without projection). Four sweeper processes ran against one writer that split every line into two writes, for 3 s. The writer produced 2,290 lines and 22.4 MB. The archive matched the file byte for byte. The bytes archived by the four sweepers summed to the file size exactly, so nothing was archived twice, and no transaction hit an integrity error. A replayed segment insert was rejected by the contiguity trigger. Rerun it from `design/` with `python3 -I -B proto/concurrent_ingest.py ../claudinator/schema.sql`. It writes `p.db` and `t.jsonl` next to itself.
