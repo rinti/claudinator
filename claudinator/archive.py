@@ -785,30 +785,32 @@ class Archive:
         """Fold records into the projection. Shared by _ingest and rebuild;
         must run inside a write transaction.
 
-        Total: a record whose projection raises, or yields a str SQLite
-        cannot store, counts as unparsed. The projection is disposable and
-        must never keep a segment from committing."""
+        Total: each record's rows go in under a savepoint, and a record whose
+        fold or rows fail for any reason is rolled back to it and counts as
+        one unparsed line. The projection is disposable and must never keep
+        a segment from committing."""
         row = self._db.execute(
             "SELECT cwd, first_ts, last_ts, ai_title, custom_title, unparsed FROM transcript WHERE source_id = ?",
             (source_id,),
         ).fetchone()
         facts = Facts(*row) if row else Facts()
         for off, rec in records:
+            self._db.execute("SAVEPOINT record")
             try:
                 folded, drafts = project(facts, rec)
-                rows = [(d, text_of(rec, d.block)) for d in drafts]
-                for text in (folded.cwd, folded.ai_title, folded.custom_title, *(text for _, text in rows)):
-                    if text is not None:
-                        text.encode()
+                for d in drafts:
+                    (entry_id,) = self._db.execute(
+                        "INSERT INTO entry (source_id, line_off, block, kind, ts) VALUES (?, ?, ?, ?, ?) RETURNING id",
+                        (source_id, off, d.block, d.kind.value, d.ts),
+                    ).fetchone()
+                    self._db.execute("INSERT INTO entry_fts (rowid, text) VALUES (?, ?)", (entry_id, text_of(rec, d.block)))
             except Exception:
-                folded, rows = project(facts, Unparsed())
+                if not self._db.in_transaction:  # SQLite rolled the whole transaction back (disk full, I/O)
+                    raise
+                self._db.execute("ROLLBACK TO record")
+                folded, _ = project(facts, Unparsed())
+            self._db.execute("RELEASE record")
             facts = folded
-            for d, text in rows:
-                (entry_id,) = self._db.execute(
-                    "INSERT INTO entry (source_id, line_off, block, kind, ts) VALUES (?, ?, ?, ?, ?) RETURNING id",
-                    (source_id, off, d.block, d.kind.value, d.ts),
-                ).fetchone()
-                self._db.execute("INSERT INTO entry_fts (rowid, text) VALUES (?, ?)", (entry_id, text))
         self._db.execute(
             "INSERT INTO transcript (source_id, cwd, first_ts, last_ts, ai_title, custom_title, unparsed)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)"

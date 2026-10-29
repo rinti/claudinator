@@ -316,23 +316,20 @@ def test_a_record_the_projection_cannot_handle_is_unparsed_and_its_bytes_still_a
         assert [found(archive, word) for word in ("before", "poison", "quokka")] == [1, 0, 1]
 
 
-def test_a_projected_string_sqlite_cannot_store_makes_its_record_unparsed(monkeypatch):
-    real_parse = record_module.parse
-
-    def parse(line):
-        record = real_parse(line)
-        if isinstance(record, Turn) and record.blocks[0][1].text == "poison":
-            return Turn(record.ts, record.cwd, ((0, Block(Kind.PROMPT, "\ud800")),))
-        return record
-
-    monkeypatch.setattr("claudinator.archive.parse", parse)
+def test_a_record_sqlite_refuses_to_project_is_unparsed_and_its_neighbours_still_project():
     path = transcript()
-    append(path, user("poison"), user("after quokka"))
+    two_blocks = assistant({"type": "text", "text": "zebracorn"}, {"type": "text", "text": "refused block"})
+    append(path, user("before quokka"), two_blocks, user("after wombat"))
     with open_archive() as archive:
+        archive._db.execute(
+            "CREATE TEMP TRIGGER refuse_second_blocks BEFORE INSERT ON entry WHEN NEW.block = 1"
+            " BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END"
+        )
         assert archive.sweep().errors == ()
+        archive._db.execute("DROP TRIGGER refuse_second_blocks")
         assert exported(archive) == path.read_bytes()
         assert archive.status().unparsed_lines == 1
-        assert found(archive, "quokka") == 1
+        assert [found(archive, word) for word in ("quokka", "zebracorn", "refused", "wombat")] == [1, 0, 0, 1]
 
 
 def test_an_unexpected_error_in_one_file_is_reported_and_the_sweep_goes_on(monkeypatch):
@@ -357,11 +354,12 @@ def test_an_unexpected_error_in_one_file_is_reported_and_the_sweep_goes_on(monke
         assert archive.status().last_sweep.errors == report.errors
 
 
-def test_a_transaction_that_sqlite_rolls_back_itself_reports_its_own_error():
+@pytest.mark.parametrize("table", ["segment", "entry"])
+def test_a_transaction_that_sqlite_rolls_back_itself_reports_its_own_error(table):
     append(transcript(), user("rolled back"))
     with open_archive() as archive:
         archive._db.execute(
-            "CREATE TEMP TRIGGER as_if_the_disk_were_full BEFORE INSERT ON segment"
+            f"CREATE TEMP TRIGGER as_if_the_disk_were_full BEFORE INSERT ON {table}"
             " BEGIN SELECT RAISE(ROLLBACK, 'database or disk is full'); END"
         )
         report = archive.sweep(wait=False)
