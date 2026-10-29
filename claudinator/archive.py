@@ -618,27 +618,26 @@ class Archive:
         if not terms:
             raise EmptyQuery("nothing to search for: every word lacks a letter or a digit")
         kinds = CONVERSATION | (TOOLS if q.tools else frozenset())
-        rows = self._db.cursor()
-        rows.row_factory = sqlite3.Row
-        rows.execute(
+        cursor = self._db.cursor()
+        cursor.row_factory = sqlite3.Row
+        rows = cursor.execute(
             _SEARCH_SQL,
             {
                 "exprs": json.dumps([fts_expr(term) for term in terms]),
                 "kinds": json.dumps(sorted(kinds)),
                 "since": q.filters.since,
                 "until": q.filters.until,
+                "project": q.filters.project,
+                "limit": q.limit,
             },
-        )
-        sessions = {row["session_id"]: row for row in self._session_rows(Filters(project=q.filters.project), None)}
+        ).fetchall()
+        ids = json.dumps([row["session_id"] for row in rows])
+        sessions = {row["session_id"]: self._summary(row) for row in self._session_rows(Filters(), None, ids=ids)}
         hits = []
         for row in rows:
-            if row["session_id"] not in sessions:
-                continue
             text, marks = excerpt(self._entry_text(row["source_id"], row["line_off"], row["block"]), terms)
             best = Excerpt(Kind(row["kind"]), row["ts"], row["agent_id"], text, marks)
-            hits.append(SessionHit(self._summary(sessions[row["session_id"]]), row["hits"], best))
-            if len(hits) == q.limit:
-                break
+            hits.append(SessionHit(sessions[row["session_id"]], row["hits"], best))
         return hits
 
     def sessions(self, filters: Filters = Filters(), limit: int | None = 30) -> list[SessionSummary]:
@@ -889,7 +888,11 @@ class Archive:
         ):
             yield start, zstd.decompress(blob)
 
-    def _session_rows(self, filters: Filters, limit: int | None, prefix: str | None = None) -> list[sqlite3.Row]:
+    def _session_rows(
+        self, filters: Filters, limit: int | None, prefix: str | None = None, ids: str | None = None
+    ) -> list[sqlite3.Row]:
+        """The rows of _SESSIONS_SQL. ids, a JSON list of session ids, keeps
+        only those sessions."""
         cursor = self._db.cursor()
         cursor.row_factory = sqlite3.Row
         return cursor.execute(
@@ -901,6 +904,7 @@ class Archive:
                 "since": filters.since,
                 "until": filters.until,
                 "prefix": prefix,
+                "ids": ids,
                 "limit": -1 if limit is None else limit,
             },
         ).fetchall()
@@ -1107,6 +1111,7 @@ SELECT m.session_id, t.cwd, t.custom_title,
    AND (:since IS NULL OR span.last_ts >= :since)
    AND (:until IS NULL OR span.first_ts < :until)
    AND (:prefix IS NULL OR m.session_id GLOB :prefix || '*')
+   AND (:ids IS NULL OR m.session_id IN (SELECT value FROM json_each(:ids)))
  ORDER BY span.last_ts DESC, m.session_id
  LIMIT :limit
 """
@@ -1129,19 +1134,31 @@ matched AS (
    GROUP BY session_id
   HAVING COUNT(DISTINCT term) = (SELECT COUNT(*) FROM term)
 ),
+main AS (
+  SELECT MAX(id) AS id, session_id FROM source WHERE agent_id IS NULL GROUP BY session_id
+),
+kept AS (
+  SELECT m.session_id, m.score, m.hits
+    FROM matched m
+    JOIN main ON main.session_id = m.session_id
+    JOIN transcript t ON t.source_id = main.id
+   WHERE :project IS NULL OR instr(casefold(t.cwd), casefold(:project)) > 0
+   ORDER BY m.score, m.session_id
+   LIMIT :limit
+),
 best AS (
   SELECT session_id, entry_id,
          ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY COUNT(DISTINCT term) DESC, SUM(rank), entry_id) AS place
     FROM hit
-   WHERE session_id IN (SELECT session_id FROM matched)
+   WHERE session_id IN (SELECT session_id FROM kept)
    GROUP BY session_id, entry_id
 )
-SELECT m.session_id, m.hits, e.source_id, e.line_off, e.block, e.kind, e.ts, s.agent_id
-  FROM matched m
-  JOIN best b ON b.session_id = m.session_id AND b.place = 1
+SELECT k.session_id, k.hits, e.source_id, e.line_off, e.block, e.kind, e.ts, s.agent_id
+  FROM kept k
+  JOIN best b ON b.session_id = k.session_id AND b.place = 1
   JOIN entry e ON e.id = b.entry_id
   JOIN source s ON s.id = e.source_id
- ORDER BY m.score, m.session_id
+ ORDER BY k.score, k.session_id
 """
 
 
