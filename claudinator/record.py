@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import enum
 import json
+import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NewType
@@ -116,7 +117,8 @@ def parse(line: bytes) -> Record:
 
     It never raises. Anything it does not recognise becomes Other or
     Unparsed, and the raw bytes stay in the archive for a later
-    PROJECTION_VERSION to reinterpret."""
+    PROJECTION_VERSION to reinterpret. Every str it returns is valid UTF-8
+    text that SQLite can store (see _text)."""
     try:
         obj = json.loads(line)
     except ValueError, RecursionError:
@@ -220,7 +222,7 @@ def _typed_by_a_person(obj: dict) -> bool:
 def _turn(message: object, text_kind: Kind, ts: Millis | None, cwd: str | None) -> Turn | Other:
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
-        blocks = ((0, Block(text_kind, content)),)
+        blocks = ((0, Block(text_kind, _text(content))),)
     elif isinstance(content, list):
         blocks = tuple((i, b) for i, raw in enumerate(content) if (b := _block(raw, text_kind)) is not None)
     else:
@@ -233,19 +235,19 @@ def _block(raw: object, text_kind: Kind) -> Block | None:
         return None
     match raw.get("type"):
         case "text" if isinstance(raw.get("text"), str):
-            return Block(text_kind, raw["text"])
+            return Block(text_kind, _text(raw["text"]))
         case "tool_use":
             name = _str(raw.get("name")) or "?"
-            args = json.dumps(raw.get("input"), ensure_ascii=False, separators=(",", ":"))
+            args = _text(json.dumps(raw.get("input"), ensure_ascii=False, separators=(",", ":")))
             return Block(Kind.TOOL_CALL, f"{name} {args}", tool=name, tool_use_id=_str(raw.get("id")))
         case "tool_result":
-            return Block(Kind.TOOL_OUTPUT, _result_text(raw.get("content")))
+            return Block(Kind.TOOL_OUTPUT, _text(_result_text(raw.get("content"))))
         case _:
             return None
 
 
 def _title(value: object, custom: bool) -> Title | None:
-    return Title(value, custom) if isinstance(value, str) and value.strip() else None
+    return Title(_text(value), custom) if isinstance(value, str) and value.strip() else None
 
 
 def _observe(facts: Facts, ts: Millis | None, cwd: str | None) -> Facts:
@@ -294,7 +296,21 @@ def _result_text(content: object) -> str:
 
 
 def _str(value: object) -> str | None:
-    return value if isinstance(value, str) else None
+    return _text(value) if isinstance(value, str) else None
+
+
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _text(value: str) -> str:
+    """value with every lone surrogate replaced by U+FFFD. json.loads turns
+    an escape such as "\\ud800" with no partner into a str that is not valid
+    Unicode, and SQLite cannot store it."""
+    try:
+        value.encode()
+    except UnicodeEncodeError:
+        return _SURROGATE.sub("\ufffd", value)
+    return value
 
 
 def _json_object(body: str) -> dict:

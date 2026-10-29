@@ -286,3 +286,27 @@ def test_desktop_session_names_the_cli_session_and_title():
     assert (desktop.cli_session_id, desktop.title) == ("af2a2ef6-b9c1-442c-a2a6-25c22f620c42", "Alpha channel installation")
     assert desktop_session('{"title":"no cli session yet"}') is None
     assert desktop_session("not json") is None
+
+
+def test_parse_replaces_lone_surrogates_in_every_string_it_returns():
+    turn = parse(
+        rb'{"type":"assistant","cwd":"/d\udfff","message":{"content":['
+        rb'{"type":"text","text":"a\ud800b"},'
+        rb'{"type":"tool_use","id":"toolu_\ud801","name":"B\udc00","input":{"command":"x\ud802"}}]}}'
+    )
+    assert turn == Turn(
+        None,
+        "/d�",
+        (
+            (0, Block(Kind.REPLY, "a�b")),
+            (1, Block(Kind.TOOL_CALL, 'B� {"command":"x�"}', tool="B�", tool_use_id="toolu_�")),
+        ),
+    )
+    assert parse(rb'{"type":"user","message":{"content":"\ud83d"}}') == Turn(None, None, ((0, prompt("�")),))
+    assert parse(
+        rb'{"type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"\udbff"}]}]}}'
+    ) == Turn(None, None, ((0, Block(Kind.TOOL_OUTPUT, "�")),))
+    assert parse(rb'{"type":"ai-title","aiTitle":"t\ud800"}') == Title("t�", custom=False)
+    assert subagent_meta(r'{"description":"d\ud800"}').description == "d�"
+    assert desktop_session(r'{"cliSessionId":"s","title":"t\udc00"}').title == "t�"
+    assert parse("😀".encode()) == Unparsed()

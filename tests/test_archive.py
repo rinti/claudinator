@@ -16,10 +16,12 @@ from claudinator.archive import (
     TranscriptFile,
     classify,
 )
-from claudinator.record import PROJECTION_VERSION
+import claudinator.record as record_module
+from claudinator.record import PROJECTION_VERSION, Block, Kind, Turn
 from helpers import (
     AID,
     SID,
+    SID2,
     SLUG,
     append,
     assistant,
@@ -289,3 +291,51 @@ def test_status_reads_a_last_sweep_report_from_a_newer_claudinator():
     set_meta("last_sweep", json.dumps({"started": 1, "finished": 2, "errors": [], "added_later": 7}))
     with open_archive() as archive:
         assert (archive.status().last_sweep.finished, archive.status().last_sweep.errors) == (2, ())
+
+
+def test_a_line_with_an_escaped_lone_surrogate_is_archived_and_searchable():
+    path = transcript()
+    append(path, b'{"type":"user","message":{"content":"zebracorn \\ud800 here"},"cwd":"/d"}\n', user("next quokka"))
+    append(transcript(SID2), user("another file"))
+    with open_archive() as archive:
+        report = archive.sweep()
+        assert (report.errors, report.transcripts_changed) == ((), 2)
+        assert exported(archive) == path.read_bytes()
+        assert [found(archive, word) for word in ("zebracorn", "quokka")] == [1, 1]
+
+
+def test_a_record_the_projection_cannot_handle_is_unparsed_and_its_bytes_still_archived(monkeypatch):
+    real_project = record_module.project
+
+    def project(facts, record):
+        if isinstance(record, Turn) and "poison" in record.blocks[0][1].text:
+            raise RuntimeError("a projection bug")
+        return real_project(facts, record)
+
+    monkeypatch.setattr("claudinator.archive.project", project)
+    path = transcript()
+    append(path, user("before"), user("poison pill"), user("after quokka"))
+    with open_archive() as archive:
+        assert archive.sweep().errors == ()
+        assert exported(archive) == path.read_bytes()
+        assert archive.status().unparsed_lines == 1
+        assert [found(archive, word) for word in ("before", "poison", "quokka")] == [1, 0, 1]
+
+
+def test_a_projected_string_sqlite_cannot_store_makes_its_record_unparsed(monkeypatch):
+    real_parse = record_module.parse
+
+    def parse(line):
+        record = real_parse(line)
+        if isinstance(record, Turn) and record.blocks[0][1].text == "poison":
+            return Turn(record.ts, record.cwd, ((0, Block(Kind.PROMPT, "\ud800")),))
+        return record
+
+    monkeypatch.setattr("claudinator.archive.parse", parse)
+    path = transcript()
+    append(path, user("poison"), user("after quokka"))
+    with open_archive() as archive:
+        assert archive.sweep().errors == ()
+        assert exported(archive) == path.read_bytes()
+        assert archive.status().unparsed_lines == 1
+        assert found(archive, "quokka") == 1

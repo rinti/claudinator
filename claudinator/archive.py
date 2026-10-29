@@ -775,20 +775,32 @@ class Archive:
 
     def _project(self, source_id: int, records: Iterable[tuple[int, Record]]) -> None:
         """Fold records into the projection. Shared by _ingest and rebuild;
-        must run inside a write transaction."""
+        must run inside a write transaction.
+
+        Total: a record whose projection raises, or yields a str SQLite
+        cannot store, counts as unparsed. The projection is disposable and
+        must never keep a segment from committing."""
         row = self._db.execute(
             "SELECT cwd, first_ts, last_ts, ai_title, custom_title, unparsed FROM transcript WHERE source_id = ?",
             (source_id,),
         ).fetchone()
         facts = Facts(*row) if row else Facts()
         for off, rec in records:
-            facts, drafts = project(facts, rec)
-            for d in drafts:
+            try:
+                folded, drafts = project(facts, rec)
+                rows = [(d, text_of(rec, d.block)) for d in drafts]
+                for text in (folded.cwd, folded.ai_title, folded.custom_title, *(text for _, text in rows)):
+                    if text is not None:
+                        text.encode()
+            except Exception:
+                folded, rows = project(facts, Unparsed())
+            facts = folded
+            for d, text in rows:
                 (entry_id,) = self._db.execute(
                     "INSERT INTO entry (source_id, line_off, block, kind, ts) VALUES (?, ?, ?, ?, ?) RETURNING id",
                     (source_id, off, d.block, d.kind.value, d.ts),
                 ).fetchone()
-                self._db.execute("INSERT INTO entry_fts (rowid, text) VALUES (?, ?)", (entry_id, text_of(rec, d.block)))
+                self._db.execute("INSERT INTO entry_fts (rowid, text) VALUES (?, ?)", (entry_id, text))
         self._db.execute(
             "INSERT INTO transcript (source_id, cwd, first_ts, last_ts, ai_title, custom_title, unparsed)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)"
