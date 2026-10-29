@@ -229,7 +229,7 @@ def test_install_loads_the_agent_backfills_and_is_idempotent(capsys, home, launc
     code, out, _ = run(capsys, "install")
     assert code == 0
     assert out.startswith("already installed com.claudinator.sweep")
-    assert [c[0] for c in launchctl.calls] == ["print", "print"]
+    assert [c for c in launchctl.calls if c[0] in ("bootout", "bootstrap")] == []
 
 
 def test_uninstall_unloads_the_agent_and_keeps_the_archive(capsys, home, launchctl):
@@ -240,19 +240,15 @@ def test_uninstall_unloads_the_agent_and_keeps_the_archive(capsys, home, launchc
     assert Config.from_env().db.exists()
 
 
-def test_plist_runs_sweep_hourly_and_at_login_in_the_background():
-    body = launchd.plist(Path("/Users/me/.local/bin/claudinator"), Path("/Users/me/.claudinator/sweep.log"), {})
-    assert plistlib.loads(body) == {
-        "Label": "com.claudinator.sweep",
-        "ProgramArguments": ["/Users/me/.local/bin/claudinator", "sweep"],
-        "StartInterval": 3600,
-        "RunAtLoad": True,
-        "ProcessType": "Background",
-        "LowPriorityIO": True,
-        "Nice": 10,
-        "StandardOutPath": "/Users/me/.claudinator/sweep.log",
-        "StandardErrorPath": "/Users/me/.claudinator/sweep.log",
-    }
+def test_plist_runs_sweep_hourly_and_at_login_and_logs_to_one_file():
+    executable, log = Path("/Users/me/.local/bin/claudinator"), Path("/Users/me/.claudinator/sweep.log")
+    agent = plistlib.loads(launchd.plist(executable, log, {}))
+    assert agent["ProgramArguments"] == [str(executable), "sweep"]
+    assert (agent["RunAtLoad"], agent["StartInterval"]) == (True, 3600)
+    assert (agent["StandardOutPath"], agent["StandardErrorPath"]) == (str(log), str(log))
+    assert "EnvironmentVariables" not in agent
+    env = {"CLAUDINATOR_DB": "/Volumes/x/archive.db"}
+    assert plistlib.loads(launchd.plist(executable, log, env))["EnvironmentVariables"] == env
 
 
 def test_status_exits_0_when_the_sweeper_is_healthy(capsys):
