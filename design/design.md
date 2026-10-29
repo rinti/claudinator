@@ -255,7 +255,28 @@ Rejected:
 
 ## Implementation reconciliation
 
-None yet.
+The implementation lives in `claudinator/` and follows `sketch.py`. Each place it differs is listed here with its reason.
+
+- **Side-file fields live in `record.py`.** `subagent_meta()`, `desktop_session()`, and `cleanup_period_days()` read `.meta.json`, the desktop app's `local_*.json`, and `settings.json`. This keeps `record.py` the only code that reads a Claude Code field name. As a result `_SESSIONS_SQL` no longer calls `json_extract(d.body, '$.title')`. It returns the desktop doc body and the first prompt's entry id, and `Archive._summary` applies the title precedence (custom, desktop, latest ai-title, first prompt) in one expression. The first-prompt title has its whitespace collapsed and is cut at 200 characters.
+- **Compaction summaries are not prompts.** `parse` maps a user line with `isCompactSummary` to `Other`. `Kind.PROMPT` means text a person or a parent agent wrote, and a summary is neither. This Mac has 88 such lines.
+- **`_project` takes records, not lines.** `_records(segments, after_newline)` turns segments into `(offset, Record)` pairs and is the one place that forces the first line after a segment without a trailing newline to `Unparsed` (the settled-tail graft). A torn continuation must be `Unparsed` even when its bytes are valid JSON, because a restarted writer can glue a whole record onto the torn bytes. Ingest, rebuild, and `conversation` all read through `_records`. Ingest decides whether the archive ends mid-line by decompressing the last segment, so the decision depends on the archive alone, as it does in rebuild. `_lines(source_id)` became `_segments(source_id)`.
+- **Ingest projects segment by segment.** `_ingest` inserts and projects each segment before compressing the next, instead of building the full chunk list first. A full backfill of this Mac peaked at 246 MB resident instead of 285 MB.
+- **`export` takes a generation.** `Archive.export(..., generation=None)` and `claudinator export --generation N` exist because behavior test 7 needs the old generation of a rewritten file, and the sketch had no way to name one.
+- **Only sweeps that wait for the lock become the last sweep.** Every read command sweeps first with `wait=False`, and `status` is a read command. If those sweeps were recorded, `status` would always see a sweep from a moment ago and could never report a dead sweeper.
+- **`open()` takes no write lock when both versions are current.** It reads `meta` first and runs the archive DDL only on a new, older, or half-initialized database. Otherwise every read command would wait on any sweep in progress, which behavior test 8 forbids.
+- **Docs.** `_store_docs` returns `(changed, errors)`. A desktop doc whose body is not JSON or names no `cliSessionId` is still stored, with `session_id` NULL, because title extraction no longer runs in SQL and cannot fail the listing. A side file that is not UTF-8 text becomes a sweep error. An upsert keeps the newer `mtime` when two sweepers race.
+- **`tool-results/` is not archived.** `classify` returns None for `<slug>/<sid>/tool-results/*`. On this Mac that is 310 files and 60 MB, including 43 PNGs. The `doc` table holds the latest UTF-8 text of small files that Claude Code rewrites in place, and these are neither. See Open questions.
+- **Session listing.** The `main` CTE takes `MAX(id)` per `session_id` among main transcripts, which is the latest generation of the newest path. A session that Claude Code moved between project directories (the `relocated` record type) then lists once. The SQL adds `:prefix` so `session(ref)` resolves prefixes in the same query. `--project` uses `instr(lower(cwd), lower(:project))`, so `_` and `%` in the argument are literal.
+- **`Config.from_env` derives every default from `$HOME`**, the desktop directory included. Tests sandbox all three paths by setting `HOME` and need no extra variable.
+- **launchd.** The module is `launchd.py` as the sketch names it. `install` boots the agent out and in only when the plist changed or the agent is not loaded, so a second `install` changes nothing. `launchctl()` is a module function that the tests replace, and a failed bootstrap raises `LaunchdError`.
+- **Small ones.** `ARCHIVE_SCHEMA` is `1 + len(_MIGRATIONS)`, derived rather than kept in sync. `export` to a terminal exits 2. `search` with no match prints nothing and exits 0.
+
+Measured after implementation (2026-10-29, read-only sweep of this Mac's `~/.claude` into a temporary database):
+
+- First sweep. 692 transcripts in 289 sessions, 1,584 MB archived as 345 MB of zstd segments, a 409 MB database file, 418 side files, 0 unparsed lines, 0 errors, 18.4 s.
+- Projection. 84,035 entries (38,183 tool calls, 37,940 tool outputs, 5,248 replies, 2,464 prompts, 188 titles). `rebuild(force=True)` took 15.5 s and produced rows identical to the incremental ones.
+- A read command, sweep-on-read included, took 0.14 to 0.22 s end to end.
+- Memory. Ingesting the 79 MB transcript alone peaks at 125 MB resident with an 82 MB Python heap, which is the whole new byte range read at once. The full backfill peaked at 246 MB resident.
 
 ## Open questions and risks
 
@@ -264,11 +285,14 @@ None yet.
 - Does `claude --resume <id>` from a terminal find a desktop-app session? Untested.
 - Should search include subagent hits by default? This design says yes, labeled with the agent id.
 - Growth is about 1 GB of transcripts a month at current use, which this design stores as roughly 250 MB a month (estimate from 337 MB archive plus 52 MB index per 1.56 GB). Is about 3 GB a year acceptable?
-- A 15 MB line is in memory a few times during ingest (read buffer, chunk, zstd frame), so peak memory is about 60 MB (estimate). Is that acceptable for a background job?
+- A first backfill reads each file's whole new range at once, so peak memory follows the largest file. Measured 246 MB resident for this Mac's backfill, against the 60 MB estimated above. Steady-state sweeps read per-turn deltas. Is that acceptable for a one-time backfill?
+- `tool-results/` files are not archived (see Implementation reconciliation). After Claude Code's cleanup, a resumed session that references one will not find it. Archiving them needs a binary-safe, compressed home such as a `blob` table.
+- A session with no title falls back to its first prompt, which can be a slash-command wrapper (`<command-message>pstack:poteto-mode</command-message> ...`). Should the fallback strip command tags?
+- The launchd plist runs `claudinator sweep` without `CLAUDINATOR_DB` or `CLAUDE_CONFIG_DIR`. A user who sets either for interactive use gets a sweeper that archives the default paths.
 
 ## Next implementation step
 
-Implement `chunk_lines`, `lines`, `Archive.open`, and `Archive._ingest` against `schema.sql`, driven by the first behavior test. That test appends lines to a temporary transcript between sweeps, including a partial last line, and asserts that `export` returns the file's bytes exactly.
+Implemented in `claudinator/`. Each behavior test below has a test in `tests/` that fails when its behavior breaks.
 
 ---
 
