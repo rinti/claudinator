@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sqlite3
@@ -11,10 +12,13 @@ from claudinator.archive import (
     ArchiveError,
     Config,
     DocRole,
+    TAIL_BYTES,
     NewerArchive,
+    Plan,
     SideFile,
     TranscriptFile,
     classify,
+    plan,
 )
 import claudinator.archive as archive_module
 import claudinator.record as record_module
@@ -413,3 +417,79 @@ def test_status_lists_transcripts_whose_path_matches_no_known_layout():
     with open_archive() as archive:
         archive.sweep()
         assert archive.status().unclassified == (stray,)
+
+
+def test_a_rewrite_to_the_same_size_starts_a_new_generation():
+    path = transcript()
+    append(path, user("first words"), user("last words"))
+    with open_archive() as archive:
+        archive.sweep()
+        original = path.read_bytes()
+        rewritten = original.replace(b"last words", b"LAST WORDS")
+        path.write_bytes(rewritten)
+        assert archive.sweep().new_generations == 1
+        assert exported(archive, generation=0) == original
+        assert exported(archive) == rewritten
+        assert archive.sweep().new_generations == 0
+
+
+def test_a_rewrite_past_the_first_kib_that_grows_the_file_starts_a_new_generation():
+    path = transcript()
+    append(path, *(user(f"message {i} " + "x" * 200) for i in range(20)), user("the old ending"))
+    with open_archive() as archive:
+        archive.sweep()
+        original = path.read_bytes()
+        rewritten = original.replace(b"the old ending", b"a new ending, and longer") + user("more")
+        path.write_bytes(rewritten)
+        assert archive.sweep().new_generations == 1
+        assert exported(archive, generation=0) == original
+        assert exported(archive) == rewritten
+
+
+def test_a_restored_transcript_is_not_a_rewrite():
+    path = transcript()
+    append(path, *(user(f"message {i} " + "x" * 300) for i in range(40)))
+    with open_archive() as archive:
+        archive.sweep()
+        archived = exported(archive)
+        path.unlink()
+        path.write_bytes(archived)
+        report = archive.sweep()
+        assert (report.new_generations, report.bytes_archived) == (0, 0)
+        append(path, user("resumed"))
+        assert archive.sweep().new_generations == 0
+        assert exported(archive) == path.read_bytes()
+        assert archive.status().multi_generation == 0
+
+
+ARCHIVED = b"".join(user(f"message {i} " + "x" * 300) for i in range(30))
+HEAD = ARCHIVED[:1024]
+
+
+def window(data: bytes, cursor: int = len(ARCHIVED)) -> bytes:
+    return data[max(0, cursor - TAIL_BYTES) : cursor]
+
+
+def changed_at(offset: int) -> bytes:
+    return ARCHIVED[:offset] + b"#" + ARCHIVED[offset + 1 :]
+
+
+PLAN_CASES = [
+    ("same bytes", ARCHIVED, False, Plan.UNCHANGED),
+    ("appended", ARCHIVED + user("more"), False, Plan.APPEND),
+    ("same size, last line changed", changed_at(len(ARCHIVED) - 10), False, Plan.NEW_GENERATION),
+    ("grown, line in the window changed", changed_at(len(ARCHIVED) - 2000) + user("more"), False, Plan.NEW_GENERATION),
+    ("grown, head changed", changed_at(10) + user("more"), False, Plan.NEW_GENERATION),
+    ("shorter, same head, still being written", ARCHIVED[:5000], False, Plan.WAIT),
+    ("shorter, same head, settled", ARCHIVED[:5000], True, Plan.NEW_GENERATION),
+    ("shorter, head changed", changed_at(10)[:5000], False, Plan.NEW_GENERATION),
+    ("emptied, not settled", b"", False, Plan.WAIT),
+    ("changed between head and window (not detected)", changed_at(3000) + user("more"), False, Plan.APPEND),
+]
+
+
+@pytest.mark.parametrize(("data", "settled", "expected"), [c[1:] for c in PLAN_CASES], ids=[c[0] for c in PLAN_CASES])
+def test_plan_tells_an_append_from_a_rewrite(data, settled, expected):
+    tail = hashlib.sha256(window(ARCHIVED)).digest()
+    got = plan(HEAD, tail, len(ARCHIVED), len(data), settled, data[: len(HEAD)], window(data) if len(data) >= len(ARCHIVED) else b"")
+    assert got is expected

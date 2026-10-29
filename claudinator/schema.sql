@@ -40,6 +40,9 @@ CREATE TABLE segment (
   source_id   INTEGER NOT NULL REFERENCES source (id),
   byte_start  INTEGER NOT NULL,
   byte_end    INTEGER NOT NULL,
+  tail        BLOB    NOT NULL CHECK (length(tail) = 32),
+                                  -- sha256 of file bytes [byte_end - 4096, byte_end), from 0 when byte_end < 4096;
+                                  -- read back from the file to tell an append from a rewrite (archive.TAIL_BYTES)
   zstd        BLOB    NOT NULL,   -- one zstd frame of file bytes [byte_start, byte_end), at most ~1 MiB
                                   -- uncompressed unless a single line is larger
   archived_at INTEGER NOT NULL,   -- epoch ms

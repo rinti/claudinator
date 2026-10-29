@@ -49,7 +49,7 @@ _ARCHIVE_DDL, _MARKER, _PROJECTION_DDL = (
 )
 assert _MARKER, "schema.sql lost its -- @projection marker"
 
-ARCHIVE_SCHEMA = 1
+ARCHIVE_SCHEMA = 2
 """The shape of the archive layer. A new database is stamped with it, and a
 database stamped with any other value is not written. There are no
 migrations: none has been needed, and an untested one would be worse."""
@@ -67,6 +67,12 @@ another process's write lock before it gives up with Locked."""
 BUSY_MS = 5000
 """How long a statement waits on another process's lock. Only BEGIN
 IMMEDIATE in _write sets its own wait, and only for that one statement."""
+
+TAIL_BYTES = 4096
+"""Each segment stores a sha256 of the file's last TAIL_BYTES bytes before
+its end. Before treating a file as unchanged or as an append, a sweep reads
+those bytes back from the file and compares, which catches a rewrite that
+kept the head and did not shrink the file."""
 
 SETTLE_SECONDS = 3600
 """A file untouched this long with bytes after its last newline has a torn
@@ -381,6 +387,53 @@ class _Busy(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class _Archived:
+    """What the archive holds of one file: its latest generation."""
+
+    source_id: int
+    generation: int
+    head: bytes  # file bytes [0, len(head)) when the generation began
+    cursor: int  # archived end, from the last segment
+    tail: bytes  # sha256 of file bytes [cursor - TAIL_BYTES, cursor), from 0 in a short file
+
+
+class Plan(enum.Enum):
+    UNCHANGED = "unchanged"  # the file is exactly what is archived
+    APPEND = "append"  # the archived bytes are a prefix of the file, and more follow
+    NEW_GENERATION = "new generation"  # the file was rewritten
+    WAIT = "wait"  # shorter but with the same head: a restore still being written
+
+
+def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_head: bytes, file_window: bytes) -> Plan:
+    """How to ingest a file whose generation is archived up to cursor.
+
+    file_head is the file's bytes [0, len(head)), fewer if the file is
+    shorter. file_window is its bytes [cursor - TAIL_BYTES, cursor), read
+    only when size >= cursor. A shorter file with the same head waits until
+    it settles, because that is what a restore looks like while it is
+    written. Any other shorter file, a changed head, or a changed window is
+    a rewrite. A rewrite that keeps both the head and the window is not
+    detected."""
+    head_kept = file_head == head[: len(file_head)]
+    if size < cursor:
+        return Plan.NEW_GENERATION if settled or not head_kept else Plan.WAIT
+    if not head_kept or hashlib.sha256(file_window).digest() != tail:
+        return Plan.NEW_GENERATION
+    return Plan.UNCHANGED if size == cursor else Plan.APPEND
+
+
+def _look(fd: int, a: _Archived, size: int, settled: bool) -> tuple[Plan, bytes]:
+    """plan() for an open file, and the window it compared."""
+    n = min(TAIL_BYTES, a.cursor)
+    window = _pread(fd, n, a.cursor - n) if size >= a.cursor else b""
+    return plan(a.head, a.tail, a.cursor, size, settled, _pread(fd, len(a.head), 0), window), window
+
+
+def _settled(st: os.stat_result) -> bool:
+    return _now() - st.st_mtime_ns // 1_000_000 >= SETTLE_SECONDS * 1000
+
+
+@dataclass(frozen=True, slots=True)
 class _Delta:
     bytes: int
     lines: int = 0
@@ -518,7 +571,7 @@ class Archive:
         A file that fails for any reason becomes one entry in errors and the
         sweep moves on, so one bad file never keeps the rest unarchived."""
         started = _now()
-        known = self._cursors()
+        known = self._archived()
         found = discover(self.cfg)
         seen = len(found.transcripts)
         changed = archived = archived_lines = generations = docs_changed = 0
@@ -527,7 +580,7 @@ class Archive:
         refused = None
         for loc in found.transcripts:
             try:
-                if known.get(loc.path) == loc.path.stat().st_size:
+                if (a := known.get(loc.path)) is not None and self._unchanged(loc.path, a):
                     continue
                 delta = self._ingest(loc, wait)
             except FileNotFoundError:
@@ -693,7 +746,7 @@ class Archive:
         ).fetchone()
         (unparsed,) = self._db.execute("SELECT COALESCE(SUM(unparsed), 0) FROM transcript").fetchone()
         mains = [Path(p) for (p,) in self._db.execute("SELECT DISTINCT path FROM source WHERE agent_id IS NULL")]
-        known = self._cursors()
+        known = self._archived()
         found = discover(self.cfg)
         pending = []
         for loc in found.transcripts:
@@ -701,7 +754,7 @@ class Archive:
                 st = loc.path.stat()
             except FileNotFoundError:
                 continue
-            if (unarchived := st.st_size - known.get(loc.path, 0)) > 0:
+            if (unarchived := st.st_size - (a.cursor if (a := known.get(loc.path)) else 0)) > 0:
                 pending.append(Pending(loc.path, unarchived, Millis(st.st_mtime_ns // 1_000_000)))
         last = self._meta("last_sweep")
         return Status(
@@ -758,42 +811,35 @@ class Archive:
     def _ingest(self, f: TranscriptFile, wait: bool) -> _Delta:
         """Archive and project the new complete lines of one transcript.
 
-        Concurrency: the read of the cursor, the read of the file, and the
-        writes all happen inside one BEGIN IMMEDIATE transaction. A second
-        process ingesting the same file blocks on the lock, then re-reads a
-        cursor that already covers the first one's bytes and archives only
-        what is newer, usually nothing. The segment primary key and the
-        contiguity trigger turn any bug that would double- or skip-archive
-        into a failed transaction.
+        Concurrency: the read of the archived state, the read of the file,
+        and the writes all happen inside one BEGIN IMMEDIATE transaction. A
+        second process ingesting the same file blocks on the lock, then
+        re-reads a cursor that already covers the first one's bytes and
+        archives only what is newer, usually nothing. The segment primary key
+        and the contiguity trigger turn any bug that would double- or
+        skip-archive into a failed transaction.
 
         Crash safety: segment rows, entry and FTS rows, and transcript facts
         commit together. A crash before COMMIT leaves no trace; the next
         sweep redoes the same delta from the same cursor."""
         with self._write(wait=wait):
-            src = self._db.execute(
-                "SELECT id, generation, head FROM source WHERE path = ? ORDER BY generation DESC LIMIT 1",
-                (str(f.path),),
-            ).fetchone()
+            a = self._archived(f.path).get(f.path)
             try:
                 fd = os.open(f.path, os.O_RDONLY)
             except FileNotFoundError:
                 return _Delta(0)
             try:
                 st = os.fstat(fd)
-                settled = _now() - st.st_mtime_ns // 1_000_000 >= SETTLE_SECONDS * 1000
-                cursor = self._cursor(src[0]) if src else 0
-                generation, rewritten = 0, False
-                if src is not None:
-                    n = min(len(src[2]), st.st_size)
-                    head_changed = _pread(fd, n, 0) != src[2][:n]
-                    shrank = st.st_size < cursor
-                    if shrank and not head_changed and not settled:
-                        # Same head but shorter: a restore through export may be
-                        # mid-write. Decide once the file has settled.
-                        return _Delta(0)
-                    if head_changed or shrank:
-                        generation, rewritten = src[1] + 1, True
-                        src, cursor = None, 0
+                settled = _settled(st)
+                generation, cursor, window = 0, 0, b""
+                if a is not None:
+                    match _look(fd, a, st.st_size, settled):
+                        case (Plan.UNCHANGED | Plan.WAIT, _):
+                            return _Delta(0)
+                        case (Plan.APPEND, window):
+                            cursor = a.cursor
+                        case (Plan.NEW_GENERATION, _):
+                            generation = a.generation + 1
                 buf = _pread(fd, st.st_size - cursor, cursor)
             finally:
                 os.close(fd)
@@ -802,24 +848,38 @@ class Archive:
                 return _Delta(0)
             body = buf[:take]
             now = _now()
-            if src is None:
+            if cursor == 0:
                 (source_id,) = self._db.execute(
                     "INSERT INTO source (path, generation, session_id, agent_id, head, first_seen)"
                     " VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
                     (str(f.path), generation, f.session_id, f.agent_id, body[:1024], now),
                 ).fetchone()
-                after_newline = True
             else:
-                source_id = src[0]
-                after_newline = self._ends_with_newline(source_id)
+                source_id = a.source_id
+            prior = window  # the file's last TAIL_BYTES before each segment
             for start, chunk in chunk_lines(body, cursor):
+                prior = (prior + chunk[-TAIL_BYTES:])[-TAIL_BYTES:]
                 self._db.execute(
-                    "INSERT INTO segment (source_id, byte_start, byte_end, zstd, archived_at) VALUES (?, ?, ?, ?, ?)",
-                    (source_id, start, start + len(chunk), zstd.compress(chunk), now),
+                    "INSERT INTO segment (source_id, byte_start, byte_end, tail, zstd, archived_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (source_id, start, start + len(chunk), hashlib.sha256(prior).digest(), zstd.compress(chunk), now),
                 )
-                self._project(source_id, _records([(start, chunk)], after_newline))
-                after_newline = chunk.endswith(b"\n")
-            return _Delta(take, body.count(b"\n") + (not body.endswith(b"\n")), rewritten)
+                self._project(source_id, _records([(start, chunk)], not window or window.endswith(b"\n")))
+                window = chunk
+            return _Delta(take, body.count(b"\n") + (not body.endswith(b"\n")), generation > 0 and cursor == 0)
+
+    def _unchanged(self, path: Path, a: _Archived) -> bool:
+        """Outside any lock: is the file still exactly what is archived? A
+        cheap filter; _ingest decides again under the lock."""
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except FileNotFoundError:
+            return True
+        try:
+            st = os.fstat(fd)
+            return _look(fd, a, st.st_size, _settled(st))[0] is Plan.UNCHANGED
+        finally:
+            os.close(fd)
 
     def _project(self, source_id: int, records: Iterable[tuple[int, Record]]) -> None:
         """Fold records into the projection. Shared by _ingest and rebuild;
@@ -858,29 +918,21 @@ class Archive:
             (source_id, facts.cwd, facts.first_ts, facts.last_ts, facts.ai_title, facts.custom_title, facts.unparsed),
         )
 
-    def _cursor(self, source_id: int) -> int:
-        """The archived end of a source, served by the segment primary key.
-        Derived, never stored."""
-        row = self._db.execute(
-            "SELECT byte_end FROM segment WHERE source_id = ? ORDER BY byte_start DESC LIMIT 1", (source_id,)
-        ).fetchone()
-        return row[0] if row else 0
-
-    def _cursors(self) -> dict[Path, int]:
-        """{path: cursor} for the latest generation of every source. Used
-        outside any lock as a fast-path filter only; _ingest re-reads."""
+    def _archived(self, path: Path | None = None) -> dict[Path, _Archived]:
+        """The latest generation of every archived file, or of one. Outside a
+        lock this is a hint for filtering; _ingest reads it again under the
+        lock. The cursor and tail come from the last segment through the
+        primary key; nothing about them is stored separately."""
         rows = self._db.execute(
-            "SELECT s.path, (SELECT byte_end FROM segment WHERE source_id = s.id ORDER BY byte_start DESC LIMIT 1)"
+            "SELECT s.path, s.id, s.generation, s.head, g.byte_end, g.tail"
             "  FROM source s"
-            " WHERE s.generation = (SELECT MAX(generation) FROM source g WHERE g.path = s.path)"
+            "  JOIN segment g ON g.source_id = s.id"
+            "   AND g.byte_start = (SELECT MAX(byte_start) FROM segment WHERE source_id = s.id)"
+            " WHERE (?1 IS NULL OR s.path = ?1)"
+            "   AND s.generation = (SELECT MAX(generation) FROM source t WHERE t.path = s.path)",
+            (None if path is None else str(path),),
         )
-        return {Path(path): cursor for path, cursor in rows}
-
-    def _ends_with_newline(self, source_id: int) -> bool:
-        (blob,) = self._db.execute(
-            "SELECT zstd FROM segment WHERE source_id = ? ORDER BY byte_start DESC LIMIT 1", (source_id,)
-        ).fetchone()
-        return zstd.decompress(blob).endswith(b"\n")
+        return {Path(row[0]): _Archived(*row[1:]) for row in rows}
 
     def _segments(self, source_id: int) -> Iterator[tuple[int, bytes]]:
         """(byte_start, payload) of every segment of a source in file order."""
