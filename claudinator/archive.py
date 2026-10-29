@@ -416,8 +416,8 @@ def _pread(fd: int, n: int, offset: int) -> bytes:
 @dataclass
 class Archive:
     """The archive. Every public method is safe to call from many processes at
-    once: SQLite's write lock is the only serialization, held per transcript
-    delta, and every write transaction re-reads the state it depends on after
+    once: SQLite's write lock is the only serialization, held per segment,
+    and every write transaction re-reads the state it depends on after
     taking the lock.
 
     Hides: segments, zstd, derived cursors, generations, the projection and
@@ -986,7 +986,7 @@ class Archive:
                 changed,
             ).rowcount
             self._db.executemany("UPDATE doc SET size = ?, mtime_ns = ? WHERE path = ?", restat)
-        return max(upserted, 0), errors
+        return upserted, errors
 
     def _projection_current(self) -> bool:
         return all(self._meta(key) == value for key, value in _projection_stamp().items())
