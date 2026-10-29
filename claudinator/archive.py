@@ -848,7 +848,8 @@ class Archive:
                         "INSERT INTO entry (source_id, line_off, block, kind, ts) VALUES (?, ?, ?, ?, ?) RETURNING id",
                         (source_id, off, d.block, d.kind.value, d.ts),
                     ).fetchone()
-                    self._db.execute("INSERT INTO entry_fts (rowid, text) VALUES (?, ?)", (entry_id, text_of(rec, d.block)))
+                    text = text_of(rec, d.block)
+                    self._db.execute("INSERT INTO entry_fts (rowid, text) VALUES (?, ?)", (entry_id, text))
             except Exception:
                 if not self._db.in_transaction:  # SQLite rolled the whole transaction back (disk full, I/O)
                     raise
@@ -976,52 +977,67 @@ class Archive:
         return row[0]
 
     def _store_docs(self, docs: Iterable[SideFile], wait: bool) -> _Delta:
-        """Store the latest bytes of each side file whose sha256 changed, in
-        one transaction. A file whose size and mtime match what is stored is
-        not read. DESKTOP docs get their session id from the body."""
-        rows = self._db.execute("SELECT path, size, mtime_ns, sha256 FROM doc")
-        known = {path: (size, mtime_ns, sha) for path, size, mtime_ns, sha in rows}
-        changed, restat, errors = [], [], []
-        archived_at = now()
+        """Store the latest bytes of each side file whose sha256 changed. A
+        file whose size and mtime match its row is not read, and the lock is
+        taken only when some file's do not. Under the lock each such file is
+        stat'ed, read, and compared with its row as it is then, so a sweep
+        never overwrites a body another sweep committed with older bytes, or
+        stamps that body with the stat of its own read. DESKTOP docs get
+        their session id from the body."""
+        errors = []
+        rows = self._db.execute("SELECT path, size, mtime_ns FROM doc")
+        known = {path: (size, mtime_ns) for path, size, mtime_ns in rows}
+        changed = []
         for d in docs:
-            stored = known.get(str(d.path))
             try:
-                st = d.path.stat()  # before the read, so a write during it shows up as a change next time
-                if stored is not None and stored[:2] == (st.st_size, st.st_mtime_ns):
-                    continue
-                body = d.path.read_bytes()
+                st = d.path.stat()
             except FileNotFoundError:
                 continue
             except OSError as e:
                 errors.append(f"{d.path}: {e!r}")
                 continue
-            sha = hashlib.sha256(body).digest()
-            if stored is not None and stored[2] == sha:
-                restat.append((st.st_size, st.st_mtime_ns, str(d.path)))
-                continue
-            session_id = d.session_id
-            if d.role is DocRole.DESKTOP and (desktop := desktop_session(body)) is not None:
-                session_id = desktop.cli_session_id
-            changed.append(
-                (str(d.path), d.role.value, session_id, d.agent_id, sha, body, st.st_size, st.st_mtime_ns, archived_at)
-            )
-        if not changed and not restat:
+            if known.get(str(d.path)) != (st.st_size, st.st_mtime_ns):
+                changed.append(d)
+        if not changed:
             return _Delta(errors=tuple(errors))
+        stored = 0
         try:
             with self._write(wait=wait):
-                upserted = self._db.executemany(
-                    "INSERT INTO doc (path, role, session_id, agent_id, sha256, body, size, mtime_ns, archived_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                    " ON CONFLICT (path) DO UPDATE SET role = excluded.role, session_id = excluded.session_id,"
-                    " agent_id = excluded.agent_id, sha256 = excluded.sha256, body = excluded.body,"
-                    " size = excluded.size, mtime_ns = excluded.mtime_ns, archived_at = excluded.archived_at"
-                    " WHERE excluded.sha256 IS NOT doc.sha256",
-                    changed,
-                ).rowcount
-                self._db.executemany("UPDATE doc SET size = ?, mtime_ns = ? WHERE path = ?", restat)
+                for d in changed:
+                    row = self._db.execute("SELECT size, mtime_ns, sha256 FROM doc WHERE path = ?", (str(d.path),))
+                    size, mtime_ns, sha = row.fetchone() or (None, None, None)
+                    try:
+                        st = d.path.stat()  # before the read, so a write during it shows up as a change next time
+                        if (size, mtime_ns) == (st.st_size, st.st_mtime_ns):
+                            continue
+                        body = d.path.read_bytes()
+                    except FileNotFoundError:
+                        continue
+                    except OSError as e:
+                        errors.append(f"{d.path}: {e!r}")
+                        continue
+                    if (digest := hashlib.sha256(body).digest()) == sha:
+                        self._db.execute(
+                            "UPDATE doc SET size = ?, mtime_ns = ? WHERE path = ?",
+                            (st.st_size, st.st_mtime_ns, str(d.path)),
+                        )
+                        continue
+                    session_id = d.session_id
+                    if d.role is DocRole.DESKTOP and (desktop := desktop_session(body)) is not None:
+                        session_id = desktop.cli_session_id
+                    self._db.execute(
+                        "INSERT INTO doc (path, role, session_id, agent_id, sha256, body, size, mtime_ns, archived_at)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                        " ON CONFLICT (path) DO UPDATE SET role = excluded.role, session_id = excluded.session_id,"
+                        " agent_id = excluded.agent_id, sha256 = excluded.sha256, body = excluded.body,"
+                        " size = excluded.size, mtime_ns = excluded.mtime_ns, archived_at = excluded.archived_at",
+                        (str(d.path), d.role.value, session_id, d.agent_id, digest, body,
+                         st.st_size, st.st_mtime_ns, now()),
+                    )
+                    stored += 1
         except Exception as e:
             return _Delta(errors=tuple(errors)) + _failed("side files", e)
-        return _Delta(docs=upserted, errors=tuple(errors))
+        return _Delta(docs=stored, errors=tuple(errors))
 
     def _record(self, report: SweepReport) -> SweepReport:
         """Store report as the last sweep, a refused one included, so status

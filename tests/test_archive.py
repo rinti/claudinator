@@ -549,3 +549,36 @@ def test_a_failure_partway_through_a_large_file_keeps_the_segments_before_it(mon
         assert found(archive, "early") > 0
         assert archive.sweep().errors == ()
         assert exported(archive) == path.read_bytes()
+
+
+def test_a_sweep_racing_another_never_leaves_an_older_side_file_body_stamped_as_current(monkeypatch):
+    append(transcript(), user("delegate"))
+    append(transcript(agent=AID), user("task"))
+    meta, first = meta_path(), b'{"description":"first"}'
+    meta.write_bytes(first)
+    with open_archive() as archive:
+        archive.sweep()
+    meta.write_bytes(b'{"description":"second, from a sweep that commits meanwhile"}')
+    later = meta.stat().st_mtime_ns + 1_000_000_000
+    other = open_archive()
+    real_stat, armed = os.stat, [True]
+
+    def stat(path, *args, **kwargs):
+        if armed[0] and os.fspath(path) == str(meta):
+            armed[0] = False
+            other.sweep(wait=False)
+            meta.write_bytes(first)
+            os.utime(meta, ns=(later, later))
+        return real_stat(path, *args, **kwargs)
+
+    try:
+        with monkeypatch.context() as m:
+            m.setattr(os, "stat", stat)
+            with open_archive() as archive:
+                archive.sweep()
+        assert not armed[0]
+        with open_archive() as archive:
+            archive.sweep()
+            assert description(archive) == "first"
+    finally:
+        other.close()
