@@ -212,19 +212,24 @@ def discover(cfg: Config) -> Discovery:
     return Discovery(tuple(found[TranscriptFile]), tuple(found[SideFile]), tuple(unclassified), tuple(errors))
 
 
-def chunk_lines(body: bytes, base: int, limit: int = SEGMENT_BYTES) -> Iterator[tuple[int, bytes]]:
-    """Split body (file bytes starting at offset `base`) into segment payloads.
-
-    Each chunk ends just after the first newline at or past `limit` bytes, or
-    at the end of body. So every segment ends with a newline except a settled
-    tail, and no line is split across segments except a settled tail and its
-    later continuation."""
-    start = 0
-    while start < len(body):
-        newline = body.find(b"\n", start + limit - 1)
-        end = len(body) if newline < 0 else newline + 1
-        yield base + start, body[start:end]
-        start = end
+def _next_segment(fd: int, start: int, size: int, settled: bool) -> bytes:
+    """The bytes of the next segment of a file, from start: through the
+    first newline at or past SEGMENT_BYTES, else through the last newline
+    before size, else, once the file has settled, through size. So every
+    segment ends with a newline except a settled tail, and no line is split
+    across segments except a settled tail and its later continuation. Reads
+    at most one line past SEGMENT_BYTES, so memory follows the longest line,
+    not the file."""
+    buf = bytearray()
+    while start + len(buf) < size:
+        searched = len(buf)
+        part = _pread(fd, min(SEGMENT_BYTES, size - start - len(buf)), start + len(buf))
+        if not part:
+            break
+        buf += part
+        if len(buf) >= SEGMENT_BYTES and (newline := buf.find(b"\n", max(searched, SEGMENT_BYTES - 1))) >= 0:
+            return bytes(buf[: newline + 1])
+    return bytes(buf if settled else buf[: buf.rfind(b"\n") + 1])
 
 
 def lines(chunk: bytes, base: int) -> Iterator[tuple[int, bytes]]:
@@ -467,9 +472,10 @@ def _settled(st: os.stat_result) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class _Delta:
-    bytes: int
+    bytes: int = 0
     lines: int = 0
     rewritten: bool = False
+    busy: bool = False  # wait=False found the lock taken after some segments committed
 
 
 def _now() -> Millis:
@@ -636,6 +642,9 @@ class Archive:
                 generations += delta.rewritten
             if progress:
                 progress(loc.path, delta.bytes)
+            if delta.busy:
+                busy = True
+                break
         else:
             try:
                 docs_changed, doc_errors = self._store_docs(found.side_files, wait)
@@ -841,64 +850,76 @@ class Archive:
             raise
 
     def _ingest(self, f: TranscriptFile, wait: bool) -> _Delta:
-        """Archive and project the new complete lines of one transcript.
+        """Archive and project the new complete lines of one transcript, one
+        segment per write transaction, so neither memory nor the time the
+        lock is held grows with the file.
 
-        Concurrency: the read of the archived state, the read of the file,
-        and the writes all happen inside one BEGIN IMMEDIATE transaction. A
-        second process ingesting the same file blocks on the lock, then
-        re-reads a cursor that already covers the first one's bytes and
-        archives only what is newer, usually nothing. The segment primary key
-        and the contiguity trigger turn any bug that would double- or
-        skip-archive into a failed transaction.
+        Concurrency: each transaction reads the archived state, reads the
+        file, and writes, all under BEGIN IMMEDIATE. A second process
+        ingesting the same file blocks on the lock, then re-reads a cursor
+        that already covers the first one's bytes and archives only what is
+        newer, usually nothing. The segment primary key and the contiguity
+        trigger turn any bug that would double- or skip-archive into a failed
+        transaction.
 
-        Crash safety: segment rows, entry and FTS rows, and transcript facts
-        commit together. A crash before COMMIT leaves no trace; the next
-        sweep redoes the same delta from the same cursor."""
-        with self._write(wait=wait):
-            a = self._archived(f.path).get(f.path)
+        Crash safety: a segment, its entry and FTS rows, and the transcript
+        facts commit together. A crash leaves the segments committed before
+        it, a line-aligned prefix of the file, and the next sweep goes on
+        from that cursor."""
+        done = _Delta()
+        while True:
             try:
-                fd = os.open(f.path, os.O_RDONLY)
-            except FileNotFoundError:
-                return _Delta(0)
-            try:
-                st = os.fstat(fd)
-                settled = _settled(st)
-                generation, cursor, window = 0, 0, b""
-                if a is not None:
-                    match _look(fd, a, st.st_size, settled):
-                        case (Plan.UNCHANGED | Plan.WAIT, _):
-                            return _Delta(0)
-                        case (Plan.APPEND, window):
-                            cursor = a.cursor
-                        case (Plan.NEW_GENERATION, _):
-                            generation = a.generation + 1
-                buf = _pread(fd, st.st_size - cursor, cursor)
-            finally:
-                os.close(fd)
-            take = len(buf) if settled else buf.rfind(b"\n") + 1
-            if take == 0:
-                return _Delta(0)
-            body = buf[:take]
-            now = _now()
-            if cursor == 0:
-                (source_id,) = self._db.execute(
-                    "INSERT INTO source (path, generation, session_id, agent_id, head, first_seen)"
-                    " VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
-                    (str(f.path), generation, f.session_id, f.agent_id, body[:1024], now),
-                ).fetchone()
-            else:
-                source_id = a.source_id
-            prior = window  # the file's last TAIL_BYTES before each segment
-            for start, chunk in chunk_lines(body, cursor):
-                prior = (prior + chunk[-TAIL_BYTES:])[-TAIL_BYTES:]
-                self._db.execute(
-                    "INSERT INTO segment (source_id, byte_start, byte_end, tail, zstd, archived_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (source_id, start, start + len(chunk), hashlib.sha256(prior).digest(), zstd.compress(chunk), now),
-                )
-                self._project(source_id, _records([(start, chunk)], not window or window.endswith(b"\n")))
-                window = chunk
-            return _Delta(take, body.count(b"\n") + (not body.endswith(b"\n")), generation > 0 and cursor == 0)
+                with self._write(wait=wait):
+                    step = self._ingest_segment(f)
+            except _Busy:
+                if not done.bytes:
+                    raise
+                return replace(done, busy=True)
+            if step is None:
+                return done
+            done = _Delta(done.bytes + step.bytes, done.lines + step.lines, done.rewritten or step.rewritten)
+
+    def _ingest_segment(self, f: TranscriptFile) -> _Delta | None:
+        """Archive and project the next segment of a file inside the caller's
+        transaction, or return None when there is nothing to archive yet."""
+        a = self._archived(f.path).get(f.path)
+        try:
+            fd = os.open(f.path, os.O_RDONLY)
+        except FileNotFoundError:
+            return None
+        try:
+            st = os.fstat(fd)
+            settled = _settled(st)
+            generation, cursor, window = 0, 0, b""
+            if a is not None:
+                match _look(fd, a, st.st_size, settled):
+                    case (Plan.UNCHANGED | Plan.WAIT, _):
+                        return None
+                    case (Plan.APPEND, window):
+                        cursor = a.cursor
+                    case (Plan.NEW_GENERATION, _):
+                        generation = a.generation + 1
+            chunk = _next_segment(fd, cursor, st.st_size, settled)
+        finally:
+            os.close(fd)
+        if not chunk:
+            return None
+        now = _now()
+        if cursor == 0:
+            (source_id,) = self._db.execute(
+                "INSERT INTO source (path, generation, session_id, agent_id, head, first_seen)"
+                " VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+                (str(f.path), generation, f.session_id, f.agent_id, chunk[:1024], now),
+            ).fetchone()
+        else:
+            source_id = a.source_id
+        tail = hashlib.sha256((window + chunk[-TAIL_BYTES:])[-TAIL_BYTES:]).digest()
+        self._db.execute(
+            "INSERT INTO segment (source_id, byte_start, byte_end, tail, zstd, archived_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (source_id, cursor, cursor + len(chunk), tail, zstd.compress(chunk), now),
+        )
+        self._project(source_id, _records([(cursor, chunk)], not window or window.endswith(b"\n")))
+        return _Delta(len(chunk), chunk.count(b"\n") + (not chunk.endswith(b"\n")), generation > 0 and cursor == 0)
 
     def _project(self, source_id: int, records: Iterable[tuple[int, Record]]) -> None:
         """Fold records into the projection. Shared by _ingest and rebuild;

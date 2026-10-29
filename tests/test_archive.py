@@ -538,3 +538,27 @@ def test_a_side_file_with_the_same_size_and_mtime_is_not_read_again():
             assert archive.sweep().errors == ()
         finally:
             meta_path().chmod(0o600)
+
+
+def test_a_failure_partway_through_a_large_file_keeps_the_segments_before_it(monkeypatch):
+    path = transcript()
+    block = "y" * 1000
+    append(path, *(user(f"early {i} {block}") for i in range(2500)), user("the third segment's poison"))
+    append(path, *(user(f"late {i} {block}") for i in range(1000)))
+    real_compress = archive_module.zstd.compress
+
+    def compress(data, *args, **kwargs):
+        if b"poison" in data:
+            raise ValueError("cannot compress this")
+        return real_compress(data, *args, **kwargs)
+
+    with open_archive() as archive:
+        with monkeypatch.context() as m:
+            m.setattr(archive_module.zstd, "compress", compress)
+            assert len(archive.sweep().errors) == 1
+        kept = exported(archive)
+        assert len(kept) >= 2 * SEGMENT_BYTES and kept.endswith(b"\n")
+        assert path.read_bytes().startswith(kept)
+        assert found(archive, "early") > 0
+        assert archive.sweep().errors == ()
+        assert exported(archive) == path.read_bytes()
