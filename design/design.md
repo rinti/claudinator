@@ -292,6 +292,14 @@ Measured after implementation (2026-10-29, read-only sweep of this Mac's `~/.cla
 - A read command, sweep-on-read included, took 0.14 to 0.22 s end to end.
 - Memory. These were the sketch-shaped numbers. Ingesting the 79 MB transcript alone peaked at 125 MB resident with an 82 MB Python heap, which was the whole new byte range read at once. The full backfill peaked at 246 MB resident. See "Ingest commits segment by segment" for the numbers after.
 
+Measured after the first fix round (2026-10-29, same method, the code before and after the round run alternately, 3 runs each, on a machine with a load average of about 4.5 on 10 cores):
+
+- First sweep. 697 transcripts in 289 sessions, 1,595 MB archived as 347 MB of zstd segments, a 411 MB database file (411 MB before), 423 side files, 0 unparsed lines, 0 errors. Median 19.2 s (19.2 to 20.1) against 20.9 s (19.6 to 22.0) before.
+- Peak resident memory of that sweep, from `/usr/bin/time -l`. Median 161 MB (161 to 163) against 251 MB (238 to 251) before. The longest line bounds it (see "Ingest commits segment by segment").
+- Sweep-on-read, `open()` plus `sweep(wait=False)` with nothing new. Median of 7, three rounds, 56 to 62 ms against 52 to 55 ms before. The tail check opens each of the 697 files and reads up to 5 KiB, and the side-file stat check saves reading 423 files. A profile puts two thirds of the time in `discover`, mostly `pathlib` arithmetic in `classify`, not in system calls.
+- Projection. 84,793 entries (38,559 tool calls, 38,463 tool outputs, 5,307 replies, 2,276 prompts, 188 titles). No prompt entry starts with a Claude Code wrapper.
+- A separate check, which exports each file's latest generation and compares it with the file on disk, found all 697 byte-exact.
+
 ## Open questions and risks
 
 - Should claudinator offer to raise `cleanupPeriodDays`? `status` only warns today. The archive does not depend on it.
