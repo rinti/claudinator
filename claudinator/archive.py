@@ -138,7 +138,9 @@ def _records(
         yield from found
 
 
-def _chunk_records(start: int, chunk: bytes, left: _Open | None) -> tuple[list[tuple[int, Record, bool]], _Open | None]:
+def _chunk_records(
+    start: int, chunk: bytes, left: _Open | None
+) -> tuple[list[tuple[int, Record, bool]], _Open | None]:
     """The records of one segment that follows a line left open, and the
     line it leaves open."""
     found = []

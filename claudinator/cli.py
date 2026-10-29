@@ -10,9 +10,9 @@ import shutil
 import sqlite3
 import sys
 from collections.abc import Callable
-from typing import TextIO
 from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 from claudinator import launchd
 from claudinator.archive import (
