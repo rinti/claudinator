@@ -203,7 +203,6 @@ class SweepReport:
     transcripts_seen: int = 0
     transcripts_changed: int = 0
     bytes_archived: int = 0
-    lines_archived: int = 0
     new_generations: int = 0
     docs_changed: int = 0
     errors: tuple[str, ...] = ()
@@ -348,7 +347,6 @@ def _settled(st: os.stat_result) -> bool:
 @dataclass(frozen=True, slots=True)
 class _Delta:
     bytes: int = 0
-    lines: int = 0
     rewritten: bool = False
     busy: bool = False  # wait=False found the lock taken after some segments committed
 
@@ -496,7 +494,7 @@ class Archive:
         known = self._archived()
         found = found or discover(self.cfg)
         seen = len(found.transcripts)
-        changed = archived = archived_lines = generations = docs_changed = 0
+        changed = archived = generations = docs_changed = 0
         errors = list(found.errors)
         busy = False
         refused = None
@@ -522,7 +520,6 @@ class Archive:
             if delta.bytes:
                 changed += 1
                 archived += delta.bytes
-                archived_lines += delta.lines
                 generations += delta.rewritten
             if progress:
                 progress(loc.path)
@@ -545,7 +542,6 @@ class Archive:
             transcripts_seen=seen,
             transcripts_changed=changed,
             bytes_archived=archived,
-            lines_archived=archived_lines,
             new_generations=generations,
             docs_changed=docs_changed,
             errors=tuple(errors),
@@ -773,7 +769,7 @@ class Archive:
                 return replace(done, busy=True)
             if step is None:
                 return done
-            done = _Delta(done.bytes + step.bytes, done.lines + step.lines, done.rewritten or step.rewritten)
+            done = _Delta(done.bytes + step.bytes, done.rewritten or step.rewritten)
 
     def _ingest_segment(self, f: TranscriptFile) -> _Delta | None:
         """Archive and project the next segment of a file inside the caller's
@@ -815,7 +811,7 @@ class Archive:
             (source_id, cursor, cursor + len(chunk), tail, zstd.compress(chunk), archived_at),
         )
         self._project(source_id, _records([(cursor, chunk)], not window or window.endswith(b"\n")))
-        return _Delta(len(chunk), chunk.count(b"\n") + (not chunk.endswith(b"\n")), generation > 0 and cursor == 0)
+        return _Delta(len(chunk), generation > 0 and cursor == 0)
 
     def _project(self, source_id: int, records: Iterable[tuple[int, Record]]) -> None:
         """Fold records into the projection. Shared by _ingest and rebuild;
