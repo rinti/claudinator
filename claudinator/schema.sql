@@ -9,17 +9,18 @@
 -- (claudinator/record.py). Dropped and recreated in one transaction whenever
 -- meta.projection_version is older than record.PROJECTION_VERSION.
 --
--- Connection pragmas live in code, not here: journal_mode=WAL,
--- synchronous=NORMAL, foreign_keys=ON, busy_timeout per call site.
+-- Pragmas live in code, not here. archive._create sets journal_mode=WAL once,
+-- on the private file it publishes; every connection sets synchronous=NORMAL,
+-- foreign_keys=ON, and busy_timeout.
 
-CREATE TABLE IF NOT EXISTS meta (
+CREATE TABLE meta (
   key   TEXT PRIMARY KEY,   -- 'archive_schema' | 'projection_version' | 'last_sweep'
   value TEXT NOT NULL
 ) STRICT;
 
 -- One row per (transcript file, generation). A row exists only once its first
 -- segment exists: both are inserted in the same transaction.
-CREATE TABLE IF NOT EXISTS source (
+CREATE TABLE source (
   id          INTEGER PRIMARY KEY,
   path        TEXT    NOT NULL,            -- absolute path of the .jsonl file
   generation  INTEGER NOT NULL DEFAULT 0,  -- +1 when the file stops being an append of what we archived
@@ -30,12 +31,12 @@ CREATE TABLE IF NOT EXISTS source (
   first_seen  INTEGER NOT NULL,            -- epoch ms
   UNIQUE (path, generation)
 ) STRICT;
-CREATE INDEX IF NOT EXISTS source_by_session ON source (session_id, agent_id);
+CREATE INDEX source_by_session ON source (session_id, agent_id);
 
 -- The archive proper. Concatenating a source's segments in byte_start order
 -- reproduces the file's bytes [0, cursor) exactly, where cursor is the
 -- byte_end of the last segment. The cursor is derived, never stored.
-CREATE TABLE IF NOT EXISTS segment (
+CREATE TABLE segment (
   source_id   INTEGER NOT NULL REFERENCES source (id),
   byte_start  INTEGER NOT NULL,
   byte_end    INTEGER NOT NULL,
@@ -49,7 +50,7 @@ CREATE TABLE IF NOT EXISTS segment (
 -- Contiguity: a segment must start exactly where its source's archive ends.
 -- Together with the primary key this makes a double ingest or a gap fail the
 -- transaction instead of corrupting the archive.
-CREATE TRIGGER IF NOT EXISTS segment_contiguous
+CREATE TRIGGER segment_contiguous
 BEFORE INSERT ON segment
 WHEN NEW.byte_start IS NOT COALESCE(
   (SELECT byte_end FROM segment
@@ -60,13 +61,13 @@ BEGIN
   SELECT RAISE(ABORT, 'segment must start at the archived end of its source');
 END;
 
-CREATE TRIGGER IF NOT EXISTS segment_no_update BEFORE UPDATE ON segment
+CREATE TRIGGER segment_no_update BEFORE UPDATE ON segment
 BEGIN SELECT RAISE(ABORT, 'the archive is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS segment_no_delete BEFORE DELETE ON segment
+CREATE TRIGGER segment_no_delete BEFORE DELETE ON segment
 BEGIN SELECT RAISE(ABORT, 'the archive is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS source_no_update BEFORE UPDATE ON source
+CREATE TRIGGER source_no_update BEFORE UPDATE ON source
 BEGIN SELECT RAISE(ABORT, 'the archive is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS source_no_delete BEFORE DELETE ON source
+CREATE TRIGGER source_no_delete BEFORE DELETE ON source
 BEGIN SELECT RAISE(ABORT, 'the archive is append-only'); END;
 
 -- Latest content of small side files that Claude Code rewrites in place
@@ -74,7 +75,7 @@ BEGIN SELECT RAISE(ABORT, 'the archive is append-only'); END;
 -- <session>/session-memory/summary.md, and desktop-app local_*.json.
 -- role and session_id/agent_id are set by the discovery classifier, the only
 -- code that knows these path shapes.
-CREATE TABLE IF NOT EXISTS doc (
+CREATE TABLE doc (
   path        TEXT    PRIMARY KEY,   -- absolute path
   role        TEXT    NOT NULL,      -- archive.DocRole value
   session_id  TEXT,                  -- desktop docs: parsed cliSessionId
@@ -84,7 +85,7 @@ CREATE TABLE IF NOT EXISTS doc (
   mtime       INTEGER NOT NULL,      -- epoch ms
   archived_at INTEGER NOT NULL
 ) STRICT;
-CREATE INDEX IF NOT EXISTS doc_by_session ON doc (session_id, role);
+CREATE INDEX doc_by_session ON doc (session_id, role);
 
 -- @projection
 -- Everything below is disposable. Archive.rebuild executes this section as one

@@ -109,3 +109,35 @@ def test_readers_proceed_while_another_process_holds_the_write_lock():
     assert report.busy
     assert [(h.session.id, h.hits) for h in hits] == [(SID, 1)]
     assert elapsed < 1
+
+
+OPENER = r"""
+import sys
+from pathlib import Path
+from claudinator.archive import Archive, Config
+go = Path(sys.argv[1])
+while not go.exists():
+    pass
+try:
+    with Archive.open(Config.from_env()) as archive:
+        archive.sweep(wait=True)
+except Exception as e:
+    print(f"{type(e).__name__}: {e}")
+else:
+    print("ok")
+"""
+
+
+def test_processes_that_open_a_new_archive_at_once_all_succeed(tmp_path, monkeypatch):
+    append(transcript(), user("seed"))
+    for trial in range(3):
+        monkeypatch.setenv("CLAUDINATOR_DB", str(tmp_path / f"cold{trial}" / "claudinator.db"))
+        go = tmp_path / f"go{trial}"
+        openers = [
+            subprocess.Popen([sys.executable, "-c", OPENER, str(go)], stdout=subprocess.PIPE, text=True) for _ in range(8)
+        ]
+        time.sleep(0.5)
+        go.touch()
+        assert [p.communicate(timeout=60)[0] for p in openers] == ["ok\n"] * 8
+        with open_archive() as archive:
+            assert exported(archive) == transcript().read_bytes()

@@ -351,6 +351,38 @@ def _now() -> Millis:
     return Millis(time.time_ns() // 1_000_000)
 
 
+def _create(path: Path) -> None:
+    """Build a new database in a private file and publish it whole.
+
+    The file is made with mode 0600, so its -wal and -shm files are too, and
+    gets the schema, WAL mode, and its version stamps before any other
+    process can see it. os.link then publishes it only if the path is still
+    free. A process that loses that race uses the winner's database, and no
+    process ever opens a half-made archive or switches its journal mode."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    private = path.with_name(f".{path.name}.new-{os.getpid()}")
+    for leftover in (private, Path(f"{private}-wal"), Path(f"{private}-shm")):
+        leftover.unlink(missing_ok=True)  # only a dead process with this pid can have left these
+    os.close(os.open(private, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    try:
+        db = sqlite3.connect(private, autocommit=True)
+        try:
+            db.execute("PRAGMA journal_mode = WAL")
+            db.executescript(f"BEGIN; {_ARCHIVE_DDL} {_PROJECTION_DDL} COMMIT;")
+            db.executemany(
+                "INSERT INTO meta (key, value) VALUES (?, ?)",
+                [("archive_schema", str(ARCHIVE_SCHEMA)), ("projection_version", str(PROJECTION_VERSION))],
+            )
+        finally:
+            db.close()
+        try:
+            os.link(private, path)
+        except FileExistsError:
+            pass
+    finally:
+        private.unlink(missing_ok=True)
+
+
 def _pread(fd: int, n: int, offset: int) -> bytes:
     """Exactly n bytes at offset, or fewer only at end of file."""
     parts = []
@@ -382,15 +414,14 @@ class Archive:
 
     @classmethod
     def open(cls, cfg: Config) -> Archive:
-        """Open or create the database, converge its schema, and make the
+        """Open the database, creating it if it does not exist, and make the
         projection current. When both versions are current this takes no
         write lock, so a reader never waits for a sweep in another process."""
-        cfg.db.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        db = sqlite3.connect(cfg.db, autocommit=True)
+        if not cfg.db.exists():
+            _create(cfg.db)
+        db = sqlite3.connect(cfg.db.as_uri() + "?mode=rw", uri=True, autocommit=True)
         try:
             db.execute("PRAGMA busy_timeout = 5000")
-            if db.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
-                db.execute("PRAGMA journal_mode = WAL")
             db.execute("PRAGMA synchronous = NORMAL")
             db.execute("PRAGMA foreign_keys = ON")
             archive = cls(cfg, db)
@@ -411,24 +442,20 @@ class Archive:
 
     def _converge(self) -> None:
         schema, projection = self._meta_int("archive_schema"), self._meta_int("projection_version")
-        if (schema or 0) > ARCHIVE_SCHEMA or (projection or 0) > PROJECTION_VERSION:
-            self._writable = False
-            return
-        if schema is not None and schema < ARCHIVE_SCHEMA:
+        if schema is None or projection is None:
+            raise ArchiveError(f"{self.cfg.db} is not a claudinator archive")
+        if schema < ARCHIVE_SCHEMA:
             raise ArchiveError(
                 f"{self.cfg.db} has archive schema {schema}, and this claudinator reads schema {ARCHIVE_SCHEMA} only"
             )
-        if schema == ARCHIVE_SCHEMA and projection == PROJECTION_VERSION:
+        if schema > ARCHIVE_SCHEMA or projection > PROJECTION_VERSION:
+            self._writable = False
             return
-        if schema is None:
-            with self._write(wait=True):
-                self._db.executescript(_ARCHIVE_DDL)
-                if self._meta_int("archive_schema") is None:
-                    self._set_meta("archive_schema", str(ARCHIVE_SCHEMA))
-        try:
-            self.rebuild()
-        except NewerArchive:
-            pass
+        if projection < PROJECTION_VERSION:
+            try:
+                self.rebuild()
+            except NewerArchive:
+                pass
 
     # -- writing ------------------------------------------------------------
 

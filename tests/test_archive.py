@@ -1,4 +1,6 @@
+import os
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -231,3 +233,18 @@ def test_an_archive_stamped_with_an_older_schema_is_refused_not_migrated():
     db = sqlite3.connect(Config.from_env().db)
     assert db.execute("SELECT value FROM meta WHERE key = 'archive_schema'").fetchone() == ("0",)
     db.close()
+
+
+def test_the_database_and_its_wal_files_are_private_whatever_the_umask(tmp_path, monkeypatch):
+    elsewhere = tmp_path / "shared"
+    elsewhere.mkdir(mode=0o755)
+    monkeypatch.setenv("CLAUDINATOR_DB", str(elsewhere / "archive.db"))
+    append(transcript(), user("private words"))
+    previous = os.umask(0o022)
+    try:
+        with open_archive() as archive:
+            archive.sweep()
+            modes = {p.name: stat.S_IMODE(p.stat().st_mode) for p in elsewhere.iterdir()}
+    finally:
+        os.umask(previous)
+    assert modes == {"archive.db": 0o600, "archive.db-wal": 0o600, "archive.db-shm": 0o600}
