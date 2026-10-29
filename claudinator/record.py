@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NewType
 
-PROJECTION_VERSION = 4
+PROJECTION_VERSION = 5
 """Bump when parse() or project() would produce different rows for the same
 bytes, or when the projection section of schema.sql changes. open() compares
 this number only, so two builds that share it never rebuild over each other.

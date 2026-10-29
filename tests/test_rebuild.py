@@ -1,6 +1,9 @@
 import random
+import sqlite3
 import subprocess
 import sys
+
+import pytest
 
 import claudinator.archive as archive_module
 from claudinator.layout import Config
@@ -14,6 +17,7 @@ from helpers import (
     ai_title,
     append,
     custom_title,
+    exported,
     found,
     line,
     open_archive,
@@ -103,3 +107,46 @@ def test_builds_that_share_a_projection_version_do_not_rebuild_each_others_proje
     finally:
         locker.stdin.close()
         locker.wait(timeout=10)
+
+
+def entry_rows(archive) -> list[tuple]:
+    db = sqlite3.connect(archive.cfg.db)
+    try:
+        return db.execute(
+            "SELECT s.path, s.generation, t.cwd, t.first_ts, t.last_ts, t.unparsed, e.line_off, e.block, e.kind, e.ts"
+            " FROM source s JOIN transcript t ON t.source_id = s.id LEFT JOIN entry e ON e.source_id = s.id"
+            " ORDER BY 1, 2, 7, 8"
+        ).fetchall()
+    finally:
+        db.close()
+
+
+PAUSED = user("the paused writer's quokka", ts="2026-10-03T08:00:00.000Z")
+WHOLE = user("a whole wombat", ts="2026-10-04T08:00:00.000Z")
+
+OPEN_LINES = {
+    "the paused writer finishes the line": (PAUSED[:40], PAUSED[40:], 0, ["quokka"], []),
+    "a restarted writer glues a whole record on": (PAUSED[:40], WHOLE, 1, ["wombat"], ["quokka"]),
+    "a restarted writer glues more torn bytes on": (PAUSED[:40], b"zebracorn torn again\n", 1, [], ["quokka", "zebracorn"]),
+    "a record that lacked only its newline gets one glued on": (PAUSED[:-1], WHOLE, 0, ["quokka", "wombat"], []),
+}
+
+
+@pytest.mark.parametrize(("tail", "then", "unparsed", "shown", "hidden"), OPEN_LINES.values(), ids=OPEN_LINES)
+def test_a_line_left_open_by_a_settled_tail_projects_once_and_the_same_on_rebuild(tail, then, unparsed, shown, hidden):
+    path = transcript()
+    append(path, user("before"), tail)
+    settle(path)
+    with open_archive() as archive:
+        archive.sweep()
+        append(path, then, user("after the restart", ts="2026-10-05T08:00:00.000Z"))
+        assert archive.sweep().errors == ()
+        assert exported(archive) == path.read_bytes()
+        assert archive.status().unparsed_lines == unparsed
+        assert {word: found(archive, word) for word in shown + hidden} == {word: 1 for word in shown} | {word: 0 for word in hidden}
+        shown_by_show = [m.text for m in archive.conversation(SID)]
+        incremental = entry_rows(archive)
+        archive.rebuild(force=True)
+        assert entry_rows(archive) == incremental
+        assert [m.text for m in archive.conversation(SID)] == shown_by_show
+    assert all(any(word in text for text in shown_by_show) for word in shown)

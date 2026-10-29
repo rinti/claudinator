@@ -100,33 +100,75 @@ def _next_segment(fd: int, start: int, size: int, settled: bool) -> bytes:
     return bytes(buf if settled else buf[: buf.rfind(b"\n") + 1])
 
 
-def lines(chunk: bytes, base: int) -> Iterator[tuple[int, bytes]]:
-    """(file offset, line without newline) for each line of one segment
-    payload. An unterminated tail is yielded as a line. Empty lines skipped."""
-    start = 0
-    while start < len(chunk):
-        end = chunk.find(b"\n", start)
-        if end < 0:
-            end = len(chunk)
-        if end > start:
-            yield base + start, chunk[start:end]
-        start = end + 1
+@dataclass(frozen=True, slots=True)
+class _Open:
+    """A line the segments so far end inside: a settled tail, archived
+    before its writer finished the line."""
+
+    off: int  # where the line's bytes so far begin
+    data: bytes  # those bytes
+    torn: bool  # projected as one Unparsed, not as a record
 
 
-def _records(segments: Iterable[tuple[int, bytes]], after_newline: bool = True) -> Iterator[tuple[int, Record]]:
-    """Every line of consecutive segments as (file offset, Record).
+def _records(
+    segments: Iterable[tuple[int, bytes]], before: Iterable[tuple[int, bytes]] = ()
+) -> Iterator[tuple[int, Record, bool]]:
+    """Every line of consecutive segments as (file offset, record, mends),
+    in file order. Empty lines are skipped.
 
-    A segment that follows one without a trailing newline starts with the
-    continuation of a settled tail: the rest of the line the tail began,
-    which a restarted writer may have glued a whole record onto. It yields
-    no record. The tail already stands for that line, as one Unparsed when
-    it was torn. Ingest and rebuild both read lines through here, so they
-    agree on every line."""
+    A line lies inside one segment unless a settled tail was archived
+    before its writer finished it; the line then goes on at the start of
+    the next segment. Its bytes so far and the continuation are parsed as
+    one line when that makes a record: a writer that paused for an hour.
+    Else the continuation alone, when it is a record: a restarted writer
+    that appended a whole record onto torn bytes. Else the line stays the
+    one Unparsed its tail was counted as. mends is True for a record that
+    replaces that Unparsed.
+
+    before is the line the archive already ends inside, as its segments
+    hold it (_open_line); its records were projected with those segments,
+    so only what the new segments add is yielded. Ingest, rebuild,
+    conversation, and search read lines through here, so they agree on
+    every line."""
+    left = None
+    for start, chunk in before:
+        _, left = _chunk_records(start, chunk, left)
     for start, chunk in segments:
-        for off, line in lines(chunk, start):
-            if after_newline or off != start:
-                yield off, parse(line)
-        after_newline = chunk.endswith(b"\n")
+        found, left = _chunk_records(start, chunk, left)
+        yield from found
+
+
+def _chunk_records(start: int, chunk: bytes, left: _Open | None) -> tuple[list[tuple[int, Record, bool]], _Open | None]:
+    """The records of one segment that follows a line left open, and the
+    line it leaves open."""
+    found = []
+    pos = 0
+    if left is not None:
+        end = chunk.find(b"\n")
+        rest = chunk[: end if end >= 0 else len(chunk)]
+        pos = len(rest) + 1
+        if not isinstance(whole := parse(left.data + rest), Unparsed):
+            if left.torn:
+                found.append((left.off, whole, True))
+            left = _Open(left.off, left.data + rest, False)
+        elif not isinstance(alone := parse(rest), Unparsed) or not left.torn:
+            found.append((start, alone, False))  # glued onto torn bytes, or onto a record that lacked its newline
+            left = _Open(start, rest, isinstance(alone, Unparsed))
+        else:
+            left = _Open(left.off, left.data + rest, True)
+        if end >= 0:
+            left = None
+    while pos < len(chunk):
+        end = chunk.find(b"\n", pos)
+        if end < 0:
+            rec = parse(chunk[pos:])
+            found.append((start + pos, rec, False))
+            left = _Open(start + pos, chunk[pos:], isinstance(rec, Unparsed))
+            break
+        if end > pos:
+            found.append((start + pos, parse(chunk[pos:end]), False))
+        pos = end + 1
+    return found, left
 
 
 @dataclass(frozen=True, slots=True)
@@ -632,7 +674,7 @@ class Archive:
         for aid, body in self._docs(session_id, DocRole.SUBAGENT_META):
             if tool_use_id := subagent_meta(body).tool_use_id:
                 spawned[tool_use_id] = aid
-        for _, rec in _records(self._segments(source_id)):
+        for _, rec, _ in _records(self._segments(source_id)):
             if isinstance(rec, Turn):
                 for _, b in rec.blocks:
                     yield Message(rec.ts, b.kind, b.text, b.tool, spawned.get(b.tool_use_id))
@@ -773,15 +815,16 @@ class Archive:
             ).fetchone()
         else:
             source_id = a.source_id
+        before = self._open_line(source_id) if n.window and not n.window.endswith(b"\n") else ()
         tail = hashlib.sha256((n.window + n.chunk[-TAIL_BYTES:])[-TAIL_BYTES:]).digest()
         self._db.execute(
             "INSERT INTO segment (source_id, byte_start, byte_end, tail, zstd, archived_at) VALUES (?, ?, ?, ?, ?, ?)",
             (source_id, n.cursor, n.cursor + len(n.chunk), tail, zstd.compress(n.chunk), archived_at),
         )
-        self._project(source_id, _records([(n.cursor, n.chunk)], not n.window or n.window.endswith(b"\n")))
+        self._project(source_id, _records([(n.cursor, n.chunk)], before))
         return _Delta(len(n.chunk), rewritten=n.generation > 0 and n.cursor == 0)
 
-    def _project(self, source_id: int, records: Iterable[tuple[int, Record]]) -> None:
+    def _project(self, source_id: int, records: Iterable[tuple[int, Record, bool]]) -> None:
         """Fold records into the projection. Shared by _ingest and rebuild;
         must run inside a write transaction.
 
@@ -794,7 +837,9 @@ class Archive:
             (source_id,),
         ).fetchone()
         facts = Facts(*row) if row else Facts()
-        for off, rec in records:
+        for off, rec, mends in records:
+            if mends:
+                facts = replace(facts, unparsed=facts.unparsed - 1)
             self._db.execute("SAVEPOINT record")
             try:
                 folded, drafts = project(facts, rec)
@@ -878,19 +923,40 @@ class Archive:
         )
 
     def _entry_text(self, source_id: int, line_off: int, block: int) -> str:
-        return text_of(parse(self._line_at(source_id, line_off)), block)
+        """The text of one entry, from the record _records() made at line_off."""
+        *_, rec = (rec for off, rec, _ in _records(self._line(source_id, line_off)) if off == line_off)
+        return text_of(rec, block)
 
-    def _line_at(self, source_id: int, offset: int) -> bytes:
-        """One line by file offset: the segment with the greatest byte_start
-        <= offset, decompressed, sliced to the next newline."""
-        start, blob = self._db.execute(
-            "SELECT byte_start, zstd FROM segment WHERE source_id = ? AND byte_start <= ?"
-            " ORDER BY byte_start DESC LIMIT 1",
+    def _line(self, source_id: int, offset: int) -> list[tuple[int, bytes]]:
+        """The bytes from offset through the end of its line, as the
+        segments hold them: usually one piece of one segment."""
+        pieces = []
+        for start, blob in self._db.execute(
+            "SELECT byte_start, zstd FROM segment WHERE source_id = ?1 AND byte_start >="
+            " (SELECT MAX(byte_start) FROM segment WHERE source_id = ?1 AND byte_start <= ?2) ORDER BY byte_start",
             (source_id, offset),
-        ).fetchone()
-        chunk = zstd.decompress(blob)
-        end = chunk.find(b"\n", offset - start)
-        return chunk[offset - start : end if end >= 0 else len(chunk)]
+        ):
+            chunk = zstd.decompress(blob)
+            at = max(offset - start, 0)
+            end = chunk.find(b"\n", at)
+            pieces.append((start + at, chunk[at : end if end >= 0 else len(chunk)]))
+            if end >= 0:
+                break
+        return pieces
+
+    def _open_line(self, source_id: int) -> list[tuple[int, bytes]]:
+        """The bytes after the archive's last newline, as the segments hold
+        them: the line a settled tail left open."""
+        pieces = []
+        for start, blob in self._db.execute(
+            "SELECT byte_start, zstd FROM segment WHERE source_id = ? ORDER BY byte_start DESC", (source_id,)
+        ):
+            chunk = zstd.decompress(blob)
+            newline = chunk.rfind(b"\n")
+            pieces.append((start + newline + 1, chunk[newline + 1 :]))
+            if newline >= 0:
+                break
+        return pieces[::-1]
 
     def _docs(self, session_id: SessionId, role: DocRole) -> list[tuple[AgentId | None, bytes]]:
         return self._db.execute(
