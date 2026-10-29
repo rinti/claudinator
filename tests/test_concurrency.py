@@ -6,9 +6,11 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from claudinator.archive import Archive, Query
 from claudinator.layout import Config
-from helpers import AID, SID, SID2, append, exported, open_archive, tool_result, transcript, user
+from helpers import AID, SID, SID2, append, exported, open_archive, settle, tool_result, transcript, user
 
 SWEEPER = r"""
 import json, os, sys
@@ -173,3 +175,29 @@ def test_a_reader_does_not_wait_for_the_lock_when_only_an_unfinished_line_is_new
         locker.stdin.close()
         locker.wait(timeout=10)
     assert (report.busy, report.bytes_archived) == (False, 0)
+
+
+@pytest.mark.parametrize("archived_first", [False, True], ids=["never archived", "archived, then emptied"])
+def test_a_reader_does_not_wait_for_the_lock_for_a_settled_empty_file(archived_first):
+    path = transcript()
+    append(transcript(SID2), user("another session"))
+    if archived_first:
+        append(path, user("archived, then emptied"))
+    with open_archive() as archive:
+        archive.sweep()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"")
+    settle(path)
+    with open_archive() as archive:
+        archive.sweep()
+    locker = subprocess.Popen(
+        [sys.executable, "-c", LOCKER, str(Config.from_env().db)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert locker.stdout.readline() == "locked\n"
+        with open_archive() as archive:
+            report = archive.sweep(wait=False)
+    finally:
+        locker.stdin.close()
+        locker.wait(timeout=10)
+    assert (report.busy, report.errors) == (False, ())

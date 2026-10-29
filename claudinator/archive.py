@@ -308,36 +308,43 @@ def _look(fd: int, a: _Archived, size: int, settled: bool) -> tuple[Plan, bytes]
     return plan(a.head, a.tail, a.cursor, size, settled, _pread(fd, len(a.head), 0), window), window
 
 
-def _worth_locking(path: Path, a: _Archived | None) -> bool:
-    """Outside any lock: would _ingest archive anything now? False when the
-    file is unchanged, is a restore still being written, or has no complete
-    new line and has not settled, which is every live session mid-write. So
-    a read command takes the write lock only for files with work to do.
-    _ingest decides again under the lock."""
+@dataclass(frozen=True, slots=True)
+class _Next:
+    """The next segment of a file, as a sweep would archive it now."""
+
+    generation: int  # of the source it extends or starts
+    cursor: int  # its first byte in the file; 0 starts a new source
+    window: bytes  # file bytes [cursor - TAIL_BYTES, cursor), matched against the archive's tail
+    chunk: bytes  # its bytes, never empty
+
+
+def _next(path: Path, a: _Archived | None) -> _Next | None:
+    """The next segment to archive of a file whose latest archived
+    generation is a, or None when there is none yet: the file is gone,
+    unchanged, a copy still being written, empty, or has no complete new
+    line and has not settled. A sweep calls it outside the lock to skip
+    files with nothing to do, and _ingest_segment calls it again under the
+    lock, so the two cannot disagree."""
     try:
         fd = os.open(path, os.O_RDONLY)
     except FileNotFoundError:
-        return False
+        return None
     try:
         st = os.fstat(fd)
         settled = _settled(st)
-        start = 0
+        generation, cursor, window = 0, 0, b""
         if a is not None:
-            match _look(fd, a, st.st_size, settled)[0]:
-                case Plan.UNCHANGED | Plan.WAIT:
-                    return False
-                case Plan.APPEND:
-                    start = a.cursor
-        return settled or _has_newline(fd, start, st.st_size)
+            match _look(fd, a, st.st_size, settled):
+                case (Plan.UNCHANGED | Plan.WAIT, _):
+                    return None
+                case (Plan.APPEND, window):
+                    generation, cursor = a.generation, a.cursor
+                case (Plan.NEW_GENERATION, _):
+                    generation = a.generation + 1
+        chunk = _next_segment(fd, cursor, st.st_size, settled)
     finally:
         os.close(fd)
-
-
-def _has_newline(fd: int, start: int, end: int, step: int = 1 << 16) -> bool:
-    for offset in range(start, end, step):
-        if b"\n" in os.pread(fd, min(step, end - offset), offset):
-            return True
-    return False
+    return _Next(generation, cursor, window, chunk) if chunk else None
 
 
 def _settled(st: os.stat_result) -> bool:
@@ -492,7 +499,7 @@ class Archive:
         refused = None
         for loc in found.transcripts:
             try:
-                if not _worth_locking(loc.path, known.get(loc.path)):
+                if _next(loc.path, known.get(loc.path)) is None:
                     continue
                 delta = self._ingest(loc, wait)
             except FileNotFoundError:
@@ -766,43 +773,24 @@ class Archive:
         """Archive and project the next segment of a file inside the caller's
         transaction, or return None when there is nothing to archive yet."""
         a = self._archived(f.path).get(f.path)
-        try:
-            fd = os.open(f.path, os.O_RDONLY)
-        except FileNotFoundError:
-            return None
-        try:
-            st = os.fstat(fd)
-            settled = _settled(st)
-            generation, cursor, window = 0, 0, b""
-            if a is not None:
-                match _look(fd, a, st.st_size, settled):
-                    case (Plan.UNCHANGED | Plan.WAIT, _):
-                        return None
-                    case (Plan.APPEND, window):
-                        cursor = a.cursor
-                    case (Plan.NEW_GENERATION, _):
-                        generation = a.generation + 1
-            chunk = _next_segment(fd, cursor, st.st_size, settled)
-        finally:
-            os.close(fd)
-        if not chunk:
+        if (n := _next(f.path, a)) is None:
             return None
         archived_at = now()
-        if cursor == 0:
+        if n.cursor == 0:
             (source_id,) = self._db.execute(
                 "INSERT INTO source (path, generation, session_id, agent_id, head, first_seen)"
                 " VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
-                (str(f.path), generation, f.session_id, f.agent_id, chunk[:1024], archived_at),
+                (str(f.path), n.generation, f.session_id, f.agent_id, n.chunk[:1024], archived_at),
             ).fetchone()
         else:
             source_id = a.source_id
-        tail = hashlib.sha256((window + chunk[-TAIL_BYTES:])[-TAIL_BYTES:]).digest()
+        tail = hashlib.sha256((n.window + n.chunk[-TAIL_BYTES:])[-TAIL_BYTES:]).digest()
         self._db.execute(
             "INSERT INTO segment (source_id, byte_start, byte_end, tail, zstd, archived_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (source_id, cursor, cursor + len(chunk), tail, zstd.compress(chunk), archived_at),
+            (source_id, n.cursor, n.cursor + len(n.chunk), tail, zstd.compress(n.chunk), archived_at),
         )
-        self._project(source_id, _records([(cursor, chunk)], not window or window.endswith(b"\n")))
-        return _Delta(len(chunk), generation > 0 and cursor == 0)
+        self._project(source_id, _records([(n.cursor, n.chunk)], not n.window or n.window.endswith(b"\n")))
+        return _Delta(len(n.chunk), n.generation > 0 and n.cursor == 0)
 
     def _project(self, source_id: int, records: Iterable[tuple[int, Record]]) -> None:
         """Fold records into the projection. Shared by _ingest and rebuild;
