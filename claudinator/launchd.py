@@ -3,10 +3,14 @@
 import os
 import plistlib
 import subprocess
+import time
 from pathlib import Path
 
 LABEL = "com.claudinator.sweep"
 SWEEP_INTERVAL_SECONDS = 3600
+BOOTSTRAP_TRIES = 5
+"""bootout returns before launchd has removed the agent, and a bootstrap
+right after it can fail with exit 5 until it has."""
 
 
 class LaunchdError(Exception):
@@ -16,6 +20,11 @@ class LaunchdError(Exception):
 def launchctl(*args: str) -> int:
     """Run launchctl and return its exit status. The tests replace this."""
     return subprocess.run(["launchctl", *args], capture_output=True).returncode
+
+
+def sleep(seconds: float) -> None:
+    """The tests replace this."""
+    time.sleep(seconds)
 
 
 def plist(executable: Path, log: Path, env: dict[str, str]) -> bytes:
@@ -53,7 +62,12 @@ def install(executable: Path, log: Path, env: dict[str, str]) -> bool:
         staged.replace(path)
     if changed or not loaded():
         launchctl("bootout", f"{_domain()}/{LABEL}")
-        if (code := launchctl("bootstrap", _domain(), str(path))) != 0:
+        for attempt in range(BOOTSTRAP_TRIES):
+            if attempt:
+                sleep(0.5)
+            if (code := launchctl("bootstrap", _domain(), str(path))) == 0:
+                break
+        else:
             raise LaunchdError(f"launchctl bootstrap {_domain()} {path} exited {code}")
     return changed
 

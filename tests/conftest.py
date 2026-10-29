@@ -26,6 +26,7 @@ class FakeLaunchctl:
     def __init__(self) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.loaded = False
+        self.bootstrap_exits: list[int] = []  # exit codes of the next bootstraps, before one succeeds
 
     def __call__(self, *args: str) -> int:
         self.calls.append(args)
@@ -33,6 +34,8 @@ class FakeLaunchctl:
             case "print":
                 return 0 if self.loaded else 113
             case "bootstrap":
+                if self.bootstrap_exits:
+                    return self.bootstrap_exits.pop(0)
                 self.loaded = True
                 return 0
             case "bootout":
@@ -46,6 +49,14 @@ def launchctl(monkeypatch):
     fake = FakeLaunchctl()
     monkeypatch.setattr(launchd, "launchctl", fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def sleeps(monkeypatch):
+    """The seconds launchd.py slept, without sleeping."""
+    slept: list[float] = []
+    monkeypatch.setattr(launchd, "sleep", slept.append)
+    return slept
 
 
 @pytest.fixture(autouse=True)

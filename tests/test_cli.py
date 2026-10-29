@@ -622,3 +622,18 @@ def test_every_line_the_cli_writes_goes_through_its_one_output_function():
                 ):
                     writers.append(f"{fn.name}:{node.lineno}")
     assert writers == [], "write terminal text with _emit(), which escapes control characters"
+
+
+def test_install_retries_a_bootstrap_that_fails_while_the_bootout_finishes(capsys, launchctl, sleeps):
+    launchctl.bootstrap_exits = [5, 5]
+    assert run(capsys, "install")[0] == 0
+    assert launchctl.loaded
+    assert len([c for c in launchctl.calls if c[0] == "bootstrap"]) == 3
+    assert len(sleeps) == 2
+
+
+def test_install_gives_up_on_a_bootstrap_that_keeps_failing(capsys, home, launchctl):
+    launchctl.bootstrap_exits = [5] * 100
+    code, _, err = run(capsys, "install")
+    assert (code, launchctl.loaded) == (1, False)
+    assert err.startswith(f"claudinator: launchctl bootstrap gui/{os.getuid()} ") and err.endswith(" exited 5\n")
