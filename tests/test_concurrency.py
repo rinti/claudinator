@@ -201,3 +201,25 @@ def test_a_reader_does_not_wait_for_the_lock_for_a_settled_empty_file(archived_f
         locker.stdin.close()
         locker.wait(timeout=10)
     assert (report.busy, report.errors) == (False, ())
+
+
+def test_a_sweep_that_waited_out_the_lock_once_does_not_wait_again_to_record_itself(monkeypatch):
+    append(transcript(), user("quokka"))
+    open_archive().close()
+    monkeypatch.setattr("claudinator.archive.LOCK_WAIT_MS", 1000)
+    locker = subprocess.Popen(
+        [sys.executable, "-c", LOCKER, str(Config.from_env().db)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert locker.stdout.readline() == "locked\n"
+        started = time.monotonic()
+        with open_archive() as archive:
+            report = archive.sweep(wait=True)
+        elapsed = time.monotonic() - started
+    finally:
+        locker.stdin.close()
+        locker.wait(timeout=10)
+    assert report.errors == (
+        "another claudinator process is writing to the archive and held its lock for 1 s; try again when it finishes",
+    )
+    assert elapsed < 1.8

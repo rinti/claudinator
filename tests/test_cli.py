@@ -506,3 +506,16 @@ def test_a_sqlite_file_that_is_not_an_archive_is_refused_and_left_alone(capsys, 
     monkeypatch.setenv("CLAUDINATOR_DB", str(other))
     assert run(capsys, "sessions") == (1, "", f"claudinator: {other} is not a claudinator archive\n")
     assert other.read_bytes() == before
+
+
+def test_status_names_the_reason_the_last_sweep_was_refused(capsys):
+    append(transcript(), user("archived by the newer claudinator"))
+    run(capsys, "install")
+    db = sqlite3.connect(Config.from_env().db)
+    db.execute("UPDATE meta SET value = '99' WHERE key = 'archive_schema'")
+    db.commit()
+    db.close()
+    assert run(capsys, "sweep")[0] == 1
+    code, out, _ = run(capsys, "status")
+    assert code == 1
+    assert "transcripts changed, 0 B, refused: this archive was written by a newer claudinator)\n" in out

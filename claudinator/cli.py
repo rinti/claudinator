@@ -212,14 +212,14 @@ def cmd_status(archive: Archive, args: argparse.Namespace) -> int:
 
 
 def _print_status(archive: Archive, st: Status) -> int:
-    """Exit 1 when the sweeper is not loaded, the last sweep failed, the
-    last sweep is older than two intervals, or a transcript sits in a layout
+    """Exit 1 when the sweeper is not loaded, the last sweep failed or was
+    refused, the last sweep is older than two intervals, or a transcript sits in a layout
     claudinator does not know (so it is not being archived)."""
     loaded = launchd.loaded()
     last = st.last_sweep
     at = st.checked_at
     stale = last is None or at - last.finished > 2 * launchd.SWEEP_INTERVAL_SECONDS * 1000
-    failed = last is not None and bool(last.errors)
+    failed = last is not None and bool(last.errors or last.refused)
     unarchived = sum(p.unarchived_bytes for p in st.pending)
     print(f"archive   {_short(str(st.db_path))}  {_size(st.db_bytes)} ({_size(st.archived_bytes)} of transcripts)")
     print(

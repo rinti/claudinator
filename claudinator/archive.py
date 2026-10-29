@@ -266,6 +266,42 @@ class _Busy(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class _Delta:
+    """What part of a sweep did: one file, or the side files."""
+
+    bytes: int = 0
+    rewritten: int = 0  # new generations started
+    docs: int = 0  # side-file bodies stored
+    errors: tuple[str, ...] = ()
+    stop: _Busy | Locked | NewerArchive | None = None  # why the sweep ends here
+
+    def __add__(self, other: _Delta) -> _Delta:
+        return _Delta(
+            self.bytes + other.bytes,
+            self.rewritten + other.rewritten,
+            self.docs + other.docs,
+            self.errors + other.errors,
+            self.stop or other.stop,
+        )
+
+
+def _failed(what: str, e: Exception) -> _Delta:
+    """What an exception means for a sweep. The one place that decides it:
+    another writer (wait=False), a lock held past LOCK_WAIT_MS, or a newer
+    claudinator ends the sweep; a file deleted meanwhile is nothing; any
+    other exception is one error, and the sweep goes on."""
+    match e:
+        case _Busy() | NewerArchive():
+            return _Delta(stop=e)
+        case Locked():
+            return _Delta(errors=(str(e),), stop=e)
+        case FileNotFoundError():
+            return _Delta()
+        case _:
+            return _Delta(errors=(f"{what}: {e!r}",))
+
+
+@dataclass(frozen=True, slots=True)
 class _Archived:
     """What the archive holds of one file: its latest generation."""
 
@@ -349,13 +385,6 @@ def _next(path: Path, a: _Archived | None) -> _Next | None:
 
 def _settled(st: os.stat_result) -> bool:
     return now() - st.st_mtime_ns // 1_000_000 >= SETTLE_SECONDS * 1000
-
-
-@dataclass(frozen=True, slots=True)
-class _Delta:
-    bytes: int = 0
-    rewritten: bool = False
-    busy: bool = False  # wait=False found the lock taken after some segments committed
 
 
 def now() -> Millis:
@@ -487,74 +516,37 @@ class Archive:
         archived.
 
         A file that fails for any reason becomes one entry in errors and the
-        sweep moves on, so one bad file never keeps the rest unarchived.
-        found is a walk the caller already made; None walks now."""
+        sweep moves on, so one bad file never keeps the rest unarchived. A
+        refused sweep is recorded too, so status can say why. found is a walk
+        the caller already made; None walks now."""
         started = now()
-        known = self._archived()
         found = found or discover(self.cfg)
-        seen = len(found.transcripts)
-        changed = archived = generations = docs_changed = 0
-        errors = list(found.errors)
-        busy = False
-        refused = None
-        for loc in found.transcripts:
-            try:
-                if _next(loc.path, known.get(loc.path)) is None:
-                    continue
-                delta = self._ingest(loc, wait)
-            except FileNotFoundError:
-                continue
-            except _Busy:
-                busy = True
-                break
-            except NewerArchive as e:
-                refused = str(e)
-                break
-            except Locked as e:
-                errors.append(str(e))
-                break
-            except Exception as e:
-                errors.append(f"{loc.path}: {e!r}")
-                continue
-            if delta.bytes:
-                changed += 1
-                archived += delta.bytes
-                generations += delta.rewritten
-            if progress:
-                progress(loc.path)
-            if delta.busy:
-                busy = True
-                break
-        else:
-            try:
-                docs_changed, doc_errors = self._store_docs(found.side_files, wait)
-                errors += doc_errors
-            except _Busy:
-                busy = True
-            except NewerArchive as e:
-                refused = str(e)
-            except Exception as e:
-                errors.append(f"side files: {e!r}")
+        total, changed = _Delta(errors=found.errors, stop=self._newer()), 0
+        if not total.stop:
+            known = self._archived()
+            for loc in found.transcripts:
+                delta = self._ingest(loc, known.get(loc.path), wait)
+                total, changed = total + delta, changed + (delta.bytes > 0)
+                if total.stop:
+                    break
+                if progress and delta.bytes:
+                    progress(loc.path)
+            else:
+                total += self._store_docs(found.side_files, wait)
         report = SweepReport(
             started=started,
             finished=now(),
-            transcripts_seen=seen,
+            transcripts_seen=len(found.transcripts),
             transcripts_changed=changed,
-            bytes_archived=archived,
-            new_generations=generations,
-            docs_changed=docs_changed,
-            errors=tuple(errors),
-            busy=busy,
-            refused=refused,
+            bytes_archived=total.bytes,
+            new_generations=total.rewritten,
+            docs_changed=total.docs,
+            errors=total.errors,
+            busy=isinstance(total.stop, _Busy),
+            refused=str(total.stop) if isinstance(total.stop, NewerArchive) else None,
         )
-        if wait and not refused:
-            try:
-                with self._write(wait=True):
-                    self._set_meta("last_sweep", json.dumps(asdict(report)))
-            except NewerArchive as e:
-                report = replace(report, refused=str(e))
-            except Exception as e:
-                report = replace(report, errors=(*report.errors, f"recording this sweep: {e!r}"))
+        if wait and not isinstance(total.stop, Locked):
+            report = self._record(report)
         return report
 
     def rebuild(self, *, force: bool = False) -> int:
@@ -706,13 +698,14 @@ class Archive:
     # -- private -----------------------------------------------------------
 
     @contextmanager
-    def _write(self, *, wait: bool) -> Iterator[None]:
+    def _write(self, *, wait: bool, newer_ok: bool = False) -> Iterator[None]:
         """One write transaction. The connection is in autocommit mode, so
         every statement inside, DDL included, joins this transaction.
 
         Raises NewerArchive when a newer claudinator has stamped the file,
         checked under the lock because one may upgrade it while this
-        process has it open."""
+        process has it open. newer_ok skips that check, for the one write
+        an older claudinator may make: its last-sweep report."""
         self._db.execute(f"PRAGMA busy_timeout = {LOCK_WAIT_MS if wait else 0}")
         try:
             self._db.execute("BEGIN IMMEDIATE")
@@ -728,10 +721,8 @@ class Archive:
         finally:
             self._db.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
         try:
-            if (self._meta_int("archive_schema") or 0) > ARCHIVE_SCHEMA or (
-                self._meta_int("projection_version") or 0
-            ) > PROJECTION_VERSION:
-                raise NewerArchive("this archive was written by a newer claudinator")
+            if not newer_ok and (newer := self._newer()):
+                raise newer
             yield
             self._db.execute("COMMIT")
         except BaseException:
@@ -739,10 +730,12 @@ class Archive:
                 self._db.execute("ROLLBACK")
             raise
 
-    def _ingest(self, f: TranscriptFile, wait: bool) -> _Delta:
+    def _ingest(self, f: TranscriptFile, hint: _Archived | None, wait: bool) -> _Delta:
         """Archive and project the new complete lines of one transcript, one
         segment per write transaction, so neither memory nor the time the
-        lock is held grows with the file.
+        lock is held grows with the file. hint is what the archive held
+        before the sweep; a file with nothing to archive against it takes
+        no lock.
 
         Concurrency: each transaction reads the archived state, reads the
         file, and writes, all under BEGIN IMMEDIATE. A second process
@@ -757,17 +750,17 @@ class Archive:
         it, a line-aligned prefix of the file, and the next sweep goes on
         from that cursor."""
         done = _Delta()
-        while True:
-            try:
+        try:
+            if _next(f.path, hint) is None:
+                return done
+            while True:
                 with self._write(wait=wait):
                     step = self._ingest_segment(f)
-            except _Busy:
-                if not done.bytes:
-                    raise
-                return replace(done, busy=True)
-            if step is None:
-                return done
-            done = _Delta(done.bytes + step.bytes, done.rewritten or step.rewritten)
+                if step is None:
+                    return done
+                done += step
+        except Exception as e:
+            return done + _failed(str(f.path), e)
 
     def _ingest_segment(self, f: TranscriptFile) -> _Delta | None:
         """Archive and project the next segment of a file inside the caller's
@@ -790,7 +783,7 @@ class Archive:
             (source_id, n.cursor, n.cursor + len(n.chunk), tail, zstd.compress(n.chunk), archived_at),
         )
         self._project(source_id, _records([(n.cursor, n.chunk)], not n.window or n.window.endswith(b"\n")))
-        return _Delta(len(n.chunk), n.generation > 0 and n.cursor == 0)
+        return _Delta(len(n.chunk), rewritten=n.generation > 0 and n.cursor == 0)
 
     def _project(self, source_id: int, records: Iterable[tuple[int, Record]]) -> None:
         """Fold records into the projection. Shared by _ingest and rebuild;
@@ -918,11 +911,10 @@ class Archive:
             raise UnknownSession(f"no archived transcript for {what}" + (f" generation {generation}" if generation is not None else ""))
         return row[0]
 
-    def _store_docs(self, docs: Iterable[SideFile], wait: bool) -> tuple[int, list[str]]:
+    def _store_docs(self, docs: Iterable[SideFile], wait: bool) -> _Delta:
         """Store the latest bytes of each side file whose sha256 changed, in
         one transaction. A file whose size and mtime match what is stored is
-        not read. DESKTOP docs get their session id from the body. Returns
-        how many bodies changed and what could not be read."""
+        not read. DESKTOP docs get their session id from the body."""
         rows = self._db.execute("SELECT path, size, mtime_ns, sha256 FROM doc")
         known = {path: (size, mtime_ns, sha) for path, size, mtime_ns, sha in rows}
         changed, restat, errors = [], [], []
@@ -950,19 +942,41 @@ class Archive:
                 (str(d.path), d.role.value, session_id, d.agent_id, sha, body, st.st_size, st.st_mtime_ns, archived_at)
             )
         if not changed and not restat:
-            return 0, errors
-        with self._write(wait=wait):
-            upserted = self._db.executemany(
-                "INSERT INTO doc (path, role, session_id, agent_id, sha256, body, size, mtime_ns, archived_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                " ON CONFLICT (path) DO UPDATE SET role = excluded.role, session_id = excluded.session_id,"
-                " agent_id = excluded.agent_id, sha256 = excluded.sha256, body = excluded.body,"
-                " size = excluded.size, mtime_ns = excluded.mtime_ns, archived_at = excluded.archived_at"
-                " WHERE excluded.sha256 IS NOT doc.sha256",
-                changed,
-            ).rowcount
-            self._db.executemany("UPDATE doc SET size = ?, mtime_ns = ? WHERE path = ?", restat)
-        return upserted, errors
+            return _Delta(errors=tuple(errors))
+        try:
+            with self._write(wait=wait):
+                upserted = self._db.executemany(
+                    "INSERT INTO doc (path, role, session_id, agent_id, sha256, body, size, mtime_ns, archived_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT (path) DO UPDATE SET role = excluded.role, session_id = excluded.session_id,"
+                    " agent_id = excluded.agent_id, sha256 = excluded.sha256, body = excluded.body,"
+                    " size = excluded.size, mtime_ns = excluded.mtime_ns, archived_at = excluded.archived_at"
+                    " WHERE excluded.sha256 IS NOT doc.sha256",
+                    changed,
+                ).rowcount
+                self._db.executemany("UPDATE doc SET size = ?, mtime_ns = ? WHERE path = ?", restat)
+        except Exception as e:
+            return _Delta(errors=tuple(errors)) + _failed("side files", e)
+        return _Delta(docs=upserted, errors=tuple(errors))
+
+    def _record(self, report: SweepReport) -> SweepReport:
+        """Store report as the last sweep, a refused one included, so status
+        can tell a sweeper that cannot write from one that stopped running."""
+        try:
+            with self._write(wait=True, newer_ok=True):
+                self._set_meta("last_sweep", json.dumps(asdict(report)))
+        except Exception as e:
+            return replace(report, errors=report.errors + _failed("recording this sweep", e).errors)
+        return report
+
+    def _newer(self) -> NewerArchive | None:
+        """Whether a newer claudinator has stamped this archive, and so owns
+        its writes."""
+        if (self._meta_int("archive_schema") or 0) > ARCHIVE_SCHEMA or (
+            self._meta_int("projection_version") or 0
+        ) > PROJECTION_VERSION:
+            return NewerArchive("this archive was written by a newer claudinator")
+        return None
 
     def _projection_current(self) -> bool:
         return self._meta_int("projection_version") == PROJECTION_VERSION
