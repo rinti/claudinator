@@ -7,15 +7,15 @@
 --
 -- Projection layer (below the marker). A pure function of the archive layer
 -- (claudinator/record.py). Dropped and recreated in one transaction whenever
--- meta.projection_version is older than record.PROJECTION_VERSION, or
--- meta.projection_ddl differs from the sha256 of this section.
+-- meta.projection_version is older than record.PROJECTION_VERSION. An edit to
+-- this section needs a version bump; tests/test_projection_golden.py says so.
 --
 -- Pragmas live in code, not here. archive._create sets journal_mode=WAL once,
 -- on the private file it publishes; every connection sets synchronous=NORMAL,
 -- foreign_keys=ON, and busy_timeout.
 
 CREATE TABLE meta (
-  key   TEXT PRIMARY KEY,   -- 'archive_schema' | 'projection_version' | 'projection_ddl' | 'last_sweep'
+  key   TEXT PRIMARY KEY,   -- 'archive_schema' | 'projection_version' | 'last_sweep'
   value TEXT NOT NULL
 ) STRICT;
 

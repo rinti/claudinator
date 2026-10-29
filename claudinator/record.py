@@ -16,11 +16,12 @@ from typing import NewType
 
 PROJECTION_VERSION = 4
 """Bump when parse() or project() would produce different rows for the same
-bytes. An edit to the projection section of schema.sql needs no bump: meta
-keeps a digest of that DDL, and open() rebuilds when it differs.
+bytes, or when the projection section of schema.sql changes. open() compares
+this number only, so two builds that share it never rebuild over each other.
 
 tests/test_projection_golden.py projects a fixture corpus of real (redacted)
-lines and compares a digest of the rows with GOLDEN[PROJECTION_VERSION], so a
+lines and compares a digest of the rows, and a digest of the projection DDL
+without its comments, with the ones recorded for PROJECTION_VERSION, so a
 forgotten bump fails the suite instead of silently mixing projections."""
 
 SessionId = NewType("SessionId", str)  # transcript file stem, a UUID

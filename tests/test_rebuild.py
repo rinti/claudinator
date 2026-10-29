@@ -1,10 +1,12 @@
 import random
-import sqlite3
+import subprocess
+import sys
 
 import claudinator.archive as archive_module
 from claudinator.layout import Config
 
 from claudinator.record import PROJECTION_VERSION, Unparsed
+from test_concurrency import LOCKER
 from helpers import (
     AID,
     SID,
@@ -84,14 +86,20 @@ def test_open_rebuilds_the_projection_after_a_version_bump(monkeypatch):
         assert archive.status().unparsed_lines == 2
 
 
-def test_open_rebuilds_the_projection_when_its_ddl_changes_without_a_version_bump(monkeypatch):
+def test_builds_that_share_a_projection_version_do_not_rebuild_each_others_projection(monkeypatch):
     append(transcript(), user("one quokka"))
     with open_archive() as archive:
         archive.sweep()
-    changed = archive_module._PROJECTION_DDL + "\nCREATE INDEX entry_by_ts ON entry (ts);\n"
-    monkeypatch.setattr(archive_module, "_PROJECTION_DDL", changed)
-    with open_archive() as archive:
-        assert found(archive, "quokka") == 1
-    db = sqlite3.connect(Config.from_env().db)
-    assert db.execute("SELECT name FROM sqlite_schema WHERE name = 'entry_by_ts'").fetchall() == [("entry_by_ts",)]
-    db.close()
+    edited = archive_module._PROJECTION_DDL + "\n-- a comment another build of this version wrote\n"
+    monkeypatch.setattr(archive_module, "_PROJECTION_DDL", edited)
+    monkeypatch.setattr(archive_module, "LOCK_WAIT_MS", 200)
+    locker = subprocess.Popen(
+        [sys.executable, "-c", LOCKER, str(Config.from_env().db)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert locker.stdout.readline() == "locked\n"
+        with open_archive() as archive:
+            assert found(archive, "quokka") == 1
+    finally:
+        locker.stdin.close()
+        locker.wait(timeout=10)

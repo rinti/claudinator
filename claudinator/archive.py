@@ -356,16 +356,6 @@ def now() -> Millis:
     return Millis(time.time_ns() // 1_000_000)
 
 
-def _projection_stamp() -> dict[str, str]:
-    """What meta records about the projection it holds: the version of the
-    rules and a digest of the DDL, so a DDL edit rebuilds without anyone
-    remembering to bump the version."""
-    return {
-        "projection_version": str(PROJECTION_VERSION),
-        "projection_ddl": hashlib.sha256(_PROJECTION_DDL.encode()).hexdigest(),
-    }
-
-
 def _create(path: Path) -> None:
     """Build a new database in a private file and publish it whole.
 
@@ -386,7 +376,7 @@ def _create(path: Path) -> None:
             db.executescript(f"BEGIN; {_ARCHIVE_DDL} {_PROJECTION_DDL} COMMIT;")
             db.executemany(
                 "INSERT INTO meta (key, value) VALUES (?, ?)",
-                [("archive_schema", str(ARCHIVE_SCHEMA)), *_projection_stamp().items()],
+                [("archive_schema", str(ARCHIVE_SCHEMA)), ("projection_version", str(PROJECTION_VERSION))],
             )
         finally:
             db.close()
@@ -465,7 +455,7 @@ class Archive:
             raise ArchiveError(
                 f"{self.cfg.db} has archive schema {schema}, and this claudinator reads schema {ARCHIVE_SCHEMA} only"
             )
-        if schema == ARCHIVE_SCHEMA and projection <= PROJECTION_VERSION and not self._projection_current():
+        if schema == ARCHIVE_SCHEMA and projection < PROJECTION_VERSION:
             try:
                 self.rebuild()
             except NewerArchive:
@@ -572,8 +562,7 @@ class Archive:
             sources = self._db.execute("SELECT id FROM source ORDER BY id").fetchall()
             for (source_id,) in sources:
                 self._project(source_id, _records(self._segments(source_id)))
-            for key, value in _projection_stamp().items():
-                self._set_meta(key, value)
+            self._set_meta("projection_version", str(PROJECTION_VERSION))
         return len(sources)
 
     # -- reading ------------------------------------------------------------
@@ -988,7 +977,7 @@ class Archive:
         return upserted, errors
 
     def _projection_current(self) -> bool:
-        return all(self._meta(key) == value for key, value in _projection_stamp().items())
+        return self._meta_int("projection_version") == PROJECTION_VERSION
 
     def _meta(self, key: str) -> str | None:
         row = self._db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
