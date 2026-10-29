@@ -18,7 +18,7 @@ import time
 import unicodedata
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, replace
 from importlib import resources
 from pathlib import Path
 from typing import BinaryIO
@@ -408,7 +408,6 @@ class Archive:
 
     cfg: Config
     _db: sqlite3.Connection = field(repr=False)
-    _writable: bool = True
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -448,10 +447,7 @@ class Archive:
             raise ArchiveError(
                 f"{self.cfg.db} has archive schema {schema}, and this claudinator reads schema {ARCHIVE_SCHEMA} only"
             )
-        if schema > ARCHIVE_SCHEMA or projection > PROJECTION_VERSION:
-            self._writable = False
-            return
-        if projection < PROJECTION_VERSION:
+        if schema == ARCHIVE_SCHEMA and projection < PROJECTION_VERSION:
             try:
                 self.rebuild()
             except NewerArchive:
@@ -468,13 +464,12 @@ class Archive:
         wait=False (every read command): give up at the first busy lock and
         report busy=True; the reader proceeds on what is already archived."""
         started = _now()
-        if not self._writable:
-            return SweepReport(started, _now(), refused="this archive was written by a newer claudinator")
         known = self._cursors()
         seen = changed = archived = archived_lines = generations = docs_changed = 0
         errors: list[str] = []
         docs: list[SideFile] = []
         busy = False
+        refused = None
         for loc in discover(self.cfg):
             if isinstance(loc, SideFile):
                 docs.append(loc)
@@ -491,6 +486,9 @@ class Archive:
             except _Busy:
                 busy = True
                 break
+            except NewerArchive as e:
+                refused = str(e)
+                break
             except (OSError, sqlite3.DatabaseError) as e:
                 errors.append(f"{loc.path}: {e}")
                 continue
@@ -501,12 +499,14 @@ class Archive:
                 generations += delta.rewritten
             if progress:
                 progress(loc.path, delta.bytes)
-        if not busy:
+        if not busy and not refused:
             try:
                 docs_changed, doc_errors = self._store_docs(docs, wait)
                 errors += doc_errors
             except _Busy:
                 busy = True
+            except NewerArchive as e:
+                refused = str(e)
         report = SweepReport(
             started=started,
             finished=_now(),
@@ -518,10 +518,14 @@ class Archive:
             docs_changed=docs_changed,
             errors=tuple(errors),
             busy=busy,
+            refused=refused,
         )
-        if wait:
-            with self._write(wait=True):
-                self._set_meta("last_sweep", json.dumps(asdict(report)))
+        if wait and not refused:
+            try:
+                with self._write(wait=True):
+                    self._set_meta("last_sweep", json.dumps(asdict(report)))
+            except NewerArchive as e:
+                report = replace(report, refused=str(e))
         return report
 
     def rebuild(self, *, force: bool = False) -> None:
@@ -529,14 +533,8 @@ class Archive:
         transaction. open() runs it after an upgrade; `claudinator rebuild`
         runs it with force=True. Readers in other processes keep seeing the
         old projection (WAL snapshot) until commit."""
-        if not self._writable:
-            raise NewerArchive("this archive was written by a newer claudinator")
         with self._write(wait=True):
-            stored = self._meta_int("projection_version")
-            if stored is not None and stored > PROJECTION_VERSION:
-                self._writable = False
-                raise NewerArchive("this archive was written by a newer claudinator")
-            if not force and stored == PROJECTION_VERSION:
+            if not force and self._meta_int("projection_version") == PROJECTION_VERSION:
                 return
             self._db.executescript(_PROJECTION_DDL)
             for (source_id,) in self._db.execute("SELECT id FROM source ORDER BY id").fetchall():
@@ -669,7 +667,11 @@ class Archive:
     @contextmanager
     def _write(self, *, wait: bool) -> Iterator[None]:
         """One write transaction. The connection is in autocommit mode, so
-        every statement inside, DDL included, joins this transaction."""
+        every statement inside, DDL included, joins this transaction.
+
+        Raises NewerArchive when a newer claudinator has stamped the file,
+        checked under the lock because one may upgrade it while this
+        process has it open."""
         self._db.execute(f"PRAGMA busy_timeout = {60_000 if wait else 0}")
         try:
             self._db.execute("BEGIN IMMEDIATE")
@@ -678,6 +680,10 @@ class Archive:
                 raise _Busy from e
             raise
         try:
+            if (self._meta_int("archive_schema") or 0) > ARCHIVE_SCHEMA or (
+                self._meta_int("projection_version") or 0
+            ) > PROJECTION_VERSION:
+                raise NewerArchive("this archive was written by a newer claudinator")
             yield
         except BaseException:
             self._db.execute("ROLLBACK")
@@ -1031,4 +1037,7 @@ def _excerpt(text: str, terms: tuple[str, ...], width: int = 160) -> tuple[str, 
 
 
 def _report(obj: dict) -> SweepReport:
-    return SweepReport(**{**obj, "errors": tuple(obj.get("errors", ()))})
+    """The stored last-sweep JSON as a SweepReport. Keys this version does
+    not know come from a newer claudinator and are dropped."""
+    known = {f.name for f in fields(SweepReport)}
+    return SweepReport(**{k: v for k, v in obj.items() if k in known} | {"errors": tuple(obj.get("errors", ()))})

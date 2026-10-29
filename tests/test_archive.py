@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import stat
@@ -5,7 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from claudinator.archive import SEGMENT_BYTES, ArchiveError, Config, DocRole, SideFile, TranscriptFile, classify
+from claudinator.archive import (
+    SEGMENT_BYTES,
+    ArchiveError,
+    Config,
+    DocRole,
+    NewerArchive,
+    SideFile,
+    TranscriptFile,
+    classify,
+)
+from claudinator.record import PROJECTION_VERSION
 from helpers import (
     AID,
     SID,
@@ -248,3 +259,33 @@ def test_the_database_and_its_wal_files_are_private_whatever_the_umask(tmp_path,
     finally:
         os.umask(previous)
     assert modes == {"archive.db": 0o600, "archive.db-wal": 0o600, "archive.db-shm": 0o600}
+
+
+def set_meta(key: str, value: str) -> None:
+    db = sqlite3.connect(Config.from_env().db)
+    db.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
+    db.commit()
+    db.close()
+
+
+def test_an_open_archive_stops_writing_once_a_newer_claudinator_takes_over():
+    path = transcript()
+    append(path, user("archived before the upgrade"))
+    with open_archive() as archive:
+        archive.sweep()
+        set_meta("projection_version", str(PROJECTION_VERSION + 1))
+        append(path, user("arrives after the upgrade"))
+        report = archive.sweep()
+        assert report.refused
+        assert report.bytes_archived == 0
+        assert exported(archive) == user("archived before the upgrade")
+        with pytest.raises(NewerArchive):
+            archive.rebuild(force=True)
+
+
+def test_status_reads_a_last_sweep_report_from_a_newer_claudinator():
+    with open_archive() as archive:
+        archive.sweep()
+    set_meta("last_sweep", json.dumps({"started": 1, "finished": 2, "errors": [], "added_later": 7}))
+    with open_archive() as archive:
+        assert (archive.status().last_sweep.finished, archive.status().last_sweep.errors) == (2, ())
