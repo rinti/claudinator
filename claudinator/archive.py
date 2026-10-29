@@ -358,7 +358,7 @@ class Plan(enum.Enum):
     UNCHANGED = "unchanged"  # the file is exactly what is archived
     APPEND = "append"  # the archived bytes are a prefix of the file, and more follow
     NEW_GENERATION = "new generation"  # the file was rewritten
-    WAIT = "wait"  # shorter but with the same head: a restore still being written
+    WAIT = "wait"  # shorter but with the same head: a copy of the transcript still being written
 
 
 def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_head: bytes, file_window: bytes) -> Plan:
@@ -367,10 +367,12 @@ def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_h
     file_head is the file's bytes [0, len(head)), fewer if the file is
     shorter. file_window is its bytes [cursor - TAIL_BYTES, cursor), read
     only when size >= cursor. A shorter file with the same head waits until
-    it settles, because that is what a restore looks like while it is
-    written. Any other shorter file, a changed head, or a changed window is
-    a rewrite. A rewrite that keeps both the head and the window is not
-    detected."""
+    it settles, because that is what a copy written in place looks like
+    halfway: `claudinator export ID > path`, the restore the README offers,
+    or a copy from a backup. Treating it as a rewrite would archive the
+    half as a new generation. Any other shorter file, a changed head, or a
+    changed window is a rewrite. A rewrite that keeps both the head and the
+    window is not detected."""
     head_kept = file_head == head[: len(file_head)]
     if size < cursor:
         return Plan.NEW_GENERATION if settled or not head_kept else Plan.WAIT

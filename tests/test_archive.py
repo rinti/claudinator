@@ -121,7 +121,7 @@ def test_rewrite_starts_a_new_generation_and_keeps_the_old_bytes():
         assert found(archive, "rewritten") == 1
 
 
-def test_restore_in_progress_is_not_a_rewrite():
+def test_a_copy_still_being_written_in_place_is_not_a_rewrite():
     path = transcript()
     append(path, *(user(f"message {i}") for i in range(200)))
     with open_archive() as archive:
