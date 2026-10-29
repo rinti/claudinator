@@ -119,6 +119,7 @@ class SideFile:
 Location = TranscriptFile | SideFile
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_TOOL_RESULTS = re.compile(rf"[^/]+/{_UUID}/tool-results")
 
 _PROJECTS_LAYOUT: tuple[tuple[re.Pattern[str], Callable[[Path, re.Match[str]], Location | None]], ...] = (
     (
@@ -133,7 +134,7 @@ _PROJECTS_LAYOUT: tuple[tuple[re.Pattern[str], Callable[[Path, re.Match[str]], L
         re.compile(rf"[^/]+/({_UUID})/subagents/agent-([^/]+)\.meta\.json"),
         lambda p, m: SideFile(p, DocRole.SUBAGENT_META, SessionId(m[1]), AgentId(m[2])),
     ),
-    (re.compile(rf"[^/]+/{_UUID}/tool-results/.+"), lambda p, m: None),
+    (re.compile(_TOOL_RESULTS.pattern + "/.+"), lambda p, m: None),
     (
         re.compile(rf"[^/]+/({_UUID})/.+(?<!\.jsonl)"),
         lambda p, m: SideFile(p, DocRole.SESSION_FILE, SessionId(m[1]), None),
@@ -168,15 +169,41 @@ def classify(path: Path, cfg: Config) -> Location | None:
     return None
 
 
-def discover(cfg: Config) -> Iterator[Location]:
-    """Walk projects/ and the desktop sessions dir; yield classify() hits.
-    A missing directory yields nothing."""
-    for root in (cfg.claude_dir / "projects", cfg.desktop_dir / "claude-code-sessions"):
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames.sort()
+@dataclass(frozen=True, slots=True)
+class Discovery:
+    """One walk of projects/ and the desktop sessions directory."""
+
+    transcripts: tuple[TranscriptFile, ...]
+    side_files: tuple[SideFile, ...]
+    unclassified: tuple[Path, ...]  # *.jsonl under projects/ that classify() does not know
+    errors: tuple[str, ...]  # directories that could not be listed
+
+
+def discover(cfg: Config) -> Discovery:
+    """Walk projects/ and the desktop sessions dir and classify every file.
+    A directory that vanishes mid-walk, or was never there, is not an error.
+    tool-results/ directories hold no archived file and are not entered."""
+    found: dict[type, list] = {TranscriptFile: [], SideFile: []}
+    unclassified, errors = [], []
+
+    def failed(e: OSError) -> None:
+        if not isinstance(e, FileNotFoundError):
+            errors.append(f"{e.filename}: {e!r}")
+
+    projects = cfg.claude_dir / "projects"
+    for root in (projects, cfg.desktop_dir / "claude-code-sessions"):
+        for dirpath, dirnames, filenames in os.walk(root, onerror=failed):
+            here = Path(dirpath)
+            dirnames[:] = sorted(
+                d for d in dirnames if not (root == projects and _TOOL_RESULTS.fullmatch((here / d).relative_to(root).as_posix()))
+            )
             for name in sorted(filenames):
-                if (loc := classify(Path(dirpath, name), cfg)) is not None:
-                    yield loc
+                path = here / name
+                if (loc := classify(path, cfg)) is not None:
+                    found[type(loc)].append(loc)
+                elif root == projects and name.endswith(".jsonl"):
+                    unclassified.append(path)
+    return Discovery(tuple(found[TranscriptFile]), tuple(found[SideFile]), tuple(unclassified), tuple(errors))
 
 
 def chunk_lines(body: bytes, base: int, limit: int = SEGMENT_BYTES) -> Iterator[tuple[int, bytes]]:
@@ -322,6 +349,7 @@ class Status:
     multi_generation: int  # files that were rewritten at least once
     unparsed_lines: int
     pending: tuple[Pending, ...]  # on-disk bytes not yet archived
+    unclassified: tuple[Path, ...]  # *.jsonl under projects/ in no known layout, so never archived
     last_sweep: SweepReport | None  # the last sweep that waited for the lock
 
 
@@ -491,16 +519,13 @@ class Archive:
         sweep moves on, so one bad file never keeps the rest unarchived."""
         started = _now()
         known = self._cursors()
-        seen = changed = archived = archived_lines = generations = docs_changed = 0
-        errors: list[str] = []
-        docs: list[SideFile] = []
+        found = discover(self.cfg)
+        seen = len(found.transcripts)
+        changed = archived = archived_lines = generations = docs_changed = 0
+        errors = list(found.errors)
         busy = False
         refused = None
-        for loc in discover(self.cfg):
-            if isinstance(loc, SideFile):
-                docs.append(loc)
-                continue
-            seen += 1
+        for loc in found.transcripts:
             try:
                 if known.get(loc.path) == loc.path.stat().st_size:
                     continue
@@ -528,7 +553,7 @@ class Archive:
                 progress(loc.path, delta.bytes)
         else:
             try:
-                docs_changed, doc_errors = self._store_docs(docs, wait)
+                docs_changed, doc_errors = self._store_docs(found.side_files, wait)
                 errors += doc_errors
             except _Busy:
                 busy = True
@@ -669,10 +694,9 @@ class Archive:
         (unparsed,) = self._db.execute("SELECT COALESCE(SUM(unparsed), 0) FROM transcript").fetchone()
         mains = [Path(p) for (p,) in self._db.execute("SELECT DISTINCT path FROM source WHERE agent_id IS NULL")]
         known = self._cursors()
+        found = discover(self.cfg)
         pending = []
-        for loc in discover(self.cfg):
-            if not isinstance(loc, TranscriptFile):
-                continue
+        for loc in found.transcripts:
             try:
                 st = loc.path.stat()
             except FileNotFoundError:
@@ -691,6 +715,7 @@ class Archive:
             multi_generation=rewritten,
             unparsed_lines=unparsed,
             pending=tuple(pending),
+            unclassified=found.unclassified,
             last_sweep=_report(json.loads(last)) if last else None,
         )
 
@@ -919,7 +944,7 @@ class Archive:
             raise UnknownSession(f"no archived transcript for {what}" + (f" generation {generation}" if generation is not None else ""))
         return row[0]
 
-    def _store_docs(self, docs: list[SideFile], wait: bool) -> tuple[int, list[str]]:
+    def _store_docs(self, docs: Iterable[SideFile], wait: bool) -> tuple[int, list[str]]:
         """Upsert the latest body of each side file whose sha256 changed, in
         one transaction. DESKTOP docs get their session id from the body.
         Returns how many changed and what could not be read."""

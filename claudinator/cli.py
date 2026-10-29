@@ -182,8 +182,9 @@ def cmd_export(archive: Archive, args: argparse.Namespace) -> int:
 
 
 def cmd_status(archive: Archive, args: argparse.Namespace) -> int:
-    """Exit 1 when the sweeper is not loaded, the last sweep failed, or the
-    last sweep is older than two intervals."""
+    """Exit 1 when the sweeper is not loaded, the last sweep failed, the
+    last sweep is older than two intervals, or a transcript sits in a layout
+    claudinator does not know (so it is not being archived)."""
     st = archive.status()
     loaded = launchd.loaded()
     last = st.last_sweep
@@ -205,12 +206,15 @@ def cmd_status(archive: Archive, args: argparse.Namespace) -> int:
     for p in st.pending:
         if now - p.mtime > SETTLE_SECONDS * 1000:
             print(f"warning   {_short(str(p.path))} has {p.unarchived_bytes} bytes the sweeper has not archived")
+    if n := len(st.unclassified):
+        files = "file under projects/ matches" if n == 1 else "files under projects/ match"
+        print(f"unknown   {n} .jsonl {files} no known layout and {'is' if n == 1 else 'are'} not archived: {st.unclassified[0]}")
     settings = archive.cfg.claude_dir / "settings.json"
     days = cleanup_period_days(settings.read_text()) if settings.exists() else None
     setting, days = (f"is {days}", days) if days is not None else ("is unset", 30)
     print(f"note      cleanupPeriodDays {setting}, so Claude Code deletes transcripts after {days} days.")
     print("          The archive keeps them, and `claudinator resume` restores one before resuming it.")
-    return 1 if not loaded or failed or stale else 0
+    return 1 if not loaded or failed or stale or st.unclassified else 0
 
 
 def cmd_install(archive: Archive, args: argparse.Namespace) -> int:

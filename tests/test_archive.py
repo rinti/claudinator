@@ -376,3 +376,40 @@ def test_a_transaction_that_sqlite_rolls_back_itself_reports_its_own_error():
         assert [e.split(": ", 1)[1] for e in report.errors] == ["IntegrityError('database or disk is full')"]
         assert archive.sweep().errors == ()
         assert exported(archive) == transcript().read_bytes()
+
+
+def test_a_directory_the_sweep_cannot_list_is_an_error_and_the_rest_is_archived():
+    append(transcript(), user("readable"))
+    hidden = transcript(SID2, slug="-Users-me-dev-hidden")
+    append(hidden, user("behind a locked directory"))
+    hidden.parent.chmod(0)
+    try:
+        with open_archive() as archive:
+            report = archive.sweep()
+    finally:
+        hidden.parent.chmod(0o700)
+    assert report.errors == (f"{hidden.parent}: PermissionError(13, 'Permission denied')",)
+    assert report.transcripts_changed == 1
+
+
+def test_tool_results_directories_are_not_walked():
+    append(transcript(), user("hello"))
+    tool_results = projects() / SLUG / SID / "tool-results"
+    tool_results.mkdir(parents=True)
+    (tool_results / "toolu_01.txt").write_text("large output")
+    tool_results.chmod(0)
+    try:
+        with open_archive() as archive:
+            assert archive.sweep().errors == ()
+    finally:
+        tool_results.chmod(0o700)
+
+
+def test_status_lists_transcripts_whose_path_matches_no_known_layout():
+    append(transcript(), user("hello"))
+    stray = projects() / SLUG / "notes.jsonl"
+    append(stray, user("a transcript in a layout claudinator does not know"))
+    append(projects() / SLUG / SID / "tool-results" / "toolu_01.jsonl", b"{}\n")
+    with open_archive() as archive:
+        archive.sweep()
+        assert archive.status().unclassified == (stray,)

@@ -335,3 +335,12 @@ def test_rebuild_while_another_process_holds_the_lock_names_it(capsys, monkeypat
         locker.wait(timeout=10)
     assert code == 1
     assert err.startswith("claudinator: another claudinator process is writing to the archive")
+
+
+def test_status_exits_1_when_a_transcript_matches_no_known_layout(capsys):
+    run(capsys, "install")
+    stray = projects() / SLUG / "notes.jsonl"
+    append(stray, user("a transcript in a layout claudinator does not know"))
+    code, out, _ = run(capsys, "status")
+    assert code == 1
+    assert f"unknown   1 .jsonl file under projects/ matches no known layout and is not archived: {stray}\n" in out
