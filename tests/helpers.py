@@ -3,10 +3,12 @@
 import io
 import json
 import os
+import sqlite3
 import time
 from pathlib import Path
 
-from claudinator.archive import Archive, Config
+from claudinator.archive import Archive, Config, Query
+from claudinator.record import parse, text_of
 
 SLUG = "-Users-me-dev-demo"
 CWD = "/Users/me/dev/demo"
@@ -86,3 +88,34 @@ def exported(archive: Archive, sid: str = SID, agent: str | None = None, generat
     out = io.BytesIO()
     archive.export(sid, out, agent, generation)
     return out.getvalue()
+
+
+def found(archive: Archive, *terms: str, tools: bool = False) -> int:
+    """Matching units across all sessions."""
+    return sum(hit.hits for hit in archive.search(Query(terms, tools=tools, limit=1000)))
+
+
+def projection_dump(archive: Archive, root: Path) -> list[tuple]:
+    """Every transcript row and every entry with the text it indexes, keyed
+    by path relative to root, so two databases can be compared."""
+    db = sqlite3.connect(archive.cfg.db)
+    try:
+        dump = []
+        for source_id, path, generation, sid, agent in db.execute(
+            "SELECT id, path, generation, session_id, agent_id FROM source ORDER BY path, generation"
+        ).fetchall():
+            data = exported(archive, sid, agent, generation)
+            facts = db.execute(
+                "SELECT cwd, first_ts, last_ts, ai_title, custom_title, unparsed FROM transcript WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()
+            entries = []
+            for line_off, block, kind, ts in db.execute(
+                "SELECT line_off, block, kind, ts FROM entry WHERE source_id = ? ORDER BY line_off, block", (source_id,)
+            ):
+                end = data.find(b"\n", line_off)
+                entries.append((line_off, block, kind, ts, text_of(parse(data[line_off : end if end >= 0 else None]), block)))
+            dump.append((Path(path).relative_to(root).as_posix(), generation, facts, entries))
+        return dump
+    finally:
+        db.close()

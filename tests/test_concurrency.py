@@ -6,12 +6,12 @@ import subprocess
 import sys
 import time
 
-from claudinator.archive import Archive, Config
+from claudinator.archive import Archive, Config, Query
 from helpers import AID, SID, SID2, append, exported, open_archive, tool_result, transcript, user
 
 SWEEPER = r"""
 import json, os, sys
-from claudinator.archive import Archive, Config
+from claudinator.archive import Archive, Config, Query
 stop, wait = sys.argv[1], sys.argv[2] == "wait"
 errors, archived = [], 0
 with Archive.open(Config.from_env()) as archive:
@@ -76,3 +76,36 @@ def test_concurrent_sweeps_archive_each_byte_once(tmp_path):
     with Archive.open(Config.from_env({**os.environ, "CLAUDINATOR_DB": str(sequential_db)})) as fresh:
         fresh.sweep()
     assert projection(Config.from_env().db) == projection(sequential_db)
+
+
+LOCKER = """
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1], autocommit=True)
+db.execute("BEGIN IMMEDIATE")
+print("locked", flush=True)
+sys.stdin.read()
+"""
+
+
+def test_readers_proceed_while_another_process_holds_the_write_lock():
+    path = transcript()
+    append(path, user("archived before the lock: quokka"))
+    with open_archive() as archive:
+        archive.sweep()
+    append(path, user("written while locked: quokka"))
+    locker = subprocess.Popen(
+        [sys.executable, "-c", LOCKER, str(Config.from_env().db)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert locker.stdout.readline() == "locked\n"
+        started = time.monotonic()
+        with open_archive() as archive:
+            report = archive.sweep(wait=False)
+            hits = archive.search(Query(("quokka",)))
+        elapsed = time.monotonic() - started
+    finally:
+        locker.stdin.close()
+        locker.wait(timeout=10)
+    assert report.busy
+    assert [(h.session.id, h.hits) for h in hits] == [(SID, 1)]
+    assert elapsed < 1

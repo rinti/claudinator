@@ -9,6 +9,7 @@ from helpers import (
     append,
     assistant,
     exported,
+    found,
     line,
     open_archive,
     projects,
@@ -52,9 +53,11 @@ def test_partial_last_line_waits_until_completed():
         archive.sweep()
         archive.sweep()
         assert exported(archive) == user("complete")
+        assert found(archive, "zebracorn") == 0
         append(path, pending[25:])
         archive.sweep()
         assert exported(archive) == path.read_bytes()
+        assert found(archive, "zebracorn") == 1
 
 
 def test_settled_tail_is_archived_and_a_glued_continuation_is_unparsed():
@@ -70,6 +73,8 @@ def test_settled_tail_is_archived_and_a_glued_continuation_is_unparsed():
         archive.sweep()
         assert exported(archive) == path.read_bytes()
         assert archive.status().unparsed_lines == 2
+        assert found(archive, "glued") == 0
+        assert found(archive, "restart") == 1
 
 
 def test_drift_is_archived_byte_exact_and_non_json_is_counted():
@@ -86,6 +91,9 @@ def test_drift_is_archived_byte_exact_and_non_json_is_counted():
         assert archive.sweep().errors == ()
         assert exported(archive) == path.read_bytes()
         assert archive.status().unparsed_lines == 1
+        assert found(archive, "hello", tools=True) == 1
+        for word in ("zebracorn", "quokka", "quagga"):
+            assert found(archive, word, tools=True) == 0
 
 
 def test_rewrite_starts_a_new_generation_and_keeps_the_old_bytes():
@@ -99,6 +107,7 @@ def test_rewrite_starts_a_new_generation_and_keeps_the_old_bytes():
         assert exported(archive, generation=0) == original
         assert exported(archive) == path.read_bytes()
         assert archive.status().multi_generation == 1
+        assert found(archive, "rewritten") == 1
 
 
 def test_restore_in_progress_is_not_a_rewrite():

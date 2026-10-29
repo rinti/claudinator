@@ -15,6 +15,7 @@ import os
 import re
 import sqlite3
 import time
+import unicodedata
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -25,16 +26,21 @@ from typing import BinaryIO
 from compression import zstd
 
 from claudinator.record import (
+    CONVERSATION,
     PROJECTION_VERSION,
+    TOOLS,
     AgentId,
     Facts,
+    Kind,
     Millis,
     Record,
     SessionId,
+    Turn,
     Unparsed,
     desktop_session,
     parse,
     project,
+    subagent_meta,
     text_of,
 )
 
@@ -209,6 +215,73 @@ def _records(segments: Iterable[tuple[int, bytes]], after_newline: bool = True) 
 
 
 @dataclass(frozen=True, slots=True)
+class Filters:
+    project: str | None = None  # case-insensitive substring of the session's cwd
+    since: Millis | None = None  # inclusive
+    until: Millis | None = None  # exclusive
+
+
+@dataclass(frozen=True, slots=True)
+class Query:
+    terms: tuple[str, ...]  # as typed; a term with spaces is a phrase; trailing * is a prefix
+    filters: Filters = Filters()
+    tools: bool = False  # also search tool calls and tool output
+    limit: int = 20  # sessions, not hits
+
+
+@dataclass(frozen=True, slots=True)
+class SessionSummary:
+    id: SessionId
+    cwd: str | None
+    title: str | None  # custom-title, else desktop-app title, else latest ai-title, else first prompt
+    first_ts: Millis | None
+    last_ts: Millis | None
+    prompts: int
+    subagents: int
+    transcript: Path  # main transcript path; may no longer exist
+    on_disk: bool  # stat at read time; derived, never stored
+
+
+@dataclass(frozen=True, slots=True)
+class Subagent:
+    id: AgentId
+    description: str | None  # from its .meta.json doc
+    agent_type: str | None
+    first_ts: Millis | None
+
+
+@dataclass(frozen=True, slots=True)
+class Session:
+    summary: SessionSummary
+    agents: tuple[Subagent, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Excerpt:
+    kind: Kind
+    ts: Millis | None
+    agent_id: AgentId | None  # set when the hit is inside a subagent transcript
+    text: str  # ~160 chars around the first matched term, single line
+    marks: tuple[tuple[int, int], ...]  # [start, end) spans of matched terms in text
+
+
+@dataclass(frozen=True, slots=True)
+class SessionHit:
+    session: SessionSummary
+    hits: int  # matching units in this session (main + subagents)
+    best: Excerpt  # highest bm25-ranked unit
+
+
+@dataclass(frozen=True, slots=True)
+class Message:
+    ts: Millis | None
+    kind: Kind  # PROMPT | REPLY | TOOL_CALL | TOOL_OUTPUT
+    text: str  # full text; display truncation is the caller's choice
+    tool: str | None = None
+    spawned: AgentId | None = None  # TOOL_CALL that started this subagent
+
+
+@dataclass(frozen=True, slots=True)
 class SweepReport:
     started: Millis
     finished: Millis
@@ -251,6 +324,12 @@ class ArchiveError(Exception):
 
 class UnknownSession(ArchiveError):
     pass
+
+
+class AmbiguousSession(ArchiveError):
+    def __init__(self, ref: str, candidates: list[SessionSummary]) -> None:
+        super().__init__(f"{ref} matches {len(candidates)} sessions")
+        self.candidates = candidates
 
 
 class NewerArchive(ArchiveError):
@@ -439,6 +518,72 @@ class Archive:
             self._set_meta("projection_version", str(PROJECTION_VERSION))
 
     # -- reading ------------------------------------------------------------
+
+    def search(self, q: Query) -> list[SessionHit]:
+        """Sessions containing every term, best first, with the best-ranked
+        unit of each rendered as an excerpt from its raw line."""
+        if not q.terms:
+            return []
+        kinds = CONVERSATION | (TOOLS if q.tools else frozenset())
+        rows = self._db.execute(
+            _SEARCH_SQL,
+            {
+                "expr": _fts_expr(q.terms),
+                "kinds": json.dumps(sorted(kinds)),
+                "since": q.filters.since,
+                "until": q.filters.until,
+            },
+        )
+        sessions = {row[0]: row for row in self._session_rows(Filters(project=q.filters.project), None)}
+        groups: dict[str, list[tuple]] = {}
+        for row in rows:
+            if row[0] in sessions:
+                groups.setdefault(row[0], []).append(row)
+        hits = []
+        for session_id, group in list(groups.items())[: q.limit]:
+            _, source_id, line_off, block, kind, ts, agent_id = group[0]
+            text, marks = _excerpt(self._entry_text(source_id, line_off, block), q.terms)
+            excerpt = Excerpt(Kind(kind), ts, agent_id, text, marks)
+            hits.append(SessionHit(self._summary(sessions[session_id]), len(group), excerpt))
+        return hits
+
+    def sessions(self, filters: Filters = Filters(), limit: int | None = 30) -> list[SessionSummary]:
+        """Sessions newest-activity first. since/until select sessions whose
+        [first_ts, last_ts] overlaps the window."""
+        return [self._summary(row) for row in self._session_rows(filters, limit)]
+
+    def session(self, ref: str) -> Session:
+        """Resolve a unique session-id prefix and return the session with its
+        subagents. Raises UnknownSession or AmbiguousSession."""
+        rows = self._session_rows(Filters(), None, prefix=ref)
+        if not rows:
+            raise UnknownSession(f"no archived session starts with {ref}")
+        if len(rows) > 1:
+            raise AmbiguousSession(ref, [self._summary(row) for row in rows])
+        summary = self._summary(rows[0])
+        metas = {aid: subagent_meta(body) for aid, body in self._docs(summary.id, DocRole.SUBAGENT_META)}
+        agents = []
+        for aid, first_ts in self._db.execute(
+            "SELECT s.agent_id, MIN(t.first_ts) FROM source s JOIN transcript t ON t.source_id = s.id"
+            " WHERE s.session_id = ? AND s.agent_id IS NOT NULL GROUP BY s.agent_id ORDER BY 2, 1",
+            (summary.id,),
+        ):
+            meta = metas.get(aid)
+            agents.append(Subagent(aid, meta and meta.description, meta and meta.agent_type, first_ts))
+        return Session(summary, tuple(agents))
+
+    def conversation(self, session_id: SessionId, agent_id: AgentId | None = None) -> Iterator[Message]:
+        """The transcript in file order, from the archive, whether or not the
+        file still exists on disk."""
+        source_id = self._source(session_id, agent_id)
+        spawned = {}
+        for aid, body in self._docs(session_id, DocRole.SUBAGENT_META):
+            if tool_use_id := subagent_meta(body).tool_use_id:
+                spawned[tool_use_id] = aid
+        for _, rec in _records(self._segments(source_id)):
+            if isinstance(rec, Turn):
+                for _, b in rec.blocks:
+                    yield Message(rec.ts, b.kind, b.text, b.tool, spawned.get(b.tool_use_id))
 
     def export(
         self,
@@ -634,6 +779,49 @@ class Archive:
         ):
             yield start, zstd.decompress(blob)
 
+    def _session_rows(self, filters: Filters, limit: int | None, prefix: str | None = None) -> list[tuple]:
+        return self._db.execute(
+            _SESSIONS_SQL,
+            {
+                "prompt": Kind.PROMPT.value,
+                "desktop": DocRole.DESKTOP.value,
+                "project": filters.project,
+                "since": filters.since,
+                "until": filters.until,
+                "prefix": prefix,
+                "limit": -1 if limit is None else limit,
+            },
+        ).fetchall()
+
+    def _summary(self, row: tuple) -> SessionSummary:
+        sid, cwd, custom, desktop_body, ai, first_prompt, first_ts, last_ts, prompts, subagents, path = row
+        desktop = desktop_session(desktop_body) if desktop_body else None
+        title = custom or (desktop and desktop.title) or ai
+        if title is None and first_prompt is not None:
+            entry = self._db.execute("SELECT source_id, line_off, block FROM entry WHERE id = ?", (first_prompt,))
+            title = " ".join(self._entry_text(*entry.fetchone()).split())[:200]
+        return SessionSummary(sid, cwd, title, first_ts, last_ts, prompts, subagents, Path(path), os.path.exists(path))
+
+    def _entry_text(self, source_id: int, line_off: int, block: int) -> str:
+        return text_of(parse(self._line_at(source_id, line_off)), block)
+
+    def _line_at(self, source_id: int, offset: int) -> bytes:
+        """One line by file offset: the segment with the greatest byte_start
+        <= offset, decompressed, sliced to the next newline."""
+        start, blob = self._db.execute(
+            "SELECT byte_start, zstd FROM segment WHERE source_id = ? AND byte_start <= ?"
+            " ORDER BY byte_start DESC LIMIT 1",
+            (source_id, offset),
+        ).fetchone()
+        chunk = zstd.decompress(blob)
+        end = chunk.find(b"\n", offset - start)
+        return chunk[offset - start : end if end >= 0 else len(chunk)]
+
+    def _docs(self, session_id: SessionId, role: DocRole) -> list[tuple[AgentId | None, str]]:
+        return self._db.execute(
+            "SELECT agent_id, body FROM doc WHERE session_id = ? AND role = ? ORDER BY path", (session_id, role.value)
+        ).fetchall()
+
     def _source(self, session_id: SessionId, agent_id: AgentId | None, generation: int | None = None) -> int:
         """The latest generation of a transcript, or the one named."""
         row = self._db.execute(
@@ -702,6 +890,117 @@ class Archive:
             "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+
+
+_SESSIONS_SQL = """
+WITH main AS (
+  SELECT MAX(id) AS id, session_id FROM source WHERE agent_id IS NULL GROUP BY session_id
+),
+span AS (
+  SELECT s.session_id,
+         MIN(t.first_ts) AS first_ts,
+         MAX(t.last_ts)  AS last_ts,
+         COUNT(DISTINCT s.agent_id) AS subagents
+    FROM source s JOIN transcript t ON t.source_id = s.id
+   GROUP BY s.session_id
+)
+SELECT m.session_id, t.cwd, t.custom_title,
+       (SELECT d.body FROM doc d
+         WHERE d.session_id = m.session_id AND d.role = :desktop
+         ORDER BY d.mtime DESC LIMIT 1) AS desktop,
+       t.ai_title,
+       (SELECT e.id FROM entry e
+         WHERE e.source_id = m.id AND e.kind = :prompt
+         ORDER BY e.line_off, e.block LIMIT 1) AS first_prompt,
+       span.first_ts, span.last_ts,
+       (SELECT COUNT(*) FROM entry e WHERE e.source_id = m.id AND e.kind = :prompt) AS prompts,
+       span.subagents, s.path
+  FROM main m
+  JOIN source s ON s.id = m.id
+  JOIN transcript t ON t.source_id = m.id
+  JOIN span ON span.session_id = m.session_id
+ WHERE (:project IS NULL OR instr(lower(t.cwd), lower(:project)) > 0)
+   AND (:since IS NULL OR span.last_ts >= :since)
+   AND (:until IS NULL OR span.first_ts < :until)
+   AND (:prefix IS NULL OR m.session_id GLOB :prefix || '*')
+ ORDER BY span.last_ts DESC, m.session_id
+ LIMIT :limit
+"""
+
+_SEARCH_SQL = """
+SELECT s.session_id, e.source_id, e.line_off, e.block, e.kind, e.ts, s.agent_id
+  FROM entry_fts f
+  JOIN entry e ON e.id = f.rowid
+  JOIN source s ON s.id = e.source_id
+ WHERE entry_fts MATCH :expr
+   AND e.kind IN (SELECT value FROM json_each(:kinds))
+   AND (:since IS NULL OR e.ts >= :since)
+   AND (:until IS NULL OR e.ts < :until)
+ ORDER BY f.rank
+"""
+
+
+def _fts_expr(terms: tuple[str, ...]) -> str:
+    """Terms -> FTS5 MATCH expression that cannot be a syntax error.
+
+    Each term becomes a quoted string ("" escapes "), a trailing * stays
+    outside the quotes as a prefix query, and terms are joined with AND. So
+    `claudinator search "launchd agent" sync*` -> '"launchd agent" AND "sync"*'.
+    FTS5 operators are not exposed; nobody has to learn them."""
+    quoted = []
+    for term in terms:
+        word = term.rstrip("*")
+        quoted.append('"' + word.replace('"', '""') + '"' + ("*" if word != term else ""))
+    return " AND ".join(quoted)
+
+
+class _FoldTable(dict[int, str]):
+    """str.translate table that folds case and diacritics one character at a
+    time, so offsets in the folded text are offsets in the original. Agrees
+    with unicode61 remove_diacritics 2 on the scripts this Mac's transcripts
+    use. Filled on first sight of each character."""
+
+    def __missing__(self, codepoint: int) -> str:
+        folded = unicodedata.normalize("NFKD", chr(codepoint))[:1].lower()[:1]
+        self[codepoint] = folded
+        return folded
+
+
+_FOLD = _FoldTable()
+_TOKEN = re.compile(r"[^\W_]+")
+
+
+def _term_pattern(term: str) -> re.Pattern[str] | None:
+    """A typed term as a regex over folded text that matches what FTS5
+    matches: consecutive whole tokens, the last one a prefix if the term ends
+    with *, which then marks the whole token. So "launchd agent" also matches
+    "launchd-agent"."""
+    tokens = _TOKEN.findall(term.rstrip("*").translate(_FOLD))
+    if not tokens:
+        return None
+    end = r"[^\W_]*" if term.endswith("*") else r"(?![^\W_])"
+    return re.compile(r"(?<![^\W_])" + r"[\W_]+".join(map(re.escape, tokens)) + end)
+
+
+def _excerpt(text: str, terms: tuple[str, ...], width: int = 160) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Window of `width` chars around the first match, whitespace collapsed,
+    with the [start, end) spans of every match inside the window."""
+    flat = " ".join(text.split())
+    folded = flat.translate(_FOLD)
+    spans = sorted(m.span() for t in terms if (p := _term_pattern(t)) for m in p.finditer(folded))
+    merged: list[tuple[int, int]] = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(e, merged[-1][1]))
+        else:
+            merged.append((s, e))
+    first = merged[0][0] if merged else 0
+    start = max(0, min(first - width // 4, len(flat) - width))
+    end = min(len(flat), start + width)
+    lead = "..." if start > 0 else ""
+    shift = len(lead) - start
+    marks = tuple((s + shift, e + shift) for s, e in merged if start <= s and e <= end)
+    return lead + flat[start:end] + ("..." if end < len(flat) else ""), marks
 
 
 def _report(obj: dict) -> SweepReport:
