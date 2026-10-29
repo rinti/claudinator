@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import plistlib
@@ -582,3 +583,42 @@ def test_install_and_status_read_a_settings_file_that_is_not_utf8(capsys, home):
     for command in ("install", "status"):
         code, out, _ = run(capsys, command)
         assert (code, "cleanupPeriodDays is 90, so Claude Code deletes transcripts after 90 days." in out) == (0, True)
+
+
+def test_an_agent_file_name_with_a_control_character_is_unknown_and_shown_escaped(capsys):
+    run(capsys, "install")
+    append(transcript(), user("delegate the quokka"))
+    hostile = transcript(agent="a1\x1b]52;c;ZXZpbA==\x07")
+    append(hostile, user("a quokka from a hostile file name"))
+    outputs = [run(capsys, *argv) for argv in (["search", "hostile"], ["show", "8f2d"], ["status"])]
+    assert all(CONTROL.isdisjoint(out + err) for _, out, err in outputs)
+    code, out, _ = outputs[-1]
+    assert code == 1
+    assert "\\x1b]52;c;ZXZpbA==\\x07.jsonl\n" in out
+
+
+def test_a_session_directory_with_a_control_character_is_shown_escaped(capsys, tmp_path, monkeypatch, execs):
+    workdir = tmp_path / "project\x1b]0;owned\x07"
+    workdir.mkdir()
+    append(transcript(), user("hello", cwd=str(workdir)))
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    for argv in (["sessions"], ["show", "8f2d"], ["resume", "8f2d"]):
+        _, out, err = run(capsys, *argv)
+        assert CONTROL.isdisjoint(out + err), argv
+    assert "project\\x1b]0;owned\\x07" in out
+
+
+def test_every_line_the_cli_writes_goes_through_its_one_output_function():
+    tree = ast.parse(Path(cli.__file__).read_text())
+    writers = []
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef) and fn.name != "_emit":
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Call) and (
+                    (isinstance(node.func, ast.Name) and node.func.id == "print")
+                    or (isinstance(node.func, ast.Attribute) and node.func.attr in ("write", "writelines"))
+                ):
+                    writers.append(f"{fn.name}:{node.lineno}")
+    assert writers == [], "write terminal text with _emit(), which escapes control characters"

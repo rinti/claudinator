@@ -59,6 +59,7 @@ class SideFile:
 Location = TranscriptFile | SideFile
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_AGENT = r"[0-9A-Za-z_-]+"  # an agent id is printed and typed back; a file name outside this is unclassified
 _TOOL_RESULTS = re.compile(rf"[^/]+/{_UUID}/tool-results")
 
 _PROJECTS_LAYOUT: tuple[tuple[re.Pattern[str], Callable[[Path, re.Match[str]], Location | None]], ...] = (
@@ -67,11 +68,11 @@ _PROJECTS_LAYOUT: tuple[tuple[re.Pattern[str], Callable[[Path, re.Match[str]], L
         lambda p, m: TranscriptFile(p, SessionId(m[1]), None),
     ),
     (
-        re.compile(rf"[^/]+/({_UUID})/subagents/agent-([^/]+)\.jsonl"),
+        re.compile(rf"[^/]+/({_UUID})/subagents/agent-({_AGENT})\.jsonl"),
         lambda p, m: TranscriptFile(p, SessionId(m[1]), AgentId(m[2])),
     ),
     (
-        re.compile(rf"[^/]+/({_UUID})/subagents/agent-([^/]+)\.meta\.json"),
+        re.compile(rf"[^/]+/({_UUID})/subagents/agent-({_AGENT})\.meta\.json"),
         lambda p, m: SideFile(p, DocRole.SUBAGENT_META, SessionId(m[1]), AgentId(m[2])),
     ),
     (re.compile(_TOOL_RESULTS.pattern + "/.+"), lambda p, m: None),

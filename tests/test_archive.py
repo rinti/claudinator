@@ -212,6 +212,7 @@ def test_classify_knows_the_layout(home):
         desktop / "a" / "b" / "local_x.json": SideFile(desktop / "a" / "b" / "local_x.json", DocRole.DESKTOP, None, None),
         p / SID / "tool-results" / "toolu_01.txt": None,
         p / SID / "subagents" / "stray.jsonl": None,
+        p / SID / "subagents" / "agent-a1\x1b[2J.jsonl": None,
         p / "memory" / "MEMORY.md": None,
         p / "sessions-index.json": None,
         p / "not-a-session.jsonl": None,
