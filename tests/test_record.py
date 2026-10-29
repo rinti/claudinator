@@ -23,6 +23,8 @@ DOTFILES = "/Users/andreas/dotfiles"
 ROUNDUP = "/Users/andreas/dev/ai-roundup"
 CLAUDINATOR = "/Users/andreas/dev/claudinator"
 PSTACK = "/Users/andreas/dev/pstack-rinti"
+SBR = "/Users/andreas/dev/SBR-Base"
+AMEX_POC = "/Users/andreas/dev/AmericanExpress-SST-CmsPoc"
 
 
 def prompt(text: str) -> Block:
@@ -50,21 +52,41 @@ PARSE_CASES = [
         lines.HUMAN_PROMPT,
         Turn(1790611624057, DOTFILES, ((0, prompt("in herdr i want ctrl+w to switch to next pane")),)),
     ),
+    ("slash command is the command as typed", lines.SLASH_COMMAND, Turn(1791442803638, DOTFILES, ((0, prompt("/clear")),))),
     (
-        "slash command is a prompt",
-        lines.SLASH_COMMAND,
+        "slash command with arguments",
+        lines.SLASH_COMMAND_WITH_ARGS,
+        Turn(1792157281188, AMEX_POC, ((0, prompt("/pstack:arena Find a good solution to make them work")),)),
+    ),
+    ("shell command typed with !", lines.BASH_INPUT, Turn(1792408950689, SBR, ((0, prompt("! gs")),))),
+    (
+        "output of a ! command is tool output",
+        lines.BASH_STDOUT,
         Turn(
-            1791442803638,
-            DOTFILES,
-            (
-                (
-                    0,
-                    prompt(
-                        "<command-name>/clear</command-name>\n            "
-                        "<command-message>clear</command-message>\n           …"
-                    ),
-                ),
-            ),
+            1792487532039,
+            SBR,
+            ((0, Block(Kind.TOOL_OUTPUT, "<bash-stdout>(Bash completed with no output)</bash-stdout><bash-stderr></bash-stderr>")),),
+        ),
+    ),
+    (
+        "output of a local command is tool output",
+        lines.LOCAL_COMMAND_STDOUT,
+        Turn(1793029986612, AMEX_POC, ((0, Block(Kind.TOOL_OUTPUT, "<local-command-stdout>(no content)</local-command-stdout>")),)),
+    ),
+    (
+        "local command stderr (no real line on this Mac; the stdout line with its tag renamed)",
+        lines.LOCAL_COMMAND_STDOUT.replace("local-command-stdout", "local-command-stderr"),
+        Turn(1793029986612, AMEX_POC, ((0, Block(Kind.TOOL_OUTPUT, "<local-command-stderr>(no content)</local-command-stderr>")),)),
+    ),
+    ("interrupt marker", lines.INTERRUPTED, Other(1792586093562, "/Users/andreas/dev/SBR-stockholmbusinessregion.se/.audit/baseline-a.json.bodies")),
+    ("interrupt marker for tool use", lines.INTERRUPTED_FOR_TOOL_USE, Other(1790928821424, "/Users/andreas/dev/amex/frontend")),
+    (
+        "text next to a tool result is tool output",
+        lines.TOOL_RESULT_WITH_TEXT,
+        Turn(
+            1792062596335,
+            "/Users/andreas/dev/amex",
+            ((0, Block(Kind.TOOL_OUTPUT, "")), (1, Block(Kind.TOOL_OUTPUT, "Tool loaded."))),
         ),
     ),
     (

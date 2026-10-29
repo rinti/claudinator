@@ -14,6 +14,7 @@ from helpers import (
     assistant,
     custom_title,
     found,
+    line,
     open_archive,
     projects,
     reply,
@@ -255,3 +256,28 @@ def test_search_drops_words_without_letters_or_digits_and_rejects_a_query_of_onl
         assert matching(archive, "quokka", "→", "*") == [SID]
         with pytest.raises(EmptyQuery):
             archive.search(Query(("→", "*", "")))
+
+
+def test_a_slash_command_titles_a_session_as_typed_and_shell_lines_are_not_prompts():
+    command = (
+        "<command-message>pstack:arena</command-message>\n<command-name>/pstack:arena</command-name>\n"
+        "<command-args>Find a good solution</command-args>"
+    )
+    append(
+        transcript(),
+        user(command),
+        user("<bash-input>git status</bash-input>"),
+        user("<bash-stdout>On branch main</bash-stdout><bash-stderr></bash-stderr>"),
+        line({"type": "user", "message": {"content": [{"type": "text", "text": "[Request interrupted by user]"}]}}),
+    )
+    with open_archive() as archive:
+        archive.sweep()
+        (summary,) = archive.sessions()
+        assert (summary.title, summary.prompts) == ("/pstack:arena Find a good solution", 2)
+        assert [(m.kind, m.text) for m in archive.conversation(SID)] == [
+            (Kind.PROMPT, "/pstack:arena Find a good solution"),
+            (Kind.PROMPT, "! git status"),
+            (Kind.TOOL_OUTPUT, "<bash-stdout>On branch main</bash-stdout><bash-stderr></bash-stderr>"),
+        ]
+        assert found(archive, "branch") == 0
+        assert found(archive, "interrupted") == 0

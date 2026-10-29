@@ -9,7 +9,7 @@ from helpers import projection_dump
 CORPUS = Path(__file__).parent / "fixtures" / "corpus"
 
 GOLDEN = {
-    1: "38b94f571d8b2e4b79b91c11574d428d37e78e46de9238915d7e7fe45908af4c",
+    2: "6f14f11974a85ce9aea3ecccadaabc51287a00690227347cce75b19bf3743cb2",
 }
 
 

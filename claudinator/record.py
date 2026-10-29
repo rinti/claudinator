@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NewType
 
-PROJECTION_VERSION = 1
+PROJECTION_VERSION = 2
 """Bump when parse() or project() would produce different rows for the same
 bytes. An edit to the projection section of schema.sql needs no bump: meta
 keeps a digest of that DDL, and open() rebuilds when it differs.
@@ -227,7 +227,45 @@ def _turn(message: object, text_kind: Kind, ts: Millis | None, cwd: str | None) 
         blocks = tuple((i, b) for i, raw in enumerate(content) if (b := _block(raw, text_kind)) is not None)
     else:
         blocks = ()
+    if text_kind is Kind.PROMPT:
+        blocks = _from_a_person(blocks)
     return Turn(ts, cwd, blocks) if blocks else Other(ts, cwd)
+
+
+def _from_a_person(blocks: tuple[tuple[int, Block], ...]) -> tuple[tuple[int, Block], ...]:
+    """Sort the blocks of a user line that a person (or a parent agent) is
+    behind. A line that carries a tool result is tool output throughout,
+    including any text Claude Code put next to it. Otherwise each text
+    block is what _typed() says it is."""
+    if any(b.kind is Kind.TOOL_OUTPUT for _, b in blocks):
+        return tuple((i, replace(b, kind=Kind.TOOL_OUTPUT)) for i, b in blocks)
+    return tuple((i, t) for i, b in blocks if (t := _typed(b) if b.kind is Kind.PROMPT else b) is not None)
+
+
+_INTERRUPTED = "[Request interrupted by user"
+_SHELL_OUTPUT = re.compile(r"\s*<(?:bash|local-command)-std(?:out|err)>")
+_SHELL_INPUT = re.compile(r"\s*<bash-input>(.*?)</bash-input>", re.S)
+_COMMAND = re.compile(r"\s*<command-(?:name|message)>")
+_COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
+_COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
+
+
+def _typed(block: Block) -> Block | None:
+    """A prompt block as what the person did. Claude Code wraps some of it:
+    a slash command becomes "/name args" and a ! shell command "! cmd", as
+    typed. The output of either is TOOL_OUTPUT. Claude Code's interrupt
+    marker is no prompt at all."""
+    text = block.text
+    if text.lstrip().startswith(_INTERRUPTED):
+        return None
+    if _SHELL_OUTPUT.match(text):
+        return replace(block, kind=Kind.TOOL_OUTPUT)
+    if m := _SHELL_INPUT.match(text):
+        return replace(block, text=f"! {m[1]}")
+    if _COMMAND.match(text) and (name := _COMMAND_NAME.search(text)):
+        args = _COMMAND_ARGS.search(text)
+        return replace(block, text=" ".join(part for part in (name[1].strip(), args and args[1].strip()) if part))
+    return block
 
 
 def _block(raw: object, text_kind: Kind) -> Block | None:
