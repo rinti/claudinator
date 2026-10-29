@@ -295,3 +295,12 @@ def test_a_title_entry_carries_the_title_lines_own_timestamp():
         late = Filters(since=OCT_1 + 10 * 86_400_000)
         assert matching(archive, "zebracorn", filters=late) == [SID]
         assert matching(archive, "quokka", filters=Filters(until=OCT_1 + 86_400_000)) == [SID]
+
+
+def test_project_filter_ignores_case_beyond_ascii():
+    append(transcript(), user("hej", cwd="/Users/me/dev/första-projektet"))
+    append(transcript(SID2), user("hej", cwd="/Users/me/dev/andra"))
+    with open_archive() as archive:
+        archive.sweep()
+        assert [s.id for s in archive.sessions(Filters(project="FÖRSTA"))] == [SID]
+        assert matching(archive, "hej", filters=Filters(project="Första-Projektet")) == [SID]

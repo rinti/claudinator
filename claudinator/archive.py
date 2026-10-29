@@ -568,6 +568,7 @@ class Archive:
             db.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
             db.execute("PRAGMA synchronous = NORMAL")
             db.execute("PRAGMA foreign_keys = ON")
+            db.create_function("casefold", 1, lambda text: text and text.casefold(), deterministic=True)
             archive = cls(cfg, db)
             archive._converge()
         except BaseException:
@@ -1134,7 +1135,7 @@ SELECT m.session_id, t.cwd, t.custom_title,
   JOIN source s ON s.id = m.id
   JOIN transcript t ON t.source_id = m.id
   JOIN span ON span.session_id = m.session_id
- WHERE (:project IS NULL OR instr(lower(t.cwd), lower(:project)) > 0)
+ WHERE (:project IS NULL OR instr(casefold(t.cwd), casefold(:project)) > 0)
    AND (:since IS NULL OR span.last_ts >= :since)
    AND (:until IS NULL OR span.first_ts < :until)
    AND (:prefix IS NULL OR m.session_id GLOB :prefix || '*')
