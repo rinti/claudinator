@@ -60,6 +60,10 @@ transcripts with zstd level 3: per-line 2.9x, 128 KiB 4.2x, 1 MiB 4.8x,
 whole-file 5.0x. 1 MiB keeps random access to one line at one ~1 ms
 decompress while losing 4% versus whole files."""
 
+BUSY_MS = 5000
+"""How long a statement waits on another process's lock. Only BEGIN
+IMMEDIATE in _write sets its own wait, and only for that one statement."""
+
 SETTLE_SECONDS = 3600
 """A file untouched this long with bytes after its last newline has a torn
 tail from a crashed writer. The sweep archives that tail so nothing on disk
@@ -430,7 +434,7 @@ class Archive:
             _create(cfg.db)
         db = sqlite3.connect(cfg.db.as_uri() + "?mode=rw", uri=True, autocommit=True)
         try:
-            db.execute("PRAGMA busy_timeout = 5000")
+            db.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
             db.execute("PRAGMA synchronous = NORMAL")
             db.execute("PRAGMA foreign_keys = ON")
             archive = cls(cfg, db)
@@ -690,6 +694,8 @@ class Archive:
             if not wait and e.sqlite_errorcode == sqlite3.SQLITE_BUSY:
                 raise _Busy from e
             raise
+        finally:
+            self._db.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
         try:
             if (self._meta_int("archive_schema") or 0) > ARCHIVE_SCHEMA or (
                 self._meta_int("projection_version") or 0

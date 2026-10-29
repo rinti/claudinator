@@ -141,3 +141,12 @@ def test_processes_that_open_a_new_archive_at_once_all_succeed(tmp_path, monkeyp
         assert [p.communicate(timeout=60)[0] for p in openers] == ["ok\n"] * 8
         with open_archive() as archive:
             assert exported(archive) == transcript().read_bytes()
+
+
+def test_a_sweep_that_gives_up_on_the_lock_leaves_the_readers_lock_wait_alone():
+    append(transcript(), user("quokka"))
+    with open_archive() as archive:
+        (default,) = archive._db.execute("PRAGMA busy_timeout").fetchone()
+        archive.sweep(wait=False)
+        assert archive._db.execute("PRAGMA busy_timeout").fetchone() == (default,)
+        assert default >= 1000
