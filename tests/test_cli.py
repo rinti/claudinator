@@ -2,6 +2,7 @@ import json
 import os
 import plistlib
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -493,3 +494,15 @@ def test_install_without_a_claudinator_executable_writes_no_plist(capsys, home, 
     assert code == 1
     assert err.startswith("claudinator: cannot find the claudinator executable")
     assert not (home / "Library" / "LaunchAgents" / "com.claudinator.sweep.plist").exists()
+
+
+def test_a_sqlite_file_that_is_not_an_archive_is_refused_and_left_alone(capsys, tmp_path, monkeypatch):
+    other = tmp_path / "other.db"
+    db = sqlite3.connect(other)
+    db.execute("CREATE TABLE notes (body TEXT)")
+    db.commit()
+    db.close()
+    before = other.read_bytes()
+    monkeypatch.setenv("CLAUDINATOR_DB", str(other))
+    assert run(capsys, "sessions") == (1, "", f"claudinator: {other} is not a claudinator archive\n")
+    assert other.read_bytes() == before

@@ -456,6 +456,8 @@ class Archive:
         self.close()
 
     def _converge(self) -> None:
+        if not self._db.execute("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta'").fetchone():
+            raise ArchiveError(f"{self.cfg.db} is not a claudinator archive")
         schema, projection = self._meta_int("archive_schema"), self._meta_int("projection_version")
         if schema is None or projection is None:
             raise ArchiveError(f"{self.cfg.db} is not a claudinator archive")
@@ -989,8 +991,6 @@ class Archive:
         return all(self._meta(key) == value for key, value in _projection_stamp().items())
 
     def _meta(self, key: str) -> str | None:
-        if not self._db.execute("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta'").fetchone():
-            return None
         row = self._db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None
 
