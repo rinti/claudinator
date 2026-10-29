@@ -99,6 +99,10 @@ note      cleanupPeriodDays is unset, so Claude Code deletes transcripts after 3
           The archive keeps them. Resuming one after that needs a restore (see `claudinator resume`).
 ```
 
+## Limits
+
+- A transcript rewritten in place goes unnoticed if the rewrite keeps the first 1 KiB, keeps the 4 KiB before the archived end, and does not shrink the file. Claude Code only appends, and none of this Mac's 697 transcripts was ever rewritten.
+
 ---
 
 # Rationale
