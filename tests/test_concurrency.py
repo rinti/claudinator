@@ -6,12 +6,14 @@ import subprocess
 import sys
 import time
 
-from claudinator.archive import Archive, Config, Query
+from claudinator.archive import Archive, Query
+from claudinator.layout import Config
 from helpers import AID, SID, SID2, append, exported, open_archive, tool_result, transcript, user
 
 SWEEPER = r"""
 import json, os, sys
-from claudinator.archive import Archive, Config, Query
+from claudinator.archive import Archive
+from claudinator.layout import Config
 stop, wait = sys.argv[1], sys.argv[2] == "wait"
 errors, archived = [], 0
 with Archive.open(Config.from_env()) as archive:
@@ -114,7 +116,8 @@ def test_readers_proceed_while_another_process_holds_the_write_lock():
 OPENER = r"""
 import sys
 from pathlib import Path
-from claudinator.archive import Archive, Config
+from claudinator.archive import Archive
+from claudinator.layout import Config
 go = Path(sys.argv[1])
 while not go.exists():
     pass

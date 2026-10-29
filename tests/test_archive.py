@@ -7,19 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from claudinator.archive import (
-    SEGMENT_BYTES,
-    ArchiveError,
-    Config,
-    DocRole,
-    TAIL_BYTES,
-    NewerArchive,
-    Plan,
-    SideFile,
-    TranscriptFile,
-    classify,
-    plan,
-)
+from claudinator.archive import SEGMENT_BYTES, TAIL_BYTES, ArchiveError, NewerArchive, Plan, plan
+from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, classify
 import claudinator.archive as archive_module
 import claudinator.record as record_module
 from claudinator.record import PROJECTION_VERSION, Block, Kind, Turn

@@ -7,7 +7,8 @@ import sqlite3
 import time
 from pathlib import Path
 
-from claudinator.archive import Archive, Config, Query
+from claudinator.archive import Archive, Query
+from claudinator.layout import Config
 from claudinator.record import parse, text_of
 
 SLUG = "-Users-me-dev-demo"

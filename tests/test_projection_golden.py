@@ -2,7 +2,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from claudinator.archive import Archive, Config
+from claudinator.archive import Archive
+from claudinator.layout import Config
 from claudinator.record import PROJECTION_VERSION
 from helpers import projection_dump
 

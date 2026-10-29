@@ -1,9 +1,9 @@
 """The archive: the only owner of the SQLite file.
 
-Discovers transcript files, ingests their bytes as append-only zstd segments,
-folds the projection, answers queries, exports bytes, and rebuilds the
-projection. The call chain is cli.py -> archive.py -> record.py; nothing
-reaches past this module into the database.
+Ingests the bytes of the files layout.discover() finds as append-only zstd
+segments, folds the projection, answers queries, exports bytes, and rebuilds
+the projection. cli.py calls this module, which calls layout.py, record.py,
+and search_text.py; nothing reaches past it into the database.
 """
 
 from __future__ import annotations
@@ -12,10 +12,8 @@ import enum
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import time
-import unicodedata
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields, replace
@@ -25,6 +23,7 @@ from typing import BinaryIO
 
 from compression import zstd
 
+from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, discover
 from claudinator.record import (
     CONVERSATION,
     PROJECTION_VERSION,
@@ -43,6 +42,7 @@ from claudinator.record import (
     subagent_meta,
     text_of,
 )
+from claudinator.search_text import excerpt, fts_expr, searchable
 
 _ARCHIVE_DDL, _MARKER, _PROJECTION_DDL = (
     resources.files("claudinator").joinpath("schema.sql").read_text().partition("-- @projection")
@@ -78,138 +78,6 @@ SETTLE_SECONDS = 3600
 """A file untouched this long with bytes after its last newline has a torn
 tail from a crashed writer. The sweep archives that tail so nothing on disk
 is left unarchived. A live writer never leaves a partial line for an hour."""
-
-
-class DocRole(enum.StrEnum):
-    SUBAGENT_META = "subagent-meta"  # <sid>/subagents/agent-<aid>.meta.json
-    SESSION_FILE = "session-file"  # any other non-.jsonl file under <slug>/<sid>/, except tool-results/
-    DESKTOP = "desktop"  # <desktop>/claude-code-sessions/*/*/local_*.json
-
-
-@dataclass(frozen=True, slots=True)
-class Config:
-    db: Path  # $CLAUDINATOR_DB or ~/.claudinator/claudinator.db
-    claude_dir: Path  # $CLAUDE_CONFIG_DIR or ~/.claude
-    desktop_dir: Path  # ~/Library/Application Support/Claude
-
-    @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> Config:
-        env = os.environ if env is None else env
-        home = Path(env.get("HOME") or Path.home())
-
-        def path(var: str, default: Path) -> Path:
-            return Path(env.get(var) or default).expanduser().absolute()
-
-        return cls(
-            db=path("CLAUDINATOR_DB", home / ".claudinator" / "claudinator.db"),
-            claude_dir=path("CLAUDE_CONFIG_DIR", home / ".claude"),
-            desktop_dir=(home / "Library" / "Application Support" / "Claude").absolute(),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class TranscriptFile:
-    path: Path
-    session_id: SessionId
-    agent_id: AgentId | None  # None = main transcript
-
-
-@dataclass(frozen=True, slots=True)
-class SideFile:
-    path: Path
-    role: DocRole
-    session_id: SessionId | None  # DESKTOP: None until the body is parsed
-    agent_id: AgentId | None
-
-
-Location = TranscriptFile | SideFile
-
-_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-_TOOL_RESULTS = re.compile(rf"[^/]+/{_UUID}/tool-results")
-
-_PROJECTS_LAYOUT: tuple[tuple[re.Pattern[str], Callable[[Path, re.Match[str]], Location | None]], ...] = (
-    (
-        re.compile(rf"[^/]+/({_UUID})\.jsonl"),
-        lambda p, m: TranscriptFile(p, SessionId(m[1]), None),
-    ),
-    (
-        re.compile(rf"[^/]+/({_UUID})/subagents/agent-([^/]+)\.jsonl"),
-        lambda p, m: TranscriptFile(p, SessionId(m[1]), AgentId(m[2])),
-    ),
-    (
-        re.compile(rf"[^/]+/({_UUID})/subagents/agent-([^/]+)\.meta\.json"),
-        lambda p, m: SideFile(p, DocRole.SUBAGENT_META, SessionId(m[1]), AgentId(m[2])),
-    ),
-    (re.compile(_TOOL_RESULTS.pattern + "/.+"), lambda p, m: None),
-    (
-        re.compile(rf"[^/]+/({_UUID})/.+(?<!\.jsonl)"),
-        lambda p, m: SideFile(p, DocRole.SESSION_FILE, SessionId(m[1]), None),
-    ),
-)
-_DESKTOP_LAYOUT = re.compile(r"[^/]+/[^/]+/local_[^/]+\.json")
-
-
-def classify(path: Path, cfg: Config) -> Location | None:
-    """The only code that knows Claude Code's on-disk layout.
-
-        <claude>/projects/<slug>/<sid>.jsonl                           -> TranscriptFile(sid, None)
-        <claude>/projects/<slug>/<sid>/subagents/agent-<aid>.jsonl     -> TranscriptFile(sid, aid)
-        <claude>/projects/<slug>/<sid>/subagents/agent-<aid>.meta.json -> SideFile(SUBAGENT_META)
-        <claude>/projects/<slug>/<sid>/tool-results/*                  -> None
-        <claude>/projects/<slug>/<sid>/**/<other non-.jsonl file>      -> SideFile(SESSION_FILE)
-        <desktop>/claude-code-sessions/<a>/<b>/local_*.json            -> SideFile(DESKTOP)
-        anything else (memory/, sessions-index.json, ...)              -> None
-
-    session_id comes from the path, never from record content: forked copies
-    carry rewritten sessionIds, and the file is the unit Claude resumes."""
-    projects = cfg.claude_dir / "projects"
-    if path.is_relative_to(projects):
-        rel = path.relative_to(projects).as_posix()
-        for pattern, make in _PROJECTS_LAYOUT:
-            if m := pattern.fullmatch(rel):
-                return make(path, m)
-        return None
-    sessions = cfg.desktop_dir / "claude-code-sessions"
-    if path.is_relative_to(sessions) and _DESKTOP_LAYOUT.fullmatch(path.relative_to(sessions).as_posix()):
-        return SideFile(path, DocRole.DESKTOP, None, None)
-    return None
-
-
-@dataclass(frozen=True, slots=True)
-class Discovery:
-    """One walk of projects/ and the desktop sessions directory."""
-
-    transcripts: tuple[TranscriptFile, ...]
-    side_files: tuple[SideFile, ...]
-    unclassified: tuple[Path, ...]  # *.jsonl under projects/ that classify() does not know
-    errors: tuple[str, ...]  # directories that could not be listed
-
-
-def discover(cfg: Config) -> Discovery:
-    """Walk projects/ and the desktop sessions dir and classify every file.
-    A directory that vanishes mid-walk, or was never there, is not an error.
-    tool-results/ directories hold no archived file and are not entered."""
-    found: dict[type, list] = {TranscriptFile: [], SideFile: []}
-    unclassified, errors = [], []
-
-    def failed(e: OSError) -> None:
-        if not isinstance(e, FileNotFoundError):
-            errors.append(f"{e.filename}: {e!r}")
-
-    projects = cfg.claude_dir / "projects"
-    for root in (projects, cfg.desktop_dir / "claude-code-sessions"):
-        for dirpath, dirnames, filenames in os.walk(root, onerror=failed):
-            here = Path(dirpath)
-            dirnames[:] = sorted(
-                d for d in dirnames if not (root == projects and _TOOL_RESULTS.fullmatch((here / d).relative_to(root).as_posix()))
-            )
-            for name in sorted(filenames):
-                path = here / name
-                if (loc := classify(path, cfg)) is not None:
-                    found[type(loc)].append(loc)
-                elif root == projects and name.endswith(".jsonl"):
-                    unclassified.append(path)
-    return Discovery(tuple(found[TranscriptFile]), tuple(found[SideFile]), tuple(unclassified), tuple(errors))
 
 
 def _next_segment(fd: int, start: int, size: int, settled: bool) -> bytes:
@@ -706,14 +574,14 @@ class Archive:
         eligible when its kind is in scope and its time in the window. A
         phrase matches inside one unit. Terms without a letter or digit are
         dropped; EmptyQuery if none is left."""
-        terms = _searchable(q.terms)
+        terms = searchable(q.terms)
         if not terms:
             raise EmptyQuery("nothing to search for: every word lacks a letter or a digit")
         kinds = CONVERSATION | (TOOLS if q.tools else frozenset())
         rows = self._db.execute(
             _SEARCH_SQL,
             {
-                "exprs": json.dumps([_fts_expr(term) for term in terms]),
+                "exprs": json.dumps([fts_expr(term) for term in terms]),
                 "kinds": json.dumps(sorted(kinds)),
                 "since": q.filters.since,
                 "until": q.filters.until,
@@ -724,7 +592,7 @@ class Archive:
         for session_id, count, source_id, line_off, block, kind, ts, agent_id in rows:
             if session_id not in sessions:
                 continue
-            text, marks = _excerpt(self._entry_text(source_id, line_off, block), terms)
+            text, marks = excerpt(self._entry_text(source_id, line_off, block), terms)
             hits.append(SessionHit(self._summary(sessions[session_id]), count, Excerpt(Kind(kind), ts, agent_id, text, marks)))
             if len(hits) == q.limit:
                 break
@@ -1175,72 +1043,6 @@ SELECT m.session_id, m.hits, e.source_id, e.line_off, e.block, e.kind, e.ts, s.a
   JOIN source s ON s.id = e.source_id
  ORDER BY m.score, m.session_id
 """
-
-
-def _fts_expr(term: str) -> str:
-    """One term -> an FTS5 MATCH expression that cannot be a syntax error.
-
-    The term becomes a quoted string ("" escapes "), and a trailing * stays
-    outside the quotes as a prefix query. So "launchd agent" -> '"launchd
-    agent"' and sync* -> '"sync"*'. FTS5 operators are not exposed; nobody
-    has to learn them."""
-    word = term.rstrip("*")
-    return '"' + word.replace('"', '""') + '"' + ("*" if word != term else "")
-
-
-def _searchable(terms: Iterable[str]) -> tuple[str, ...]:
-    """The terms that contain a token. FTS5 matches nothing for a phrase with
-    no token, such as "*" or "→", so one of those would empty every search."""
-    return tuple(term for term in terms if _TOKEN.search(term.rstrip("*").translate(_FOLD)))
-
-
-class _FoldTable(dict[int, str]):
-    """str.translate table that folds case and diacritics one character at a
-    time, so offsets in the folded text are offsets in the original. Agrees
-    with unicode61 remove_diacritics 2 on the scripts this Mac's transcripts
-    use. Filled on first sight of each character."""
-
-    def __missing__(self, codepoint: int) -> str:
-        folded = unicodedata.normalize("NFKD", chr(codepoint))[:1].lower()[:1]
-        self[codepoint] = folded
-        return folded
-
-
-_FOLD = _FoldTable()
-_TOKEN = re.compile(r"[^\W_]+")
-
-
-def _term_pattern(term: str) -> re.Pattern[str] | None:
-    """A typed term as a regex over folded text that matches what FTS5
-    matches: consecutive whole tokens, the last one a prefix if the term ends
-    with *, which then marks the whole token. So "launchd agent" also matches
-    "launchd-agent"."""
-    tokens = _TOKEN.findall(term.rstrip("*").translate(_FOLD))
-    if not tokens:
-        return None
-    end = r"[^\W_]*" if term.endswith("*") else r"(?![^\W_])"
-    return re.compile(r"(?<![^\W_])" + r"[\W_]+".join(map(re.escape, tokens)) + end)
-
-
-def _excerpt(text: str, terms: tuple[str, ...], width: int = 160) -> tuple[str, tuple[tuple[int, int], ...]]:
-    """Window of `width` chars around the first match, whitespace collapsed,
-    with the [start, end) spans of every match inside the window."""
-    flat = " ".join(text.split())
-    folded = flat.translate(_FOLD)
-    spans = sorted(m.span() for t in terms if (p := _term_pattern(t)) for m in p.finditer(folded))
-    merged: list[tuple[int, int]] = []
-    for s, e in spans:
-        if merged and s <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(e, merged[-1][1]))
-        else:
-            merged.append((s, e))
-    first = merged[0][0] if merged else 0
-    start = max(0, min(first - width // 4, len(flat) - width))
-    end = min(len(flat), start + width)
-    lead = "..." if start > 0 else ""
-    shift = len(lead) - start
-    marks = tuple((s + shift, e + shift) for s, e in merged if start <= s and e <= end)
-    return lead + flat[start:end] + ("..." if end < len(flat) else ""), marks
 
 
 def _report(obj: dict) -> SweepReport:

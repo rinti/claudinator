@@ -19,7 +19,6 @@ from claudinator.archive import (
     AmbiguousSession,
     Archive,
     ArchiveError,
-    Config,
     Filters,
     Query,
     Session,
@@ -27,6 +26,7 @@ from claudinator.archive import (
     SweepReport,
     UnknownSession,
 )
+from claudinator.layout import Config
 from claudinator.record import AgentId, Kind, Millis, cleanup_period_days
 
 READ_COMMANDS = frozenset({"search", "sessions", "show", "resume", "export", "status"})

@@ -2,7 +2,7 @@ import random
 import sqlite3
 
 import claudinator.archive as archive_module
-from claudinator.archive import Config
+from claudinator.layout import Config
 
 from claudinator.record import PROJECTION_VERSION, Unparsed
 from helpers import (

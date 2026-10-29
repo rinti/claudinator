@@ -11,7 +11,7 @@ import pytest
 
 import claudinator.archive as archive_module
 from claudinator import cli, launchd
-from claudinator.archive import Config
+from claudinator.layout import Config
 from test_concurrency import LOCKER
 from helpers import (
     AID,
