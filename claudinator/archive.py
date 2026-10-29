@@ -23,7 +23,7 @@ from typing import BinaryIO
 
 from compression import zstd
 
-from claudinator.layout import Config, Discovery, DocRole, SideFile, TranscriptFile, discover
+from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, discover
 from claudinator.record import (
     CONVERSATION,
     PROJECTION_VERSION,
@@ -504,7 +504,6 @@ class Archive:
         *,
         wait: bool = True,
         progress: Callable[[Path], None] | None = None,
-        found: Discovery | None = None,
     ) -> SweepReport:
         """Archive every byte on disk that is not archived yet. Idempotent:
         a second run with no file changes archives nothing.
@@ -517,10 +516,9 @@ class Archive:
 
         A file that fails for any reason becomes one entry in errors and the
         sweep moves on, so one bad file never keeps the rest unarchived. A
-        refused sweep is recorded too, so status can say why. found is a walk
-        the caller already made; None walks now."""
+        refused sweep is recorded too, so status can say why."""
         started = now()
-        found = found or discover(self.cfg)
+        found = discover(self.cfg)
         total, changed = _Delta(errors=found.errors, stop=self._newer()), 0
         if not total.stop:
             known = self._archived()
@@ -656,9 +654,7 @@ class Archive:
             written += len(chunk)
         return written
 
-    def status(self, found: Discovery | None = None) -> Status:
-        """found is a walk the caller already made, as when it swept just
-        before; None walks now."""
+    def status(self) -> Status:
         archived, stored = self._db.execute(
             "SELECT COALESCE(SUM(byte_end - byte_start), 0), COALESCE(SUM(length(zstd)), 0) FROM segment"
         ).fetchone()
@@ -669,7 +665,7 @@ class Archive:
         (unparsed,) = self._db.execute("SELECT COALESCE(SUM(unparsed), 0) FROM transcript").fetchone()
         mains = [Path(p) for (p,) in self._db.execute("SELECT DISTINCT path FROM source WHERE agent_id IS NULL")]
         known = self._archived()
-        found = found or discover(self.cfg)
+        found = discover(self.cfg)
         pending = []
         for loc in found.transcripts:
             try:

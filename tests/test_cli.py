@@ -519,3 +519,17 @@ def test_status_names_the_reason_the_last_sweep_was_refused(capsys):
     code, out, _ = run(capsys, "status")
     assert code == 1
     assert "transcripts changed, 0 B, refused: this archive was written by a newer claudinator)\n" in out
+
+
+def test_status_reports_a_directory_its_own_sweep_cannot_list_and_exits_1(capsys):
+    append(transcript(), user("archived by a healthy sweep"))
+    run(capsys, "install")
+    hidden = transcript(SID2, slug="-Users-me-dev-hidden")
+    append(hidden, user("behind a locked directory"))
+    hidden.parent.chmod(0)
+    try:
+        code, out, _ = run(capsys, "status")
+    finally:
+        hidden.parent.chmod(0o700)
+    assert code == 1
+    assert f"\n          {hidden.parent}: PermissionError(13, 'Permission denied')\n" in out

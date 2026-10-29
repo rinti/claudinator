@@ -27,7 +27,7 @@ from claudinator.archive import (
     UnknownSession,
     now,
 )
-from claudinator.layout import Config, discover
+from claudinator.layout import Config
 from claudinator.record import AgentId, Kind, Millis, cleanup_period_days
 
 _NOTE_ARCHIVED_BYTES = 4 << 20
@@ -44,9 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.from_env()
     try:
         with Archive.open(cfg) as archive:
-            if args.sweep_first:
-                _note(archive.sweep(wait=False))
-            code = args.run(archive, args)
+            swept = archive.sweep(wait=False) if args.sweep_first else None
+            if swept:
+                _note(swept)
+            code = args.run(archive, args, swept)
             sys.stdout.flush()
             return code
     except BrokenPipeError:
@@ -86,7 +87,7 @@ def parse_ref(text: str) -> str:
     raise ValueError(f"expected at least 4 characters of an id, not {text!r}")
 
 
-def cmd_search(archive: Archive, args: argparse.Namespace) -> int:
+def cmd_search(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
     filters = Filters(args.project, args.since, args.until)
     tty = sys.stdout.isatty()
     for hit in archive.search(Query(tuple(args.words), filters, args.tools, args.limit)):
@@ -97,7 +98,7 @@ def cmd_search(archive: Archive, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_sessions(archive: Archive, args: argparse.Namespace) -> int:
+def cmd_sessions(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
     rows = archive.sessions(Filters(args.project, args.since, args.until), args.limit)
     width = max([len("PROJECT")] + [len(_short(s.cwd)) for s in rows])
     print(f"SESSION   LAST ACTIVE       PROMPTS  AGENTS  {'PROJECT':<{width}}  TITLE")
@@ -107,7 +108,7 @@ def cmd_sessions(archive: Archive, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_show(archive: Archive, args: argparse.Namespace) -> int:
+def cmd_show(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
     session = archive.session(args.id)
     s = session.summary
     print(f'{s.id}  {_short(s.cwd)}  "{printable(s.title or "")}"')
@@ -142,7 +143,7 @@ def cmd_show(archive: Archive, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_resume(archive: Archive, args: argparse.Namespace) -> int:
+def cmd_resume(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
     """Restore the main transcript if Claude Code deleted it, then replace
     this process with `claude --resume` in the session's directory. Checks
     that both can work before it writes anything. The only writer under
@@ -192,7 +193,7 @@ def _restore(archive: Archive, s: SessionSummary) -> None:
         staged.unlink(missing_ok=True)
 
 
-def cmd_export(archive: Archive, args: argparse.Namespace) -> int:
+def cmd_export(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
     if sys.stdout.isatty():
         print("claudinator: export writes the raw transcript; redirect it to a file", file=sys.stderr)
         return 2
@@ -203,23 +204,21 @@ def cmd_export(archive: Archive, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_status(archive: Archive, args: argparse.Namespace) -> int:
-    """Archive new bytes like every read command, then report. One walk of
-    the tree serves both."""
-    found = discover(archive.cfg)
-    _note(archive.sweep(wait=False, found=found))
-    return _print_status(archive, archive.status(found))
+def cmd_status(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
+    return _print_status(archive, archive.status(), swept)
 
 
-def _print_status(archive: Archive, st: Status) -> int:
+def _print_status(archive: Archive, st: Status, swept: SweepReport | None) -> int:
     """Exit 1 when the sweeper is not loaded, the last sweep failed or was
-    refused, the last sweep is older than two intervals, or a transcript sits in a layout
-    claudinator does not know (so it is not being archived)."""
+    refused, the last sweep is older than two intervals, the sweep this
+    command just ran failed or was refused, or a transcript sits in a
+    layout claudinator does not know (so it is not being archived)."""
     loaded = launchd.loaded()
     last = st.last_sweep
     at = st.checked_at
     stale = last is None or at - last.finished > 2 * launchd.SWEEP_INTERVAL_SECONDS * 1000
     failed = last is not None and bool(last.errors or last.refused)
+    failed_now = swept is not None and bool(swept.errors or swept.refused)
     unarchived = sum(p.unarchived_bytes for p in st.pending)
     print(f"archive   {_short(str(st.db_path))}  {_size(st.db_bytes)} ({_size(st.archived_bytes)} of transcripts)")
     print(
@@ -230,6 +229,10 @@ def _print_status(archive: Archive, st: Status) -> int:
     print(f"sweeper   {'loaded' if loaded else 'not loaded (run: claudinator install)'}, {sweep}")
     for error in last.errors[:5] if last else ():
         print(f"          {error}")
+    if failed_now:
+        print(f"swept     {_report(swept)}")
+        for error in swept.errors[:5]:
+            print(f"          {error}")
     if st.gone:
         print(f"gone      {st.gone} transcripts deleted by Claude Code live on in the archive")
     for p in st.pending:
@@ -243,10 +246,10 @@ def _print_status(archive: Archive, st: Status) -> int:
     setting, days = (f"is {days}", days) if days is not None else ("is unset", 30)
     print(f"note      cleanupPeriodDays {setting}, so Claude Code deletes transcripts after {days} days.")
     print("          The archive keeps them, and `claudinator resume` restores one before resuming it.")
-    return 1 if not loaded or failed or stale or st.unclassified else 0
+    return 1 if not loaded or failed or failed_now or stale or st.unclassified else 0
 
 
-def cmd_install(archive: Archive, args: argparse.Namespace) -> int:
+def cmd_install(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
     executable = _executable()
     cfg = archive.cfg
     paths = {"CLAUDINATOR_DB": cfg.db, "CLAUDE_CONFIG_DIR": cfg.claude_dir}
@@ -255,21 +258,20 @@ def cmd_install(archive: Archive, args: argparse.Namespace) -> int:
     state = "installed" if changed else "already installed"
     print(f"{state} {launchd.LABEL}: `{executable} sweep` hourly and at login")
     progress = _progress if sys.stderr.isatty() else None
-    found = discover(cfg)
-    report = archive.sweep(wait=True, progress=progress, found=found)
+    report = archive.sweep(wait=True, progress=progress)
     if progress:
         print(file=sys.stderr)
     print(f"swept     {_report(report)}")
-    return _print_status(archive, archive.status(found))
+    return _print_status(archive, archive.status(), None)
 
 
-def cmd_uninstall(archive: Archive, args: argparse.Namespace) -> int:
+def cmd_uninstall(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
     launchd.uninstall()
     print(f"unloaded {launchd.LABEL}; the archive stays at {_short(str(archive.cfg.db))}")
     return 0
 
 
-def cmd_sweep(archive: Archive, args: argparse.Namespace) -> int:
+def cmd_sweep(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
     report = archive.sweep(wait=True)
     print(f"{datetime.now().isoformat(timespec='seconds')} {_report(report)}")
     for error in report.errors:
@@ -277,7 +279,7 @@ def cmd_sweep(archive: Archive, args: argparse.Namespace) -> int:
     return 1 if report.errors or report.refused else 0
 
 
-def cmd_rebuild(archive: Archive, args: argparse.Namespace) -> int:
+def cmd_rebuild(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
     print(f"rebuilt the search index from {archive.rebuild(force=True)} archived transcripts")
     return 0
 
@@ -306,7 +308,11 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     def command(
-        name: str, run: Callable[[Archive, argparse.Namespace], int], about: str, *, sweep_first: bool = False
+        name: str,
+        run: Callable[[Archive, argparse.Namespace, SweepReport | None], int],
+        about: str,
+        *,
+        sweep_first: bool = False,
     ) -> argparse.ArgumentParser:
         """sweep_first: a read command archives new bytes with wait=False
         before it answers, so it sees the turn that just finished in another
@@ -336,7 +342,7 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
     p.add_argument("id", type=ref, metavar="ID")
     p.add_argument("--agent", type=ref, metavar="AID")
     p.add_argument("--generation", type=int, metavar="N", help="an earlier generation of a rewritten file")
-    command("status", cmd_status, "archive size, coverage, and sweeper health")
+    command("status", cmd_status, "archive size, coverage, and sweeper health", sweep_first=True)
     command("sweep", cmd_sweep, "archive new bytes now")
     command("rebuild", cmd_rebuild, "re-derive the search index from the archive")
     command("install", cmd_install, "load the hourly sweeper and archive everything on disk")
