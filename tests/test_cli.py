@@ -344,3 +344,12 @@ def test_status_exits_1_when_a_transcript_matches_no_known_layout(capsys):
     code, out, _ = run(capsys, "status")
     assert code == 1
     assert f"unknown   1 .jsonl file under projects/ matches no known layout and is not archived: {stray}\n" in out
+
+
+def test_search_with_no_searchable_word_says_so(capsys):
+    append(transcript(), user("the quokka → the zebracorn"))
+    assert run(capsys, "search", "→", "*") == (
+        1,
+        "",
+        "claudinator: nothing to search for: every word lacks a letter or a digit\n",
+    )

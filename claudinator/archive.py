@@ -383,6 +383,10 @@ class NewerArchive(ArchiveError):
     projection_version). Reads proceed; writes are refused."""
 
 
+class EmptyQuery(ArchiveError):
+    """No search term has a letter or a digit."""
+
+
 class Locked(ArchiveError):
     """Another process held the write lock for LOCK_WAIT_MS."""
 
@@ -695,31 +699,34 @@ class Archive:
     # -- reading ------------------------------------------------------------
 
     def search(self, q: Query) -> list[SessionHit]:
-        """Sessions containing every term, best first, with the best-ranked
-        unit of each rendered as an excerpt from its raw line."""
-        if not q.terms:
-            return []
+        """Sessions in which every term matches some eligible unit, best
+        first by the summed bm25 of their matches, each with the unit that
+        matches best rendered as an excerpt from its raw line. A unit is
+        eligible when its kind is in scope and its time in the window. A
+        phrase matches inside one unit. Terms without a letter or digit are
+        dropped; EmptyQuery if none is left."""
+        terms = _searchable(q.terms)
+        if not terms:
+            raise EmptyQuery("nothing to search for: every word lacks a letter or a digit")
         kinds = CONVERSATION | (TOOLS if q.tools else frozenset())
         rows = self._db.execute(
             _SEARCH_SQL,
             {
-                "expr": _fts_expr(q.terms),
+                "exprs": json.dumps([_fts_expr(term) for term in terms]),
                 "kinds": json.dumps(sorted(kinds)),
                 "since": q.filters.since,
                 "until": q.filters.until,
             },
         )
         sessions = {row[0]: row for row in self._session_rows(Filters(project=q.filters.project), None)}
-        groups: dict[str, list[tuple]] = {}
-        for row in rows:
-            if row[0] in sessions:
-                groups.setdefault(row[0], []).append(row)
         hits = []
-        for session_id, group in list(groups.items())[: q.limit]:
-            _, source_id, line_off, block, kind, ts, agent_id = group[0]
-            text, marks = _excerpt(self._entry_text(source_id, line_off, block), q.terms)
-            excerpt = Excerpt(Kind(kind), ts, agent_id, text, marks)
-            hits.append(SessionHit(self._summary(sessions[session_id]), len(group), excerpt))
+        for session_id, count, source_id, line_off, block, kind, ts, agent_id in rows:
+            if session_id not in sessions:
+                continue
+            text, marks = _excerpt(self._entry_text(source_id, line_off, block), terms)
+            hits.append(SessionHit(self._summary(sessions[session_id]), count, Excerpt(Kind(kind), ts, agent_id, text, marks)))
+            if len(hits) == q.limit:
+                break
         return hits
 
     def sessions(self, filters: Filters = Filters(), limit: int | None = 30) -> list[SessionSummary]:
@@ -1136,30 +1143,54 @@ SELECT m.session_id, t.cwd, t.custom_title,
 """
 
 _SEARCH_SQL = """
-SELECT s.session_id, e.source_id, e.line_off, e.block, e.kind, e.ts, s.agent_id
-  FROM entry_fts f
-  JOIN entry e ON e.id = f.rowid
+WITH term (i, expr) AS (SELECT key, value FROM json_each(:exprs)),
+hit AS (
+  SELECT t.i AS term, f.rowid AS entry_id, f.rank AS rank, s.session_id
+    FROM term t
+    JOIN entry_fts f ON f.entry_fts MATCH t.expr
+    JOIN entry e ON e.id = f.rowid
+    JOIN source s ON s.id = e.source_id
+   WHERE e.kind IN (SELECT value FROM json_each(:kinds))
+     AND (:since IS NULL OR e.ts >= :since)
+     AND (:until IS NULL OR e.ts < :until)
+),
+matched AS (
+  SELECT session_id, SUM(rank) AS score, COUNT(DISTINCT entry_id) AS hits
+    FROM hit
+   GROUP BY session_id
+  HAVING COUNT(DISTINCT term) = (SELECT COUNT(*) FROM term)
+),
+best AS (
+  SELECT session_id, entry_id,
+         ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY SUM(rank), entry_id) AS place
+    FROM hit
+   WHERE session_id IN (SELECT session_id FROM matched)
+   GROUP BY session_id, entry_id
+)
+SELECT m.session_id, m.hits, e.source_id, e.line_off, e.block, e.kind, e.ts, s.agent_id
+  FROM matched m
+  JOIN best b ON b.session_id = m.session_id AND b.place = 1
+  JOIN entry e ON e.id = b.entry_id
   JOIN source s ON s.id = e.source_id
- WHERE entry_fts MATCH :expr
-   AND e.kind IN (SELECT value FROM json_each(:kinds))
-   AND (:since IS NULL OR e.ts >= :since)
-   AND (:until IS NULL OR e.ts < :until)
- ORDER BY f.rank
+ ORDER BY m.score, m.session_id
 """
 
 
-def _fts_expr(terms: tuple[str, ...]) -> str:
-    """Terms -> FTS5 MATCH expression that cannot be a syntax error.
+def _fts_expr(term: str) -> str:
+    """One term -> an FTS5 MATCH expression that cannot be a syntax error.
 
-    Each term becomes a quoted string ("" escapes "), a trailing * stays
-    outside the quotes as a prefix query, and terms are joined with AND. So
-    `claudinator search "launchd agent" sync*` -> '"launchd agent" AND "sync"*'.
-    FTS5 operators are not exposed; nobody has to learn them."""
-    quoted = []
-    for term in terms:
-        word = term.rstrip("*")
-        quoted.append('"' + word.replace('"', '""') + '"' + ("*" if word != term else ""))
-    return " AND ".join(quoted)
+    The term becomes a quoted string ("" escapes "), and a trailing * stays
+    outside the quotes as a prefix query. So "launchd agent" -> '"launchd
+    agent"' and sync* -> '"sync"*'. FTS5 operators are not exposed; nobody
+    has to learn them."""
+    word = term.rstrip("*")
+    return '"' + word.replace('"', '""') + '"' + ("*" if word != term else "")
+
+
+def _searchable(terms: Iterable[str]) -> tuple[str, ...]:
+    """The terms that contain a token. FTS5 matches nothing for a phrase with
+    no token, such as "*" or "→", so one of those would empty every search."""
+    return tuple(term for term in terms if _TOKEN.search(term.rstrip("*").translate(_FOLD)))
 
 
 class _FoldTable(dict[int, str]):

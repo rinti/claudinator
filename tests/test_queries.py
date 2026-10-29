@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from claudinator.archive import AmbiguousSession, Filters, Query, Subagent, UnknownSession
+from claudinator.archive import AmbiguousSession, EmptyQuery, Filters, Query, Subagent, UnknownSession
 from claudinator.record import Kind
 from helpers import (
     AID,
@@ -65,7 +65,7 @@ def test_search_matches_every_word_phrases_prefixes_and_folded_accents():
         assert matching(archive, "launchd", "absent") == []
 
 
-@pytest.mark.parametrize("term", ['"', "NOT", "a OR b", "(", "NEAR(x y)", "*", "col:x", "^start", '"quoted"', ""])
+@pytest.mark.parametrize("term", ["NOT", "a OR b", "NEAR(x y)", "col:x", "^start", '"quoted"', 'say "hi'])
 def test_search_input_is_never_fts_syntax(term):
     append(transcript(), user('this is NOT a drill: a or b, col x, start "quoted" (x y)'))
     with open_archive() as archive:
@@ -73,6 +73,12 @@ def test_search_input_is_never_fts_syntax(term):
         assert isinstance(archive.search(Query((term,))), list)
         assert matching(archive, "NOT") == [SID]
         assert matching(archive, "a OR b") == [SID]
+
+
+@pytest.mark.parametrize("term", ['"', "(", "*", ""])
+def test_search_input_without_a_token_is_an_empty_query_not_fts_syntax(term):
+    with open_archive() as archive, pytest.raises(EmptyQuery):
+        archive.search(Query((term,)))
 
 
 def test_search_excerpt_marks_matches_around_the_first_hit():
@@ -207,3 +213,45 @@ def test_conversation_reads_the_archive_in_file_order_and_links_spawned_agents()
         (Kind.TOOL_OUTPUT, "done", None, None),
         (Kind.REPLY, "found it", None, None),
     ]
+
+
+def test_search_finds_a_session_whose_words_are_in_different_turns():
+    append(transcript(), user("the zebracorn escaped", ts="2026-10-01T10:00:00.000Z"), reply("found it by the quokka"))
+    append(transcript(SID2), user("only a zebracorn here"))
+    with open_archive() as archive:
+        archive.sweep()
+        assert matching(archive, "zebracorn", "quokka") == [SID]
+        assert matching(archive, "escaped zebracorn") == []
+
+
+def test_search_every_word_must_match_an_eligible_entry():
+    append(
+        transcript(),
+        user("the zebracorn escaped", ts="2026-10-01T10:00:00.000Z"),
+        tool_result("quokka in the logs", ts="2026-10-20T10:00:00.000Z"),
+        reply("a quokka after all", ts="2026-10-20T10:00:05.000Z"),
+    )
+    with open_archive() as archive:
+        archive.sweep()
+        assert matching(archive, "zebracorn", "logs") == []
+        assert matching(archive, "zebracorn", "logs", tools=True) == [SID]
+        assert matching(archive, "zebracorn", "quokka", filters=Filters(since=OCT_1 + 10 * 86_400_000)) == []
+        assert matching(archive, "zebracorn", "quokka", filters=Filters(until=OCT_1 + 25 * 86_400_000)) == [SID]
+
+
+def test_search_shows_the_entry_that_matches_the_most_words():
+    append(transcript(), user("alpha"), reply("beta"), user("alpha and beta together"), reply("beta again"))
+    with open_archive() as archive:
+        archive.sweep()
+        (hit,) = archive.search(Query(("alpha", "beta")))
+    assert (hit.hits, hit.best.text) == (4, "alpha and beta together")
+    assert [hit.best.text[s:e] for s, e in hit.best.marks] == ["alpha", "beta"]
+
+
+def test_search_drops_words_without_letters_or_digits_and_rejects_a_query_of_only_those():
+    append(transcript(), user("the quokka → the zebracorn"))
+    with open_archive() as archive:
+        archive.sweep()
+        assert matching(archive, "quokka", "→", "*") == [SID]
+        with pytest.raises(EmptyQuery):
+            archive.search(Query(("→", "*", "")))
