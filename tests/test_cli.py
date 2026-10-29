@@ -574,3 +574,11 @@ def test_a_timestamp_outside_1970_to_9999_reads_as_missing(capsys, monkeypatch, 
     code, out, err = run(capsys, "show", "8f2d")
     assert (code, err) == (0, "")
     assert "\n? to ?, 1 prompt, on disk" in out and "\n\n?  you\n  dated quokka\n" in out
+
+
+def test_install_and_status_read_a_settings_file_that_is_not_utf8(capsys, home):
+    (home / ".claude").mkdir()
+    (home / ".claude" / "settings.json").write_bytes(b'{"cleanupPeriodDays": 90, "statusLine": "caf\xe9"}')
+    for command in ("install", "status"):
+        code, out, _ = run(capsys, command)
+        assert (code, "cleanupPeriodDays is 90, so Claude Code deletes transcripts after 90 days." in out) == (0, True)

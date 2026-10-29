@@ -208,9 +208,10 @@ def desktop_session(body: bytes) -> DesktopSession | None:
     return DesktopSession(SessionId(sid), _str(obj.get("title"))) if sid else None
 
 
-def cleanup_period_days(settings: str) -> int | None:
+def cleanup_period_days(settings: bytes) -> int | None:
     """<claude>/settings.json -> how many days Claude Code keeps a transcript
-    after its last write, when the user set it."""
+    after its last write, when the user set it. Decoded leniently, like
+    every side file."""
     days = _json_object(settings).get("cleanupPeriodDays")
     return days if isinstance(days, int) and not isinstance(days, bool) else None
 
@@ -364,14 +365,12 @@ def _text(value: str) -> str:
     return value
 
 
-def _json_object(body: str | bytes) -> dict:
-    """A JSON object from a side file, {} for anything else. Bytes are read
-    as UTF-8 with undecodable bytes replaced: these files are kept verbatim
-    and only a few fields of them are read."""
-    if isinstance(body, bytes):
-        body = body.decode("utf-8", "replace")
+def _json_object(body: bytes) -> dict:
+    """A JSON object from a side file, {} for anything else. The bytes are
+    read as UTF-8 with undecodable bytes replaced: these files are kept
+    verbatim and only a few fields of them are read."""
     try:
-        obj = json.loads(body)
+        obj = json.loads(body.decode("utf-8", "replace"))
     except ValueError, RecursionError:
         return {}
     return obj if isinstance(obj, dict) else {}

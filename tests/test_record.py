@@ -287,8 +287,8 @@ def test_text_of_finds_the_block_by_content_index():
 
 def test_subagent_meta_reads_description_type_and_tool_use_id():
     body = (
-        '{"agentType":"pstack:poteto-agent","description":"Implement admin-side query fixes",'
-        '"toolUseId":"toolu_011xTaVKv5kz48q9dzvr8Twy","spawnDepth":1,"model":"opus","finished":true}'
+        b'{"agentType":"pstack:poteto-agent","description":"Implement admin-side query fixes",'
+        b'"toolUseId":"toolu_011xTaVKv5kz48q9dzvr8Twy","spawnDepth":1,"model":"opus","finished":true}'
     )
     meta = subagent_meta(body)
     assert (meta.description, meta.agent_type, meta.tool_use_id) == (
@@ -296,18 +296,18 @@ def test_subagent_meta_reads_description_type_and_tool_use_id():
         "pstack:poteto-agent",
         "toolu_011xTaVKv5kz48q9dzvr8Twy",
     )
-    assert subagent_meta("{not json") == subagent_meta("{}")
+    assert subagent_meta(b"{not json") == subagent_meta(b"{}")
 
 
 def test_desktop_session_names_the_cli_session_and_title():
     body = (
-        '{"sessionId":"local_67f1cd3c-246f-4088-b0f5-b33d5cbd24ef",'
-        '"cliSessionId":"af2a2ef6-b9c1-442c-a2a6-25c22f620c42","title":"Alpha channel installation"}'
+        b'{"sessionId":"local_67f1cd3c-246f-4088-b0f5-b33d5cbd24ef",'
+        b'"cliSessionId":"af2a2ef6-b9c1-442c-a2a6-25c22f620c42","title":"Alpha channel installation"}'
     )
     desktop = desktop_session(body)
     assert (desktop.cli_session_id, desktop.title) == ("af2a2ef6-b9c1-442c-a2a6-25c22f620c42", "Alpha channel installation")
-    assert desktop_session('{"title":"no cli session yet"}') is None
-    assert desktop_session("not json") is None
+    assert desktop_session(b'{"title":"no cli session yet"}') is None
+    assert desktop_session(b"not json") is None
 
 
 def test_parse_replaces_lone_surrogates_in_every_string_it_returns():
@@ -329,8 +329,8 @@ def test_parse_replaces_lone_surrogates_in_every_string_it_returns():
         rb'{"type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"\udbff"}]}]}}'
     ) == Turn(None, None, ((0, Block(Kind.TOOL_OUTPUT, "�")),))
     assert parse(rb'{"type":"ai-title","aiTitle":"t\ud800"}') == Title("t�", custom=False)
-    assert subagent_meta(r'{"description":"d\ud800"}').description == "d�"
-    assert desktop_session(r'{"cliSessionId":"s","title":"t\udc00"}').title == "t�"
+    assert subagent_meta(rb'{"description":"d\ud800"}').description == "d�"
+    assert desktop_session(rb'{"cliSessionId":"s","title":"t\udc00"}').title == "t�"
     assert parse("😀".encode()) == Unparsed()
 
 

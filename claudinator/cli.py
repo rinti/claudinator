@@ -255,7 +255,7 @@ def _print_status(archive: Archive, st: Status, swept: SweepReport | None) -> in
         files = "file under projects/ matches" if n == 1 else "files under projects/ match"
         print(f"unknown   {n} .jsonl {files} no known layout and {'is' if n == 1 else 'are'} not archived: {st.unclassified[0]}")
     settings = archive.cfg.claude_dir / "settings.json"
-    days = cleanup_period_days(settings.read_text()) if settings.exists() else None
+    days = cleanup_period_days(settings.read_bytes()) if settings.exists() else None
     setting, days = (f"is {days}", days) if days is not None else ("is unset", 30)
     print(f"note      cleanupPeriodDays {setting}, so Claude Code deletes transcripts after {days} days.")
     print("          The archive keeps them, and `claudinator resume` restores one before resuming it.")
