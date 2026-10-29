@@ -15,7 +15,8 @@ from typing import NewType
 
 PROJECTION_VERSION = 1
 """Bump when parse() or project() would produce different rows for the same
-bytes, or when the projection section of schema.sql changes.
+bytes. An edit to the projection section of schema.sql needs no bump: meta
+keeps a digest of that DDL, and open() rebuilds when it differs.
 
 tests/test_projection_golden.py projects a fixture corpus of real (redacted)
 lines and compares a digest of the rows with GOLDEN[PROJECTION_VERSION], so a

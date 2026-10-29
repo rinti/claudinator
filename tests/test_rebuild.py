@@ -1,4 +1,8 @@
 import random
+import sqlite3
+
+import claudinator.archive as archive_module
+from claudinator.archive import Config
 
 from claudinator.record import PROJECTION_VERSION, Unparsed
 from helpers import (
@@ -78,3 +82,16 @@ def test_open_rebuilds_the_projection_after_a_version_bump(monkeypatch):
     with open_archive() as archive:
         assert found(archive, "quokka") == 0
         assert archive.status().unparsed_lines == 2
+
+
+def test_open_rebuilds_the_projection_when_its_ddl_changes_without_a_version_bump(monkeypatch):
+    append(transcript(), user("one quokka"))
+    with open_archive() as archive:
+        archive.sweep()
+    changed = archive_module._PROJECTION_DDL + "\nCREATE INDEX entry_by_ts ON entry (ts);\n"
+    monkeypatch.setattr(archive_module, "_PROJECTION_DDL", changed)
+    with open_archive() as archive:
+        assert found(archive, "quokka") == 1
+    db = sqlite3.connect(Config.from_env().db)
+    assert db.execute("SELECT name FROM sqlite_schema WHERE name = 'entry_by_ts'").fetchall() == [("entry_by_ts",)]
+    db.close()
