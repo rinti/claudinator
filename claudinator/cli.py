@@ -49,7 +49,14 @@ def main(argv: list[str] | None = None) -> int:
         with Archive.open(cfg) as archive:
             if args.command in READ_COMMANDS:
                 _note(archive.sweep(wait=False))
-            return HANDLERS[args.command](archive, args)
+            code = HANDLERS[args.command](archive, args)
+            sys.stdout.flush()
+            return code
+    except BrokenPipeError:
+        # The reader (head, a closed less) is gone, which is how a pipe ends. Point stdout at
+        # /dev/null so the flush at exit does not fail again and turn exit 0 into 120.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
     except AmbiguousSession as e:
         print(f"claudinator: {e}; be more specific:", file=sys.stderr)
         for s in e.candidates:

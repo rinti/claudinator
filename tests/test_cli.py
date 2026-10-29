@@ -367,3 +367,13 @@ def test_terminal_control_characters_in_a_transcript_are_shown_not_obeyed(capsys
         assert CONTROL.isdisjoint(out), argv
     assert "zebracorn \\x1b]52;c;ZXZpbA==\\x07 then \\x1b[2J and \\x9b31m" in run(capsys, "show", "8f2d")[1]
     assert "  line one\\x1b[31m\n  line two\n" in run(capsys, "show", "8f2d")[1]
+
+
+def test_show_into_a_pipe_that_closes_early_exits_0_quietly():
+    append(transcript(), *(user(f"prompt number {i} " + "w" * 100) for i in range(3000)))
+    reader = subprocess.Popen(
+        [sys.executable, "-m", "claudinator", "show", "8f2d"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    assert reader.stdout.readline().startswith(b"8f2d43fe")
+    reader.stdout.close()
+    assert (reader.wait(timeout=60), reader.stderr.read()) == (0, b"")
