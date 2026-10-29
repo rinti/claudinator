@@ -83,10 +83,11 @@ CREATE TABLE doc (
   role        TEXT    NOT NULL,      -- archive.DocRole value
   session_id  TEXT,                  -- desktop docs: parsed cliSessionId
   agent_id    TEXT,
-  sha256      BLOB    NOT NULL,
-  body        TEXT    NOT NULL,      -- verbatim UTF-8
-  mtime       INTEGER NOT NULL,      -- epoch ms
-  archived_at INTEGER NOT NULL
+  sha256      BLOB    NOT NULL,      -- of body; decides whether a new read changed anything
+  body        BLOB    NOT NULL,      -- the file's bytes, verbatim; record.py decodes leniently
+  size        INTEGER NOT NULL,      -- st_size and st_mtime_ns when body was read: a sweep
+  mtime_ns    INTEGER NOT NULL,      -- that sees both unchanged does not read the file
+  archived_at INTEGER NOT NULL       -- epoch ms
 ) STRICT;
 CREATE INDEX doc_by_session ON doc (session_id, role);
 

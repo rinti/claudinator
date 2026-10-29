@@ -186,7 +186,7 @@ class SubagentMeta:
     tool_use_id: str | None
 
 
-def subagent_meta(body: str) -> SubagentMeta:
+def subagent_meta(body: bytes) -> SubagentMeta:
     """<sid>/subagents/agent-<aid>.meta.json -> what show and search need."""
     obj = _json_object(body)
     return SubagentMeta(_str(obj.get("description")), _str(obj.get("agentType")), _str(obj.get("toolUseId")))
@@ -198,7 +198,7 @@ class DesktopSession:
     title: str | None
 
 
-def desktop_session(body: str) -> DesktopSession | None:
+def desktop_session(body: bytes) -> DesktopSession | None:
     """A desktop app local_*.json -> the CLI session it wraps and its title.
     None when the body is not JSON or names no CLI session."""
     obj = _json_object(body)
@@ -313,7 +313,12 @@ def _text(value: str) -> str:
     return value
 
 
-def _json_object(body: str) -> dict:
+def _json_object(body: str | bytes) -> dict:
+    """A JSON object from a side file, {} for anything else. Bytes are read
+    as UTF-8 with undecodable bytes replaced: these files are kept verbatim
+    and only a few fields of them are read."""
+    if isinstance(body, bytes):
+        body = body.decode("utf-8", "replace")
     try:
         obj = json.loads(body)
     except ValueError, RecursionError:

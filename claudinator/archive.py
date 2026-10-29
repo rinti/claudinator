@@ -979,7 +979,7 @@ class Archive:
         end = chunk.find(b"\n", offset - start)
         return chunk[offset - start : end if end >= 0 else len(chunk)]
 
-    def _docs(self, session_id: SessionId, role: DocRole) -> list[tuple[AgentId | None, str]]:
+    def _docs(self, session_id: SessionId, role: DocRole) -> list[tuple[AgentId | None, bytes]]:
         return self._db.execute(
             "SELECT agent_id, body FROM doc WHERE session_id = ? AND role = ? ORDER BY path", (session_id, role.value)
         ).fetchall()
@@ -997,45 +997,48 @@ class Archive:
         return row[0]
 
     def _store_docs(self, docs: Iterable[SideFile], wait: bool) -> tuple[int, list[str]]:
-        """Upsert the latest body of each side file whose sha256 changed, in
-        one transaction. DESKTOP docs get their session id from the body.
-        Returns how many changed and what could not be read."""
-        known = {path: sha for path, sha in self._db.execute("SELECT path, sha256 FROM doc")}
-        rows, errors = [], []
+        """Store the latest bytes of each side file whose sha256 changed, in
+        one transaction. A file whose size and mtime match what is stored is
+        not read. DESKTOP docs get their session id from the body. Returns
+        how many bodies changed and what could not be read."""
+        rows = self._db.execute("SELECT path, size, mtime_ns, sha256 FROM doc")
+        known = {path: (size, mtime_ns, sha) for path, size, mtime_ns, sha in rows}
+        changed, restat, errors = [], [], []
         now = _now()
         for d in docs:
+            stored = known.get(str(d.path))
             try:
-                data = d.path.read_bytes()
-                mtime = d.path.stat().st_mtime_ns // 1_000_000
+                st = d.path.stat()  # before the read, so a write during it shows up as a change next time
+                if stored is not None and stored[:2] == (st.st_size, st.st_mtime_ns):
+                    continue
+                body = d.path.read_bytes()
             except FileNotFoundError:
                 continue
             except OSError as e:
-                errors.append(f"{d.path}: {e}")
+                errors.append(f"{d.path}: {e!r}")
                 continue
-            sha = hashlib.sha256(data).digest()
-            if known.get(str(d.path)) == sha:
-                continue
-            try:
-                body = data.decode()
-            except UnicodeDecodeError:
-                errors.append(f"{d.path}: not UTF-8 text")
+            sha = hashlib.sha256(body).digest()
+            if stored is not None and stored[2] == sha:
+                restat.append((st.st_size, st.st_mtime_ns, str(d.path)))
                 continue
             session_id = d.session_id
             if d.role is DocRole.DESKTOP and (desktop := desktop_session(body)) is not None:
                 session_id = desktop.cli_session_id
-            rows.append((str(d.path), d.role.value, session_id, d.agent_id, sha, body, mtime, now))
-        if rows:
-            with self._write(wait=wait):
-                self._db.executemany(
-                    "INSERT INTO doc (path, role, session_id, agent_id, sha256, body, mtime, archived_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-                    " ON CONFLICT (path) DO UPDATE SET role = excluded.role, session_id = excluded.session_id,"
-                    " agent_id = excluded.agent_id, sha256 = excluded.sha256, body = excluded.body,"
-                    " mtime = excluded.mtime, archived_at = excluded.archived_at"
-                    " WHERE excluded.mtime >= doc.mtime",
-                    rows,
-                )
-        return len(rows), errors
+            changed.append((str(d.path), d.role.value, session_id, d.agent_id, sha, body, st.st_size, st.st_mtime_ns, now))
+        if not changed and not restat:
+            return 0, errors
+        with self._write(wait=wait):
+            upserted = self._db.executemany(
+                "INSERT INTO doc (path, role, session_id, agent_id, sha256, body, size, mtime_ns, archived_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT (path) DO UPDATE SET role = excluded.role, session_id = excluded.session_id,"
+                " agent_id = excluded.agent_id, sha256 = excluded.sha256, body = excluded.body,"
+                " size = excluded.size, mtime_ns = excluded.mtime_ns, archived_at = excluded.archived_at"
+                " WHERE excluded.sha256 IS NOT doc.sha256",
+                changed,
+            ).rowcount
+            self._db.executemany("UPDATE doc SET size = ?, mtime_ns = ? WHERE path = ?", restat)
+        return max(upserted, 0), errors
 
     def _projection_current(self) -> bool:
         return all(self._meta(key) == value for key, value in _projection_stamp().items())
@@ -1072,7 +1075,7 @@ span AS (
 SELECT m.session_id, t.cwd, t.custom_title,
        (SELECT d.body FROM doc d
          WHERE d.session_id = m.session_id AND d.role = :desktop
-         ORDER BY d.mtime DESC LIMIT 1) AS desktop,
+         ORDER BY d.mtime_ns DESC LIMIT 1) AS desktop,
        t.ai_title,
        (SELECT e.id FROM entry e
          WHERE e.source_id = m.id AND e.kind = :prompt

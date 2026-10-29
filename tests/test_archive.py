@@ -493,3 +493,48 @@ def test_plan_tells_an_append_from_a_rewrite(data, settled, expected):
     tail = hashlib.sha256(window(ARCHIVED)).digest()
     got = plan(HEAD, tail, len(ARCHIVED), len(data), settled, data[: len(HEAD)], window(data) if len(data) >= len(ARCHIVED) else b"")
     assert got is expected
+
+
+def meta_path():
+    return projects() / SLUG / SID / "subagents" / f"agent-{AID}.meta.json"
+
+
+def description(archive) -> str:
+    (agent,) = archive.session(SID[:8]).agents
+    return agent.description
+
+
+def test_a_side_file_that_is_not_utf8_is_kept_verbatim_and_read_leniently():
+    append(transcript(), user("delegate"))
+    append(transcript(agent=AID), user("task"))
+    meta_path().write_bytes(b'{"agentType":"Explore","description":"Caf\xe9 hunt"}')
+    with open_archive() as archive:
+        assert archive.sweep().errors == ()
+        assert description(archive) == "Caf� hunt"
+
+
+def test_a_side_file_whose_content_changes_is_stored_even_with_an_older_mtime():
+    append(transcript(), user("delegate"))
+    append(transcript(agent=AID), user("task"))
+    meta_path().write_text('{"description":"first"}')
+    with open_archive() as archive:
+        archive.sweep()
+        meta_path().write_text('{"description":"restored from a backup"}')
+        settle(meta_path())
+        assert archive.sweep().docs_changed == 1
+        assert description(archive) == "restored from a backup"
+        os.utime(meta_path())
+        assert archive.sweep().docs_changed == 0
+
+
+def test_a_side_file_with_the_same_size_and_mtime_is_not_read_again():
+    append(transcript(), user("delegate"))
+    append(transcript(agent=AID), user("task"))
+    meta_path().write_text('{"description":"read once"}')
+    with open_archive() as archive:
+        archive.sweep()
+        meta_path().chmod(0)
+        try:
+            assert archive.sweep().errors == ()
+        finally:
+            meta_path().chmod(0o600)
