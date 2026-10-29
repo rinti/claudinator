@@ -353,3 +353,17 @@ def test_search_with_no_searchable_word_says_so(capsys):
         "",
         "claudinator: nothing to search for: every word lacks a letter or a digit\n",
     )
+
+
+HOSTILE = "zebracorn \x1b]52;c;ZXZpbA==\x07 then \x1b[2J and \x9b31m"
+CONTROL = set(map(chr, [*range(0, 9), *range(11, 32), *range(127, 160)]))
+
+
+def test_terminal_control_characters_in_a_transcript_are_shown_not_obeyed(capsys):
+    append(transcript(), user(HOSTILE), reply("line one\x1b[31m\nline two"), tool_call("Bash", {"command": "x\x1b[2J"}))
+    for argv in (["show", "8f2d"], ["sessions"], ["search", "zebracorn"], ["search", "zebracorn", "--tools"]):
+        code, out, _ = run(capsys, *argv)
+        assert code == 0
+        assert CONTROL.isdisjoint(out), argv
+    assert "zebracorn \\x1b]52;c;ZXZpbA==\\x07 then \\x1b[2J and \\x9b31m" in run(capsys, "show", "8f2d")[1]
+    assert "  line one\\x1b[31m\n  line two\n" in run(capsys, "show", "8f2d")[1]

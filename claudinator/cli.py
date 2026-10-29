@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     except AmbiguousSession as e:
         print(f"claudinator: {e}; be more specific:", file=sys.stderr)
         for s in e.candidates:
-            print(f"  {s.id}  {_when(s.last_ts)}  {_short(s.cwd)}  {s.title or ''}", file=sys.stderr)
+            print(f"  {s.id}  {_when(s.last_ts)}  {_short(s.cwd)}  {printable(s.title or '')}", file=sys.stderr)
         return 1
     except (ArchiveError, launchd.LaunchdError, OSError) as e:
         print(f"claudinator: {e}", file=sys.stderr)
@@ -98,7 +98,7 @@ def cmd_sessions(archive: Archive, args: argparse.Namespace) -> int:
     width = max([len("PROJECT")] + [len(_short(s.cwd)) for s in rows])
     print(f"SESSION   LAST ACTIVE       PROMPTS  AGENTS  {'PROJECT':<{width}}  TITLE")
     for s in rows:
-        title = _clip(s.title or "", 60) + ("" if s.on_disk else "  [gone]")
+        title = printable(_clip(s.title or "", 60)) + ("" if s.on_disk else "  [gone]")
         print(f"{s.id[:8]}  {_when(s.last_ts)}  {s.prompts:>7}  {s.subagents:>6}  {_short(s.cwd):<{width}}  {title}")
     return 0
 
@@ -106,14 +106,14 @@ def cmd_sessions(archive: Archive, args: argparse.Namespace) -> int:
 def cmd_show(archive: Archive, args: argparse.Namespace) -> int:
     session = archive.session(args.id)
     s = session.summary
-    print(f'{s.id}  {_short(s.cwd)}  "{s.title or ""}"')
+    print(f'{s.id}  {_short(s.cwd)}  "{printable(s.title or "")}"')
     where = "on disk" if s.on_disk else "deleted by Claude Code, kept in the archive"
     prompts = f"{s.prompts} prompt{'' if s.prompts == 1 else 's'}"
     print(f"{_when(s.first_ts)} to {_when(s.last_ts)}, {prompts}, {where} (claudinator resume {s.id[:8]})")
     agent = _agent(session, args.agent) if args.agent else None
     for a in session.agents:
         if agent is None or a.id == agent:
-            print(f"agent {a.id[:8]}  {a.agent_type or ''}  {a.description or ''}".rstrip())
+            print(printable(f"agent {a.id[:8]}  {a.agent_type or ''}  {a.description or ''}".rstrip()))
     speaker = None
     for m in archive.conversation(s.id, agent):
         if not m.text.strip() and m.kind is not Kind.TOOL_OUTPUT:
@@ -123,16 +123,16 @@ def cmd_show(archive: Archive, args: argparse.Namespace) -> int:
             speaker = who
         match m.kind:
             case Kind.TOOL_CALL:
-                print(f"  > {_clip(' '.join(m.text.split()), 200)}")
+                print(f"  > {printable(_clip(' '.join(m.text.split()), 200))}")
                 if m.spawned:
                     print(f"    (subagent: claudinator show {s.id[:8]} --agent {m.spawned[:8]})")
             case Kind.TOOL_OUTPUT:
                 lines = m.text.splitlines() or [""]
                 if args.full:
-                    print("  < " + "\n    ".join(lines))
+                    print("  < " + "\n    ".join(map(printable, lines)))
                 else:
                     more = f"  ({len(lines)} lines)" if len(lines) > 1 else ""
-                    print(f"  < {_clip(lines[0], 160)}{more}")
+                    print(f"  < {printable(_clip(lines[0], 160))}{more}")
             case _:
                 print(_indent(m.text))
     return 0
@@ -159,7 +159,7 @@ def cmd_resume(archive: Archive, args: argparse.Namespace) -> int:
         print(f"restored {_short(str(s.transcript))} from the archive")
     command = ["claude", "--resume", s.id]
     if not s.cwd or not os.path.isdir(s.cwd):
-        print(f"claudinator: the session's directory {s.cwd} no longer exists. Resume it from another one with:")
+        print(f"claudinator: the session's directory {_short(s.cwd)} no longer exists. Resume it from another one with:")
         print(f"  {shlex.join(command)}")
         return 1
     try:
@@ -363,20 +363,32 @@ def _report(r: SweepReport) -> str:
 
 def _session_line(s: SessionSummary) -> str:
     gone = "" if s.on_disk else "  [gone]"
-    return f"{s.id[:8]}  {_when(s.last_ts)}  {_short(s.cwd)}  {_clip(s.title or '', 60)}{gone}"
+    return f"{s.id[:8]}  {_when(s.last_ts)}  {_short(s.cwd)}  {printable(_clip(s.title or '', 60))}{gone}"
 
 
 def _marked(text: str, marks: tuple[tuple[int, int], ...], tty: bool) -> str:
     start, end = ("\x1b[1m", "\x1b[0m") if tty else ("[", "]")
     out, at = [], 0
     for s, e in marks:
-        out += [text[at:s], start, text[s:e], end]
+        out += [printable(text[at:s]), start, printable(text[s:e]), end]
         at = e
-    return "".join(out) + text[at:]
+    return "".join(out) + printable(text[at:])
 
 
 def _indent(text: str) -> str:
-    return "\n".join("  " + line for line in text.strip("\n").splitlines())
+    return "\n".join("  " + printable(line) for line in text.strip("\n").splitlines())
+
+
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def printable(text: str) -> str:
+    """text with every C0 and C1 control character except newline and tab
+    written as a visible \\xNN escape. Transcripts hold escape sequences
+    that would recolour the terminal, move the cursor, or, through OSC 52,
+    set the clipboard. Every transcript string the CLI prints goes through
+    here; export does not, because it writes bytes, not a terminal view."""
+    return _CONTROL.sub(lambda m: f"\\x{ord(m[0]):02x}", text)
 
 
 def _clip(text: str, width: int) -> str:
@@ -387,7 +399,7 @@ def _short(path: str | None) -> str:
     if not path:
         return "?"
     home = str(Path.home())
-    return "~" + path[len(home) :] if path == home or path.startswith(home + "/") else path
+    return printable("~" + path[len(home) :] if path == home or path.startswith(home + "/") else path)
 
 
 def _when(ms: int | None) -> str:
