@@ -2,12 +2,16 @@ import json
 import os
 import plistlib
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+import claudinator.archive as archive_module
 from claudinator import cli, launchd
 from claudinator.archive import Config
+from test_concurrency import LOCKER
 from helpers import (
     AID,
     SID,
@@ -299,3 +303,35 @@ def test_rebuild_rederives_the_search_index(capsys):
     run(capsys, "sweep")
     assert run(capsys, "rebuild")[0] == 0
     assert "(1 hit)" in run(capsys, "search", "quokka")[1]
+
+
+def test_a_file_that_is_not_a_database_is_a_message_not_a_traceback(capsys, tmp_path, monkeypatch):
+    garbage = tmp_path / "garbage.db"
+    garbage.write_bytes(b"this is not sqlite" * 100)
+    monkeypatch.setenv("CLAUDINATOR_DB", str(garbage))
+    assert run(capsys, "sessions") == (1, "", f"claudinator: {garbage}: file is not a database\n")
+
+
+def test_an_unusable_database_directory_is_a_message_not_a_traceback(capsys, tmp_path, monkeypatch):
+    (tmp_path / "a-file").write_text("")
+    monkeypatch.setenv("CLAUDINATOR_DB", str(tmp_path / "a-file" / "claudinator.db"))
+    code, out, err = run(capsys, "sessions")
+    assert (code, out) == (1, "")
+    assert err.startswith("claudinator: [Errno ") and str(tmp_path / "a-file") in err
+
+
+def test_rebuild_while_another_process_holds_the_lock_names_it(capsys, monkeypatch):
+    append(transcript(), user("quokka"))
+    run(capsys, "sweep")
+    monkeypatch.setattr(archive_module, "LOCK_WAIT_MS", 200)
+    locker = subprocess.Popen(
+        [sys.executable, "-c", LOCKER, str(Config.from_env().db)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert locker.stdout.readline() == "locked\n"
+        code, _, err = run(capsys, "rebuild")
+    finally:
+        locker.stdin.close()
+        locker.wait(timeout=10)
+    assert code == 1
+    assert err.startswith("claudinator: another claudinator process is writing to the archive")

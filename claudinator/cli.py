@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import sys
 import time
 from collections.abc import Callable
@@ -37,13 +38,15 @@ _NOTE_ARCHIVED_BYTES = 4 << 20
 
 def main(argv: list[str] | None = None) -> int:
     """claudinator <command> [...]. Exit 0 ok, 1 domain error (unknown or
-    ambiguous session, unhealthy sweeper, resume impossible), 2 usage error."""
+    ambiguous session, unhealthy sweeper, resume impossible, an unreadable
+    database or file), 2 usage error. No error ends in a traceback."""
     try:
         args = _parser(_now_ms()).parse_args(argv)
     except SystemExit as e:
         return e.code if isinstance(e.code, int) else 2
+    cfg = Config.from_env()
     try:
-        with Archive.open(Config.from_env()) as archive:
+        with Archive.open(cfg) as archive:
             if args.command in READ_COMMANDS:
                 _note(archive.sweep(wait=False))
             return HANDLERS[args.command](archive, args)
@@ -52,8 +55,11 @@ def main(argv: list[str] | None = None) -> int:
         for s in e.candidates:
             print(f"  {s.id}  {_when(s.last_ts)}  {_short(s.cwd)}  {s.title or ''}", file=sys.stderr)
         return 1
-    except (ArchiveError, launchd.LaunchdError) as e:
+    except (ArchiveError, launchd.LaunchdError, OSError) as e:
         print(f"claudinator: {e}", file=sys.stderr)
+        return 1
+    except sqlite3.Error as e:
+        print(f"claudinator: {cfg.db}: {e}", file=sys.stderr)
         return 1
 
 

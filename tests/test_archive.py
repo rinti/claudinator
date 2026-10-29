@@ -16,6 +16,7 @@ from claudinator.archive import (
     TranscriptFile,
     classify,
 )
+import claudinator.archive as archive_module
 import claudinator.record as record_module
 from claudinator.record import PROJECTION_VERSION, Block, Kind, Turn
 from helpers import (
@@ -339,3 +340,39 @@ def test_a_projected_string_sqlite_cannot_store_makes_its_record_unparsed(monkey
         assert exported(archive) == path.read_bytes()
         assert archive.status().unparsed_lines == 1
         assert found(archive, "quokka") == 1
+
+
+def test_an_unexpected_error_in_one_file_is_reported_and_the_sweep_goes_on(monkeypatch):
+    real_compress = archive_module.zstd.compress
+
+    def compress(data, *args, **kwargs):
+        if b"poison" in data:
+            raise ValueError("cannot compress this")
+        return real_compress(data, *args, **kwargs)
+
+    monkeypatch.setattr(archive_module.zstd, "compress", compress)
+    append(transcript(), user("poison"))
+    append(transcript(SID2), user("healthy quokka"))
+    side = projects() / SLUG / SID / "custom-title.json"
+    side.parent.mkdir(parents=True, exist_ok=True)
+    side.write_text('{"customTitle":"Mine"}')
+    with open_archive() as archive:
+        report = archive.sweep()
+        assert report.errors == (f"{transcript()}: ValueError('cannot compress this')",)
+        assert (report.transcripts_changed, report.docs_changed) == (1, 1)
+        assert found(archive, "quokka") == 1
+        assert archive.status().last_sweep.errors == report.errors
+
+
+def test_a_transaction_that_sqlite_rolls_back_itself_reports_its_own_error():
+    append(transcript(), user("rolled back"))
+    with open_archive() as archive:
+        archive._db.execute(
+            "CREATE TEMP TRIGGER as_if_the_disk_were_full BEFORE INSERT ON segment"
+            " BEGIN SELECT RAISE(ROLLBACK, 'database or disk is full'); END"
+        )
+        report = archive.sweep(wait=False)
+        archive._db.execute("DROP TRIGGER as_if_the_disk_were_full")
+        assert [e.split(": ", 1)[1] for e in report.errors] == ["IntegrityError('database or disk is full')"]
+        assert archive.sweep().errors == ()
+        assert exported(archive) == transcript().read_bytes()

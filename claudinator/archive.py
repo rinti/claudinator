@@ -60,6 +60,10 @@ transcripts with zstd level 3: per-line 2.9x, 128 KiB 4.2x, 1 MiB 4.8x,
 whole-file 5.0x. 1 MiB keeps random access to one line at one ~1 ms
 decompress while losing 4% versus whole files."""
 
+LOCK_WAIT_MS = 60_000
+"""How long a write that may wait (sweep(wait=True), rebuild) waits for
+another process's write lock before it gives up with Locked."""
+
 BUSY_MS = 5000
 """How long a statement waits on another process's lock. Only BEGIN
 IMMEDIATE in _write sets its own wait, and only for that one statement."""
@@ -340,6 +344,10 @@ class NewerArchive(ArchiveError):
     projection_version). Reads proceed; writes are refused."""
 
 
+class Locked(ArchiveError):
+    """Another process held the write lock for LOCK_WAIT_MS."""
+
+
 class _Busy(Exception):
     """Internal: BEGIN IMMEDIATE failed with SQLITE_BUSY under wait=False."""
 
@@ -474,9 +482,13 @@ class Archive:
         a second run with no file changes archives nothing.
 
         wait=True (launchd, install, `claudinator sweep`): block on the write
-        lock up to 60 s per file, and record the report as the last sweep.
-        wait=False (every read command): give up at the first busy lock and
-        report busy=True; the reader proceeds on what is already archived."""
+        lock up to LOCK_WAIT_MS per file, and record the report as the last
+        sweep. wait=False (every read command): give up at the first busy
+        lock and report busy=True; the reader proceeds on what is already
+        archived.
+
+        A file that fails for any reason becomes one entry in errors and the
+        sweep moves on, so one bad file never keeps the rest unarchived."""
         started = _now()
         known = self._cursors()
         seen = changed = archived = archived_lines = generations = docs_changed = 0
@@ -490,21 +502,22 @@ class Archive:
                 continue
             seen += 1
             try:
-                size = loc.path.stat().st_size
+                if known.get(loc.path) == loc.path.stat().st_size:
+                    continue
+                delta = self._ingest(loc, wait)
             except FileNotFoundError:
                 continue
-            if known.get(loc.path) == size:
-                continue
-            try:
-                delta = self._ingest(loc, wait)
             except _Busy:
                 busy = True
                 break
             except NewerArchive as e:
                 refused = str(e)
                 break
-            except (OSError, sqlite3.DatabaseError) as e:
-                errors.append(f"{loc.path}: {e}")
+            except Locked as e:
+                errors.append(str(e))
+                break
+            except Exception as e:
+                errors.append(f"{loc.path}: {e!r}")
                 continue
             if delta.bytes:
                 changed += 1
@@ -513,7 +526,7 @@ class Archive:
                 generations += delta.rewritten
             if progress:
                 progress(loc.path, delta.bytes)
-        if not busy and not refused:
+        else:
             try:
                 docs_changed, doc_errors = self._store_docs(docs, wait)
                 errors += doc_errors
@@ -521,6 +534,8 @@ class Archive:
                 busy = True
             except NewerArchive as e:
                 refused = str(e)
+            except Exception as e:
+                errors.append(f"side files: {e!r}")
         report = SweepReport(
             started=started,
             finished=_now(),
@@ -540,6 +555,8 @@ class Archive:
                     self._set_meta("last_sweep", json.dumps(asdict(report)))
             except NewerArchive as e:
                 report = replace(report, refused=str(e))
+            except Exception as e:
+                report = replace(report, errors=(*report.errors, f"recording this sweep: {e!r}"))
         return report
 
     def rebuild(self, *, force: bool = False) -> None:
@@ -687,13 +704,18 @@ class Archive:
         Raises NewerArchive when a newer claudinator has stamped the file,
         checked under the lock because one may upgrade it while this
         process has it open."""
-        self._db.execute(f"PRAGMA busy_timeout = {60_000 if wait else 0}")
+        self._db.execute(f"PRAGMA busy_timeout = {LOCK_WAIT_MS if wait else 0}")
         try:
             self._db.execute("BEGIN IMMEDIATE")
         except sqlite3.OperationalError as e:
-            if not wait and e.sqlite_errorcode == sqlite3.SQLITE_BUSY:
+            if e.sqlite_errorcode != sqlite3.SQLITE_BUSY:
+                raise
+            if not wait:
                 raise _Busy from e
-            raise
+            raise Locked(
+                f"another claudinator process is writing to the archive and held its lock for"
+                f" {LOCK_WAIT_MS / 1000:g} s; try again when it finishes"
+            ) from e
         finally:
             self._db.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
         try:
@@ -702,10 +724,11 @@ class Archive:
             ) > PROJECTION_VERSION:
                 raise NewerArchive("this archive was written by a newer claudinator")
             yield
+            self._db.execute("COMMIT")
         except BaseException:
-            self._db.execute("ROLLBACK")
+            if self._db.in_transaction:  # SQLite rolls back by itself on some errors (disk full, I/O)
+                self._db.execute("ROLLBACK")
             raise
-        self._db.execute("COMMIT")
 
     def _ingest(self, f: TranscriptFile, wait: bool) -> _Delta:
         """Archive and project the new complete lines of one transcript.
