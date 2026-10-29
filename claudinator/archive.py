@@ -638,7 +638,7 @@ class Archive:
             last_sweep=_report(json.loads(last)) if last else None,
         )
 
-    # -- private: the ingest path -------------------------------------------
+    # -- private -----------------------------------------------------------
 
     @contextmanager
     def _write(self, *, wait: bool) -> Iterator[None]:
@@ -715,12 +715,13 @@ class Archive:
             else:
                 source_id = src[0]
                 after_newline = self._ends_with_newline(source_id)
-            chunks = list(chunk_lines(body, cursor))
-            self._db.executemany(
-                "INSERT INTO segment (source_id, byte_start, byte_end, zstd, archived_at) VALUES (?, ?, ?, ?, ?)",
-                [(source_id, start, start + len(chunk), zstd.compress(chunk), now) for start, chunk in chunks],
-            )
-            self._project(source_id, _records(chunks, after_newline))
+            for start, chunk in chunk_lines(body, cursor):
+                self._db.execute(
+                    "INSERT INTO segment (source_id, byte_start, byte_end, zstd, archived_at) VALUES (?, ?, ?, ?, ?)",
+                    (source_id, start, start + len(chunk), zstd.compress(chunk), now),
+                )
+                self._project(source_id, _records([(start, chunk)], after_newline))
+                after_newline = chunk.endswith(b"\n")
             return _Delta(take, body.count(b"\n") + (not body.endswith(b"\n")), rewritten)
 
     def _project(self, source_id: int, records: Iterable[tuple[int, Record]]) -> None:
