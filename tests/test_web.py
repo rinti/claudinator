@@ -51,7 +51,7 @@ def served():
 
 def get(server, target, *, prefix=None, host=None, headers=(), method="GET") -> tuple[int, dict[str, str], bytes]:
     sent = {"Host": host or f"127.0.0.1:{server.port}", **dict(headers)}
-    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=10)
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
     try:
         connection.request(method, (server.root[:-1] if prefix is None else prefix) + target, headers=sent)
         response = connection.getresponse()
@@ -160,6 +160,13 @@ def test_only_this_server_as_127_0_0_1_or_localhost_gets_an_answer(served):
     assert get(served, "/", host=f"localhost:{served.port}")[0] == 200
     assert get(served, "/", headers={"Origin": "http://evil.example"})[0] == 403
     assert get(served, "/", headers={"Origin": f"http://localhost:{served.port}"})[0] == 200
+
+
+def test_on_port_80_a_host_without_a_port_is_this_server(served, monkeypatch):
+    monkeypatch.setattr(web.Server, "port", 80)
+    for host in ("127.0.0.1", "localhost", "127.0.0.1:80", "localhost:80"):
+        assert get(served, "/", host=host, headers={"Origin": f"http://{host}"})[0] == 200, host
+    assert get(served, "/", host="evil.example")[0] == 403
 
 
 def test_every_response_forbids_scripts_and_caching(served):

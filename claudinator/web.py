@@ -99,7 +99,8 @@ class _Handler(BaseHTTPRequestHandler):
         """Silent: a request line can hold search words and the token."""
 
     def _answer(self) -> Response:
-        hosts = (f"127.0.0.1:{self.server.port}", f"localhost:{self.server.port}")
+        port = self.server.port
+        hosts = (f"127.0.0.1:{port}", f"localhost:{port}") + (("127.0.0.1", "localhost") if port == 80 else ())
         if self.headers.get("Host") not in hosts:
             return _message(403, "This server answers only to 127.0.0.1 and localhost.")
         if self.headers.get("Origin", f"http://{hosts[0]}") not in tuple(f"http://{host}" for host in hosts):
