@@ -141,7 +141,8 @@ def project(facts: Facts, record: Record) -> tuple[Facts, list[EntryDraft]]:
             observed = _observe(facts, ts, None)
             if text == getattr(facts, kept):
                 return observed, []
-            return replace(observed, **{kept: text}), [EntryDraft(0, Kind.TITLE, _or(ts, facts.last_ts))]
+            when = ts if ts is not None else facts.last_ts
+            return replace(observed, **{kept: text}), [EntryDraft(0, Kind.TITLE, when)]
 
 
 def text_of(record: Record, block: int) -> str:
@@ -257,10 +258,6 @@ def _block(raw: object, text_kind: Kind) -> Block | None:
 
 def _title(value: object, custom: bool, ts: Millis | None) -> Title | None:
     return Title(_text(value), custom, ts) if isinstance(value, str) and value.strip() else None
-
-
-def _or(ts: Millis | None, fallback: Millis | None) -> Millis | None:
-    return ts if ts is not None else fallback
 
 
 def _observe(facts: Facts, ts: Millis | None, cwd: str | None) -> Facts:
