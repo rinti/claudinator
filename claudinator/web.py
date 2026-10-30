@@ -351,7 +351,6 @@ def transcript_page(
 ) -> Html:
     s = session.summary
     terms = searchable(Form(q=q).terms())
-    title = s.title or s.id[:8]
     folded = sum(map(_folded, steps))
     toggle = el(
         "a",
@@ -365,18 +364,15 @@ def transcript_page(
         *((" ", toggle) if folded else ()),
     )
     span = el("p", None, _span(s))
+    agents = None
     if aid is None:
-        heading, facts = title, (span, _resume(s))
-        agents = el(
-            "section",
-            {"class": "agents"},
-            el("h2", None, "Subagents"),
-            el("ul", None, *(_agent(s.id, a) for a in session.agents)),
-        )
+        heading, facts = s.title or s.id[:8], (span, _resume(s))
+        if session.agents:
+            subagents = el("ul", None, *(_agent(s.id, a) for a in session.agents))
+            agents = el("section", {"class": "agents"}, el("h2", None, "Subagents"), subagents)
     else:
         agent = next((a for a in session.agents if a.id == aid), None)
         heading, facts = (agent and agent.description) or f"Subagent {aid[:8]}", (_subagent(s, aid, agent), span)
-        agents = None
     header = el(
         "header", {"class": "session"}, el("a", {"href": "./"}, "All sessions"), el("h1", None, heading), *facts, links
     )
@@ -394,7 +390,7 @@ def transcript_page(
         for minute, run in _minutes(shown)
     )
     body = el("main", None, *_days(minutes))
-    return page(root, heading, header, _banner(swept, ""), agents if session.agents else None, body)
+    return page(root, heading, header, _banner(swept, ""), agents, body)
 
 
 def _span(s: SessionSummary) -> str:
@@ -545,9 +541,8 @@ def _step(sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms
 def _call(
     sid: SessionId, aid: AgentId | None, call: Call, at: Key | None, terms: tuple[str, ...], raw_link: Html
 ) -> Html:
-    """One row: the tool, the gist of its input, and the size of its output.
-    A short output shows below the row; opening the row shows the input and
-    any other output."""
+    """One row: the tool, its input's gist, and its output's size. A short
+    output shows below the row, and opening the row shows the input and any other."""
     out = call.result
     below = out is not None and not _folds(out) and bool(_plain(out).strip())
     output = None
