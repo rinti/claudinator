@@ -2,8 +2,8 @@
 
 Ingests the bytes of the files layout.discover() finds as append-only zstd
 segments, folds the projection, answers queries, exports bytes, and rebuilds
-the projection. cli.py calls this module, which calls layout.py, record.py,
-and search_text.py; nothing reaches past it into the database.
+the projection. cli.py calls this module, which calls layout.py, lines.py,
+record.py, and search_text.py; nothing reaches past it into the database.
 """
 
 from __future__ import annotations
