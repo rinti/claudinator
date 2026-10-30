@@ -13,7 +13,7 @@
   --gutter: clamp(3rem, 2.4rem + 2vw, 4.5rem);
   --measure: 68ch;
   --slot: 2.75rem;
-  --wide: 60rem;
+  --wide: 70rem;
   scrollbar-gutter: stable;
   overflow-wrap: break-word;
   font-synthesis: none;
@@ -55,15 +55,15 @@ pre { margin: 0; font: inherit; }
 .session { max-inline-size: calc(var(--gutter) + var(--measure)); margin-block-end: 2.5rem; color: var(--faint); }
 .session h1 { margin-block: 0.6rem 0.5rem; color: var(--ink); }
 .session p { margin: 0; }
-.session .links { margin-block-start: 0.4rem; }
-.session .links a + a { margin-inline-start: 1.5em; }
+.session .links { display: flex; flex-wrap: wrap; column-gap: 1.5em; margin-block-start: 0.4rem; }
 
 .agents { margin-block-end: 2.5rem; }
 .agents h2, .day { font-size: inherit; font-style: italic; }
 .agents ul { margin: 0.25rem 0 0; padding: 0 0 0 var(--gutter); list-style: none; max-inline-size: calc(var(--gutter) + var(--measure)); }
-.agents li { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 1ch; }
+.agents li { padding-inline-start: 2em; text-indent: -2em; }
 .agents .id, .agents .type { color: var(--faint); font-size: var(--small); font-variant-numeric: lining-nums tabular-nums; }
-.agents a { flex: 1 1 12rem; }
+.agents .id { margin-inline-end: 1ch; }
+.agents .type { margin-inline-start: 1ch; }
 
 /* No content-visibility: its placeholder heights move a search hit's target out of view as the steps above it render. */
 .day { margin-block: 2.25rem 0.5rem; }
@@ -127,9 +127,9 @@ details[open] > summary::before { content: "▾"; }
 
 .top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.75rem 2.5rem; max-inline-size: var(--wide); margin-block-end: 1.25rem; }
 .top h1 a { color: var(--ink); }
-.find { flex: 1 1 30rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem 1.25rem; }
+.find { flex: 1 1 30rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem 1rem; }
 .find input:not([type="checkbox"]) {
-  flex: 1 1 7rem;
+  flex: 1 1 6rem;
   padding: 0.1rem 0;
   border: 0;
   border-block-end: 1px solid var(--faint);
@@ -139,7 +139,8 @@ details[open] > summary::before { content: "▾"; }
   font: inherit;
   appearance: none;
 }
-.find input[type="search"] { flex: 3 1 15rem; }
+.find input[type="search"] { flex: 3 1 13rem; }
+.find input[name="since"] { flex-basis: 11rem; }
 .find input::placeholder { color: var(--faint); opacity: 1; }
 .find label { white-space: nowrap; }
 .find input[type="checkbox"] { accent-color: var(--pen); margin: 0; }
@@ -172,3 +173,8 @@ p.count { margin-block: 0 1.75rem; color: var(--faint); }
 .hits li { margin-block-end: 1.5rem; }
 .hits li > p { margin: 0 0 0.2rem; color: var(--faint); }
 .excerpt { display: block; color: var(--ink); }
+
+@media (width < 40rem) {
+  .sessions .project { flex: 1 1 6rem; }
+  .sessions .count, .sessions .count:last-child { inline-size: auto; padding-inline-end: 1em; }
+}
