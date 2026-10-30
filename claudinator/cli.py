@@ -88,9 +88,13 @@ def parse_when(text: str, now: Millis) -> Millis:
         return Millis(now - int(m[1]) * {"d": 86_400_000, "h": 3_600_000}[m[2]])
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M"):
         try:
-            return Millis(int(datetime.strptime(text, fmt).timestamp()) * 1000)
+            local = datetime.strptime(text, fmt)
         except ValueError:
             continue
+        try:
+            return Millis(int(local.timestamp()) * 1000)
+        except (ValueError, OverflowError, OSError):
+            raise ValueError(f"{text!r} is out of range") from None  # its instant falls outside years 1 to 9999
     raise ValueError(f"expected 2026-10-01, 2026-10-01T14:00, 7d, or 12h, not {text!r}")
 
 

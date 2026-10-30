@@ -208,10 +208,10 @@ def desktop_session(body: bytes) -> DesktopSession | None:
 
 def cleanup_period_days(settings: bytes) -> int | None:
     """<claude>/settings.json -> how many days Claude Code keeps a transcript
-    after its last write, when the user set it. Decoded leniently, like
-    every side file."""
+    after its last write, when the user set it to a whole number of days, 1
+    or more. Decoded leniently, like every side file."""
     days = _json_object(settings).get("cleanupPeriodDays")
-    return days if isinstance(days, int) and not isinstance(days, bool) else None
+    return days if isinstance(days, int) and not isinstance(days, bool) and days >= 1 else None
 
 
 def _typed_by_a_person(obj: dict) -> bool:

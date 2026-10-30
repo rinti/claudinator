@@ -167,6 +167,14 @@ def test_parse_when_rejects_anything_else(text):
         cli.parse_when(text, NOW)
 
 
+@pytest.mark.parametrize(("text", "where"), [("0001-01-01", "UTC"), ("9999-12-31T23:00", "Europe/Stockholm")])
+def test_a_date_with_no_instant_in_this_time_zone_is_out_of_range_not_malformed(capsys, zone, text, where):
+    zone(where)
+    code, _, err = run(capsys, "search", "x", "--since", text)
+    assert code == 2
+    assert f"argument --since: {text!r} is out of range\n" in err
+
+
 def test_export_writes_the_archived_bytes(capsysbinary):
     append(transcript(), user("main"))
     append(transcript(agent=AID), user("subagent"))
@@ -297,6 +305,9 @@ def test_status_notes_claude_codes_cleanup_period(capsys, home):
     (home / ".claude").mkdir(exist_ok=True)
     (home / ".claude" / "settings.json").write_text('{"cleanupPeriodDays": 90}')
     assert "cleanupPeriodDays is 90, so Claude Code deletes transcripts after 90 days." in run(capsys, "status")[1]
+    for days in (0, -5):
+        (home / ".claude" / "settings.json").write_text(f'{{"cleanupPeriodDays": {days}}}')
+        assert "cleanupPeriodDays is unset, so Claude Code deletes transcripts after 30 days." in run(capsys, "status")[1]
 
 
 def test_rebuild_rederives_the_search_index(capsys):
