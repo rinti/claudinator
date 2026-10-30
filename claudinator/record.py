@@ -156,16 +156,12 @@ def project(facts: Facts, record: Record) -> tuple[Facts, list[EntryDraft]]:
         case Turn(ts, cwd, blocks):
             drafts = [EntryDraft(i, b.kind, ts) for i, b in blocks if b.text.strip()]
             return _observe(facts, ts, cwd), drafts
-        case Title(text, custom=True, ts=ts):
-            if text == facts.custom_title:
-                return _observe(facts, ts, None), []
-            entry = EntryDraft(0, Kind.TITLE, _or(ts, facts.last_ts))
-            return replace(_observe(facts, ts, None), custom_title=text), [entry]
-        case Title(text, custom=False, ts=ts):
-            if text == facts.ai_title:
-                return _observe(facts, ts, None), []
-            entry = EntryDraft(0, Kind.TITLE, _or(ts, facts.last_ts))
-            return replace(_observe(facts, ts, None), ai_title=text), [entry]
+        case Title(text, custom, ts):
+            kept = "custom_title" if custom else "ai_title"
+            observed = _observe(facts, ts, None)
+            if text == getattr(facts, kept):
+                return observed, []
+            return replace(observed, **{kept: text}), [EntryDraft(0, Kind.TITLE, _or(ts, facts.last_ts))]
 
 
 def text_of(record: Record, block: int) -> str:
