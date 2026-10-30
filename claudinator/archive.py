@@ -324,6 +324,14 @@ def _changed_stat(path: Path, stored: tuple[int, int] | None) -> os.stat_result 
     return st if (st.st_size, st.st_mtime_ns) != stored else None
 
 
+def _stat_then_read(path: Path, stored: tuple[int, int] | None) -> tuple[os.stat_result, bytes] | None:
+    """In this order, so a write between the two leaves the stat older than
+    the body, and the next sweep reads the file again."""
+    if (st := _changed_stat(path, stored)) is None:
+        return None
+    return st, path.read_bytes()
+
+
 def _settled(st: os.stat_result) -> bool:
     return now() - st.st_mtime_ns // 1_000_000 >= SETTLE_SECONDS * 1000
 
@@ -846,9 +854,9 @@ class Archive:
 
     def _store_doc(self, d: SideFile) -> _Delta:
         row = self._db.execute("SELECT size, mtime_ns, sha256 FROM doc WHERE path = ?", (str(d.path),)).fetchone()
-        if (st := _changed_stat(d.path, row[:2] if row else None)) is None:
+        if (changed := _stat_then_read(d.path, row[:2] if row else None)) is None:
             return _Delta()
-        body = d.path.read_bytes()
+        st, body = changed
         digest = hashlib.sha256(body).digest()
         if row and digest == row[2]:
             self._db.execute(
