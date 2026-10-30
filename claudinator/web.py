@@ -387,16 +387,19 @@ COMMAND = re.compile(r"/[^\W\d][\w:.-]*(?=\s|$)")
 records: /clear or /pstack:poteto-mode, never a path like /Users/me."""
 
 
-def _title(s: SessionSummary) -> tuple[Html | None, ...]:
+def _title(s: SessionSummary) -> tuple[Html | str, ...]:
     title = s.title or s.id[:8]
     if m := COMMAND.match(title):
-        rest = title[m.end() :].strip()
-        return el("span", {"class": "cmd"}, m[0]), el("span", {"class": "rest"}, rest) if rest else None
+        return el("span", {"class": "cmd"}, m[0]), *_rest(title[m.end() :])
     if s.heading and title.startswith(f"# {s.heading}"):
-        rest = title[2 + len(s.heading) :].strip()
         head = el("span", {"class": "head"}, s.heading)
-        return el("span", {"class": "hash"}, "#"), head, el("span", {"class": "rest"}, rest) if rest else None
-    return (el("span", {"class": "head"}, title),)
+        return el("span", {"class": "hash"}, "#"), head, *_rest(title[2 + len(s.heading) :])
+    return (title,)
+
+
+def _rest(s: str) -> tuple[Html | str, ...]:
+    """The space keeps a link's name and a copied title readable: "/clear and go", not "/clearand go"."""
+    return (" ", el("span", {"class": "rest"}, s.strip())) if s.strip() else ()
 
 
 def _where(cwd: str | None) -> tuple[Html | None, Html]:
@@ -734,11 +737,13 @@ def _step(
         case Said(key, _, Kind.PROMPT, text):
             text = text.strip()
             command = COMMAND.match(text)
+            rest = text[command.end() :].lstrip() if command else text
             said = el(
                 "div",
                 {"class": "text"},
                 el("span", {"class": "cmd"}, _text(command[0], here, terms)) if command else None,
-                *_prose(text[command.end() :].lstrip() if command else text, here, terms),
+                " " if command and rest else None,
+                *_prose(rest, here, terms),
             )
             label = el("p", {"class": "label"}, f"Prompt {numbers[key]}")
             css = "step prompt long" if _long(text) else "step prompt"

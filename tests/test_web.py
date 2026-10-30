@@ -412,7 +412,7 @@ def test_prose_sets_fenced_and_inline_code_as_code_and_leaves_a_stray_backtick_a
     append(transcript(), *lines)
     at = offsets(*lines)[1]
     shown = page(served, f"/s/{SID}")
-    assert '<div class="text"><span class="cmd">/pstack:poteto-mode</span>fix <code>web.py</code></div>' in shown
+    assert '<div class="text"><span class="cmd">/pstack:poteto-mode</span> fix <code>web.py</code></div>' in shown
     assert (
         '<div class="text">Run <code>uv sync</code> then:\n<pre class="code">echo &quot;&lt;b&gt;quokka&lt;/b&gt;&quot;</pre>'
         "A stray ` stays.\nSo does `this\none`.</div>"
@@ -479,7 +479,7 @@ def test_the_list_groups_sessions_by_day_and_reads_time_title_project_and_counts
     ]
     assert re.findall(r"<time>(.*?)</time>", shown) == ["09:30", "08:00", "10:00", "23:00"]
     assert (
-        f'<li><time>10:00</time><span class="title"><a class="open" href="s/{SID}"><span class="head">hello</span></a></span>'
+        f'<li><time>10:00</time><span class="title"><a class="open" href="s/{SID}">hello</a></span>'
         '<a class="project" href="./?project=%2FUsers%2Fme%2Fdev%2Fdemo" title="/Users/me/dev/demo">'
         '<span class="dir">/Users/me/dev/</span><span class="leaf">demo</span></a>'
         '<span class="count"><span class="n">1</span> prompt</span><span class="count"><span class="n">1</span> subagent</span></li>'
@@ -501,10 +501,11 @@ def test_a_title_sets_a_leading_slash_command_and_heading_apart_from_the_rest(se
     shown = page(served, "/")
     parts = dict(re.findall(r'<a class="open" href="s/([^"]+)">(.*?)</a>', shown))
     assert parts == {
-        SID: '<span class="cmd">/pstack:poteto-mode</span><span class="rest">store every session</span>',
+        SID: '<span class="cmd">/pstack:poteto-mode</span> <span class="rest">store every session</span>',
         SID2: '<span class="cmd">/clear</span>',
-        "3c0ffee0-0000-4000-8000-000000000003": '<span class="hash">#</span><span class="head">Sync and update</span><span class="rest">You are running unattended</span>',
-        "4c0ffee0-0000-4000-8000-000000000004": '<span class="head">/Users/me/notes is a path, not a command</span>',
+        "3c0ffee0-0000-4000-8000-000000000003": '<span class="hash">#</span><span class="head">Sync and update</span>'
+        ' <span class="rest">You are running unattended</span>',
+        "4c0ffee0-0000-4000-8000-000000000004": "/Users/me/notes is a path, not a command",
     }
     assert f'<a class="open" href="s/{SID2}"><span class="cmd">/clear</span></a><span class="badge">deleted</span></span>' in shown
 
