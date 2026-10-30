@@ -752,7 +752,7 @@ def _step(
             said = el("div", {"class": "text"}, *_prose(text.strip(), here, terms))
             return el("div", {"class": "step reply", "id": f"m{key}"}, said, raw_link)
         case Call():
-            return _call(sid, aid, step, at, terms)
+            return _call(sid, aid, step, at, terms, raw_link)
         case Output():
             first = (_plain(step).strip().splitlines() or [""])[0]
             body = _output_body(sid, aid, step, at, terms)
@@ -807,10 +807,11 @@ def _row(
     return el("div", {"class": f"step {css}", "id": f"m{key}"}, details, *after)
 
 
-def _call(sid: SessionId, aid: AgentId | None, call: Call, at: Key | None, terms: tuple[str, ...]) -> Html:
+def _call(
+    sid: SessionId, aid: AgentId | None, call: Call, at: Key | None, terms: tuple[str, ...], raw_link: Html
+) -> Html:
     out = call.result
     given = json.dumps(json.loads(call.input), indent=2, ensure_ascii=False)
-    raw_link = el("a", {"class": "raw", "href": href_raw(sid, aid, call.key.line_off)}, "raw")
     panel = [el("pre", {"class": "input"}, _text(given, call.key == at, terms)), raw_link]
     if out is not None:
         css = "output error" if out.error else "output"
@@ -967,6 +968,8 @@ _VOID = frozenset({"meta", "base", "link", "img", "input"})
 
 
 def text(s: str) -> Html:
+    if not human.HIDDEN.search(s):
+        return Html(html.escape(s))
     out, at = [], 0
     for m in human.HIDDEN.finditer(s):
         out += (html.escape(s[at : m.start()]), f'<span class="esc">{human.escape(m[0])}</span>')
@@ -985,17 +988,16 @@ def marked(s: str, spans: Sequence[tuple[int, int]]) -> Html:
 
 
 def el(tag: str, attrs: Mapping[str, str | bool | None] | None = None, *children: Html | str | None) -> Html:
-    out = [f"<{tag}"]
+    start = f"<{tag}"
     for name, value in (attrs or {}).items():
         if value is True:
-            out.append(f" {name}")
+            start += f" {name}"
         elif value:
-            out.append(f' {name}="{html.escape(human.printable(value))}"')
-    out.append(">")
-    if tag not in _VOID:
-        out += (child if isinstance(child, Html) else text(child) for child in children if child is not None)
-        out.append(f"</{tag}>")
-    return Html("".join(out))
+            start += f' {name}="{html.escape(human.printable(value))}"'
+    if tag in _VOID:
+        return Html(start + ">")
+    inner = "".join([child if isinstance(child, Html) else text(child) for child in children if child is not None])
+    return Html(f"{start}>{inner}</{tag}>")
 
 
 def page(root: str | None, title: str, *body: Html | None) -> Html:
