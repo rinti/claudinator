@@ -453,6 +453,18 @@ def test_prose_sets_code_as_code_under_its_fences_label_and_leaves_a_stray_backt
     assert "echo &quot;&lt;b&gt;<mark>quokka&lt;/b</mark>&gt;&quot;</pre>" in across
 
 
+def test_a_phrase_across_touching_code_spans_and_an_empty_fence_marks_no_empty_sliver(served):
+    lines = (user("go"), reply("`alpha``beta` then\n```\n```\ngamma"))
+    append(transcript(), *lines)
+    at = offsets(*lines)[1]
+    landed = page(served, f"/s/{SID}?at={at}.0&q=%22alpha+beta%22+%22then+gamma%22")
+    assert (
+        '<code><mark>alpha</mark></code><code><mark>beta</mark></code> <mark>then\n</mark><pre class="code"></pre><mark>gamma</mark>'
+        in landed
+    )
+    assert "<mark></mark>" not in landed
+
+
 def test_a_reply_of_unclosed_fences_renders_in_well_under_a_second():
     append(transcript(), user("go"), reply("```a\n" * (pages.INLINE_CHARS // 5)))
     with open_archive() as archive:

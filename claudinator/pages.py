@@ -522,7 +522,7 @@ class _View:
         spans = marks(s, self.terms) if key == self.at and self.terms else ()
 
         def part(start: int, end: int) -> Html:
-            if not spans:
+            if not spans or start >= end:
                 return text(s[start:end])
             lo, hi = bisect_right(spans, start, key=itemgetter(1)), bisect_left(spans, end, key=itemgetter(0))
             return marked(s[start:end], [(max(a, start) - start, min(b, end) - start) for a, b in spans[lo:hi]])
