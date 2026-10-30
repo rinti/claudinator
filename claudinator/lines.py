@@ -14,7 +14,7 @@ def pread(fd: int, n: int, offset: int) -> bytes:
     """Exactly n bytes at offset, or fewer only at end of file."""
     parts = []
     while n > 0:
-        part = os.pread(fd, min(n, 1 << 30), offset)
+        part = os.pread(fd, n, offset)
         if not part:
             break
         parts.append(part)
