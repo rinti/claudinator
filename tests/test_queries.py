@@ -321,9 +321,10 @@ def test_search_prefers_an_excerpt_with_every_word_over_a_stronger_match_of_one(
 @pytest.mark.parametrize("read", ["sessions", "search"])
 def test_a_read_sees_one_snapshot_while_a_rebuild_commits_partway(monkeypatch, read):
     newer, older = transcript(SID2), transcript()
-    append(newer, user("the newer quokka session", ts="2026-10-02T10:00:00.000Z"))
-    append(older, user("the older quokka session", ts="2026-10-01T10:00:00.000Z"))
     with open_archive() as archive:
+        append(newer, user("the newer quokka session", ts="2026-10-02T10:00:00.000Z"))
+        archive.sweep()
+        append(older, user("the older quokka session", ts="2026-10-01T10:00:00.000Z"))
         archive.sweep()
         append(newer, user("a later prompt in the newer", ts="2026-10-02T11:00:00.000Z"))
         archive.sweep()
