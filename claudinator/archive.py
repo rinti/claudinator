@@ -234,7 +234,7 @@ class _Archived:
     generation: int
     head: bytes
     cursor: int
-    tail: bytes
+    tail_sha256: bytes
 
 
 class Plan(enum.Enum):
@@ -244,7 +244,7 @@ class Plan(enum.Enum):
     COPY_IN_PROGRESS = "copy in progress"
 
 
-def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_head: bytes, file_window: bytes) -> Plan:
+def plan(head: bytes, tail_sha256: bytes, cursor: int, size: int, settled: bool, file_head: bytes, file_window: bytes) -> Plan:
     """How to ingest a file whose generation is archived up to cursor.
 
     file_head is the file's bytes [0, len(head)), fewer if the file is
@@ -256,7 +256,7 @@ def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_h
     head_kept = file_head == head[: len(file_head)]
     if size < cursor:
         return Plan.NEW_GENERATION if settled or not head_kept else Plan.COPY_IN_PROGRESS
-    if not head_kept or hashlib.sha256(file_window).digest() != tail:
+    if not head_kept or hashlib.sha256(file_window).digest() != tail_sha256:
         return Plan.NEW_GENERATION
     return Plan.UNCHANGED if size == cursor else Plan.APPEND
 
@@ -264,7 +264,7 @@ def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_h
 def _look(fd: int, a: _Archived, size: int, settled: bool) -> tuple[Plan, bytes]:
     n = min(TAIL_BYTES, a.cursor)
     window = pread(fd, n, a.cursor - n) if size >= a.cursor else b""
-    return plan(a.head, a.tail, a.cursor, size, settled, pread(fd, len(a.head), 0), window), window
+    return plan(a.head, a.tail_sha256, a.cursor, size, settled, pread(fd, len(a.head), 0), window), window
 
 
 @dataclass(frozen=True, slots=True)
@@ -651,10 +651,10 @@ class Archive:
         else:
             source_id = a.source_id
         before = self._line(source_id, n.cursor - 1) if n.window and not n.window.endswith(b"\n") else ()
-        tail = hashlib.sha256((n.window + n.chunk[-TAIL_BYTES:])[-TAIL_BYTES:]).digest()
+        tail_sha256 = hashlib.sha256((n.window + n.chunk[-TAIL_BYTES:])[-TAIL_BYTES:]).digest()
         self._db.execute(
             "INSERT INTO segment (source_id, byte_start, byte_end, tail, zstd, archived_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (source_id, n.cursor, n.cursor + len(n.chunk), tail, zstd.compress(n.chunk), archived_at),
+            (source_id, n.cursor, n.cursor + len(n.chunk), tail_sha256, zstd.compress(n.chunk), archived_at),
         )
         self._project(source_id, records([(n.cursor, n.chunk)], before))
         return _Delta(len(n.chunk), rewritten=n.generation > 0 and n.cursor == 0), n.more

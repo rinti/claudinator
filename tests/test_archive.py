@@ -496,8 +496,8 @@ PLAN_CASES = [
 
 @pytest.mark.parametrize(("data", "settled", "expected"), [c[1:] for c in PLAN_CASES], ids=[c[0] for c in PLAN_CASES])
 def test_plan_tells_an_append_from_a_rewrite(data, settled, expected):
-    tail = hashlib.sha256(window(ARCHIVED)).digest()
-    got = plan(HEAD, tail, len(ARCHIVED), len(data), settled, data[: len(HEAD)], window(data) if len(data) >= len(ARCHIVED) else b"")
+    tail_sha256 = hashlib.sha256(window(ARCHIVED)).digest()
+    got = plan(HEAD, tail_sha256, len(ARCHIVED), len(data), settled, data[: len(HEAD)], window(data) if len(data) >= len(ARCHIVED) else b"")
     assert got is expected
 
 
