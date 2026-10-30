@@ -47,6 +47,22 @@ def next_segment(fd: int, start: int, size: int, settled: bool) -> tuple[bytes, 
     return bytes(buf if settled else buf[: buf.rfind(b"\n") + 1]), False
 
 
+def segments_end(fd: int, start: int, size: int, settled: bool) -> int:
+    """Where the segments next_segment cuts one after another from start
+    end: at size once the file has settled, else just past the last newline
+    before size, else at start. Reads back from size only as far as that
+    newline."""
+    if settled:
+        return size
+    end = size
+    while end > start:
+        n = min(SEGMENT_BYTES, end - start)
+        if (newline := pread(fd, n, end - n).rfind(b"\n")) >= 0:
+            return end - n + newline + 1
+        end -= n
+    return start
+
+
 @dataclass(frozen=True, slots=True)
 class _Open:
     off: int

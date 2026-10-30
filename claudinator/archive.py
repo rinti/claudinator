@@ -16,7 +16,7 @@ from typing import BinaryIO
 from compression import zstd
 
 from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, discover
-from claudinator.lines import line_at, next_segment, pread, records
+from claudinator.lines import line_at, next_segment, pread, records, segments_end
 from claudinator.record import (
     CONVERSATION,
     PROJECTION_VERSION,
@@ -269,33 +269,53 @@ def _look(fd: int, archived: _Archived, size: int, settled: bool) -> tuple[Plan,
 
 
 @dataclass(frozen=True, slots=True)
+class _Unarchived:
+    generation: int
+    cursor: int
+    window: bytes
+    size: int
+    settled: bool
+
+
+def _unarchived(fd: int, archived: _Archived | None) -> _Unarchived | None:
+    """Where a sweep would archive the file from now, and into which
+    generation. None when the plan leaves the file as it is."""
+    st = os.fstat(fd)
+    settled = _settled(st)
+    if archived is None:
+        return _Unarchived(0, 0, b"", st.st_size, settled)
+    match _look(fd, archived, st.st_size, settled):
+        case (Plan.UNCHANGED | Plan.COPY_IN_PROGRESS, _):
+            return None
+        case (Plan.APPEND, window):
+            return _Unarchived(archived.generation, archived.cursor, window, st.st_size, settled)
+        case (Plan.NEW_GENERATION, _):
+            return _Unarchived(archived.generation + 1, 0, b"", st.st_size, settled)
+
+
+@dataclass(frozen=True, slots=True)
 class _Next:
     generation: int
     cursor: int
     window: bytes
     chunk: bytes
-    settled: bool
     more: bool
 
 
 def _next(path: Path, archived: _Archived | None) -> _Next | None:
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        st = os.fstat(fd)
-        settled = _settled(st)
-        generation, cursor, window = 0, 0, b""
-        if archived is not None:
-            match _look(fd, archived, st.st_size, settled):
-                case (Plan.UNCHANGED | Plan.COPY_IN_PROGRESS, _):
-                    return None
-                case (Plan.APPEND, window):
-                    generation, cursor = archived.generation, archived.cursor
-                case (Plan.NEW_GENERATION, _):
-                    generation = archived.generation + 1
-        chunk, more = next_segment(fd, cursor, st.st_size, settled)
-    finally:
-        os.close(fd)
-    return _Next(generation, cursor, window, chunk, settled, more) if chunk else None
+    with open(path, "rb", buffering=0) as f:
+        if (rest := _unarchived(f.fileno(), archived)) is None:
+            return None
+        chunk, more = next_segment(f.fileno(), rest.cursor, rest.size, rest.settled)
+    return _Next(rest.generation, rest.cursor, rest.window, chunk, more) if chunk else None
+
+
+def _pending(path: Path, archived: _Archived | None) -> Pending | None:
+    with open(path, "rb", buffering=0) as f:
+        if (rest := _unarchived(f.fileno(), archived)) is None:
+            return None
+        end = segments_end(f.fileno(), rest.cursor, rest.size, rest.settled)
+    return Pending(path, end - rest.cursor, rest.settled) if end > rest.cursor else None
 
 
 def _doc_stat(path: Path, stored: tuple[int, int] | None) -> os.stat_result | None:
@@ -566,11 +586,11 @@ class Archive:
             pending = []
             for loc in found.transcripts:
                 try:
-                    n = _next(loc.path, known.get(loc.path))
+                    p = _pending(loc.path, known.get(loc.path))
                 except OSError:
                     continue
-                if n is not None:
-                    pending.append(Pending(loc.path, len(n.chunk), n.settled))
+                if p is not None:
+                    pending.append(p)
             last, refused = self._meta("last_sweep"), self._meta("last_refused")
             return Status(
                 checked_at=now(),

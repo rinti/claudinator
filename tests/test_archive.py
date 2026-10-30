@@ -425,6 +425,20 @@ def test_status_counts_as_pending_what_a_sweep_would_archive_now():
         assert (unfinished, 25, True) in {(p.path, p.unarchived_bytes, p.settled) for p in archive.status().pending}
 
 
+def test_status_counts_every_byte_a_sweep_would_archive_now_across_its_segments():
+    path = transcript()
+    append(path, user("archived"))
+    with open_archive() as archive:
+        archive.sweep()
+        lines = b"".join(user(f"line {i} " + "x" * 1000) for i in range(2500))
+        append(path, lines, user("unfinished")[:20])
+        assert len(lines) > 2 * SEGMENT_BYTES
+        assert [(p.path, p.unarchived_bytes) for p in archive.status().pending] == [(path, len(lines))]
+        settle(path)
+        assert [(p.path, p.unarchived_bytes) for p in archive.status().pending] == [(path, len(lines) + 20)]
+        assert archive.sweep().bytes_archived == len(lines) + 20
+
+
 def test_a_rewrite_to_the_same_size_starts_a_new_generation():
     path = transcript()
     append(path, user("first words"), user("last words"))

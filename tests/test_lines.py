@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from claudinator.lines import SEGMENT_BYTES, line_at, next_segment, records
+from claudinator.lines import SEGMENT_BYTES, line_at, next_segment, records, segments_end
 from claudinator.record import Other, Turn, Unparsed
 from helpers import line, user
 
@@ -81,6 +81,27 @@ def test_a_line_longer_than_a_segment_is_one_segment(file):
     fd = file(long + b"next\n")
     try:
         assert next_segment(fd, 0, len(long) + 5, settled=False) == (long, True)
+    finally:
+        os.close(fd)
+
+
+ROW = b"x" * 99 + b"\n"
+
+
+@pytest.mark.parametrize(
+    "data",
+    [b"", b"unfinished", b"done\nunfinished", ROW * (SEGMENT_BYTES * 5 // 2 // len(ROW)) + b"unfinished", b"y" * (SEGMENT_BYTES + 10) + b"\nz"],
+    ids=["empty", "no newline", "an unfinished last line", "segments and an unfinished line", "a line longer than a segment"],
+)
+@pytest.mark.parametrize("settled", [False, True])
+def test_segments_end_is_where_the_segments_a_sweep_cuts_end(file, data, settled):
+    fd = file(data)
+    try:
+        end, more = 0, True
+        while more:
+            chunk, more = next_segment(fd, end, len(data), settled)
+            end += len(chunk)
+        assert segments_end(fd, 0, len(data), settled) == end
     finally:
         os.close(fd)
 
