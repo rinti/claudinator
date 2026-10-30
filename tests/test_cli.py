@@ -1,4 +1,5 @@
 import ast
+import io
 import json
 import os
 import plistlib
@@ -10,6 +11,7 @@ import stat
 import subprocess
 import sys
 import threading
+import webbrowser
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -893,6 +895,34 @@ def test_serve_prints_its_secret_url_and_opens_it_in_a_browser(capsys, monkeypat
     assert (code, err, browsed) == (0, "", [printed[1]])
     assert run(capsys, "serve", "--no-browser")[0] == 0
     assert len(browsed) == 1
+
+
+@pytest.mark.parametrize("browser", [None, "/usr/bin/true", "chrome"])
+def test_the_browser_gets_the_url_on_a_pipe_whatever_browser_says(monkeypatch, browser):
+    started, piped = [], []
+
+    class Pipe(io.StringIO):
+        def close(self) -> None:
+            piped.append(self.getvalue())
+            super().close()
+
+    class Spawned:
+        def __init__(self, args, **kwargs) -> None:
+            started.append(args)
+            self.stdin = Pipe()
+
+        def wait(self) -> int:
+            return 0
+
+    if browser is None:
+        monkeypatch.delenv("BROWSER", raising=False)
+    else:
+        monkeypatch.setenv("BROWSER", browser)
+    monkeypatch.setattr(webbrowser, "_tryorder", None)
+    monkeypatch.setattr(subprocess, "Popen", Spawned)
+    url = "http://127.0.0.1:52817/" + "k" * 43 + "/"
+    cli._browse(url)
+    assert (started, piped) == (["/usr/bin/osascript"], [f'open location "{url}"'])
 
 
 def test_serve_without_an_archive_exits_1_and_creates_none(capsys, monkeypatch):

@@ -161,7 +161,9 @@ def cmd_serve(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def _browse(url: str) -> None:
-    webbrowser.open(url)
+    """Hands the URL to osascript on stdin. webbrowser.open would honor
+    BROWSER, which can put the URL, token included, in a command's argv."""
+    webbrowser.MacOSXOSAScript("default").open(url)
 
 
 def cmd_resume(cfg: Config, args: argparse.Namespace) -> int:
