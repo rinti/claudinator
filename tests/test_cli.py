@@ -309,6 +309,19 @@ def test_status_exits_1_when_the_last_sweep_failed(capsys):
     assert "1 errors" in out and "Permission denied" in out
 
 
+def test_a_read_command_names_the_errors_of_its_sweep_and_still_answers(capsys):
+    append(transcript(SID2), user("a readable quokka"))
+    unreadable = transcript()
+    append(unreadable, user("cannot be read"))
+    unreadable.chmod(0)
+    try:
+        code, out, err = run(capsys, "search", "quokka")
+    finally:
+        unreadable.chmod(0o600)
+    assert (code, "a readable [quokka]" in out) == (0, True)
+    assert err == f"claudinator: 1 error while archiving new bytes, the first: {unreadable}: PermissionError(13, 'Permission denied')\n"
+
+
 def test_status_notes_claude_codes_cleanup_period(capsys, home):
     run(capsys, "install")
     assert "cleanupPeriodDays is unset, so Claude Code deletes transcripts after 30 days." in run(capsys, "status")[1]
