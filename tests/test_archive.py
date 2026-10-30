@@ -486,10 +486,10 @@ PLAN_CASES = [
     ("same size, last line changed", changed_at(len(ARCHIVED) - 10), False, Plan.NEW_GENERATION),
     ("grown, line in the window changed", changed_at(len(ARCHIVED) - 2000) + user("more"), False, Plan.NEW_GENERATION),
     ("grown, head changed", changed_at(10) + user("more"), False, Plan.NEW_GENERATION),
-    ("shorter, same head, still being written", ARCHIVED[:5000], False, Plan.WAIT),
+    ("shorter, same head, still being written", ARCHIVED[:5000], False, Plan.COPY_IN_PROGRESS),
     ("shorter, same head, settled", ARCHIVED[:5000], True, Plan.NEW_GENERATION),
     ("shorter, head changed", changed_at(10)[:5000], False, Plan.NEW_GENERATION),
-    ("emptied, not settled", b"", False, Plan.WAIT),
+    ("emptied, not settled", b"", False, Plan.COPY_IN_PROGRESS),
     ("changed between head and window (not detected)", changed_at(3000) + user("more"), False, Plan.APPEND),
 ]
 

@@ -241,7 +241,7 @@ class Plan(enum.Enum):
     UNCHANGED = "unchanged"
     APPEND = "append"
     NEW_GENERATION = "new generation"
-    WAIT = "wait"
+    COPY_IN_PROGRESS = "copy in progress"
 
 
 def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_head: bytes, file_window: bytes) -> Plan:
@@ -255,7 +255,7 @@ def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_h
     window is not detected."""
     head_kept = file_head == head[: len(file_head)]
     if size < cursor:
-        return Plan.NEW_GENERATION if settled or not head_kept else Plan.WAIT
+        return Plan.NEW_GENERATION if settled or not head_kept else Plan.COPY_IN_PROGRESS
     if not head_kept or hashlib.sha256(file_window).digest() != tail:
         return Plan.NEW_GENERATION
     return Plan.UNCHANGED if size == cursor else Plan.APPEND
@@ -285,7 +285,7 @@ def _next(path: Path, a: _Archived | None) -> _Next | None:
         generation, cursor, window = 0, 0, b""
         if a is not None:
             match _look(fd, a, st.st_size, settled):
-                case (Plan.UNCHANGED | Plan.WAIT, _):
+                case (Plan.UNCHANGED | Plan.COPY_IN_PROGRESS, _):
                     return None
                 case (Plan.APPEND, window):
                     generation, cursor = a.generation, a.cursor
