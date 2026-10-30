@@ -2,12 +2,14 @@
   font-family: "Geist";
   src: url(fonts/Geist-Variable.woff2) format("woff2");
   font-weight: 100 900;
+  font-display: optional;
 }
 
 @font-face {
   font-family: "Geist Mono";
   src: url(fonts/GeistMono-Variable.woff2) format("woff2");
   font-weight: 100 900;
+  font-display: optional;
 }
 
 :root {
@@ -499,7 +501,7 @@ summary::-webkit-details-marker { display: none; }
 
 @media (prefers-reduced-motion: no-preference) {
   .find, .pill { transition: border-color 0.15s, box-shadow 0.15s; }
-  .switch { transition: background-color 0.15s; }
+  input.switch { transition: background-color 0.15s; }
   :is(.sessions, .hits) li, .button, .agents a, .box summary { transition: background-color 0.12s; }
 }
 

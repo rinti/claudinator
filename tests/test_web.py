@@ -116,7 +116,7 @@ def test_every_link_on_every_page_resolves_under_the_secret_prefix_and_answers(s
         status, headers, _ = get(served, target, prefix="")
         assert status in (200, 303), target
         assert headers.get("location", served.root).startswith(served.root), target
-    assert {target.split("/")[2].partition("?")[0] for target in crawled} >= {"", "s", "raw", "image", "export", "web.css"}
+    assert {target.split("/")[2].partition("?")[0] for target in crawled} >= {"", "s", "raw", "image", "export", "web.css", "fonts"}
 
 
 def test_a_request_without_the_exact_prefix_gets_403_and_no_data(served):

@@ -996,9 +996,23 @@ def page(root: str | None, title: str, *body: Html | None) -> Html:
         el("meta", {"name": "color-scheme", "content": "light dark"}),
         el("base", {"href": root}) if root else None,
         el("link", {"rel": "stylesheet", "href": "web.css"}) if root else None,
+        *(_preload(name) for name in FONTS if root),
         el("title", None, human.printable(title)),
     )
     return el("html", {"lang": "en"}, head, el("body", None, *body))
+
+
+def _preload(name: str) -> Html:
+    return el(
+        "link",
+        {
+            "rel": "preload",
+            "href": f"fonts/{name}-Variable.woff2",
+            "as": "font",
+            "type": "font/woff2",
+            "crossorigin": True,
+        },
+    )
 
 
 def _document(markup: Html) -> bytes:
