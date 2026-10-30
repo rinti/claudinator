@@ -529,7 +529,12 @@ def transcript_page(
         back = _back(href_transcript(s.id), s.title or s.id[:8])
     else:
         back = _back("./", "All sessions")
-    header = el("header", {"class": "session"}, el("h1", None, heading), _facts(s, main=aid is None))
+    if aid is None:
+        span = s.first_ts, s.last_ts
+    else:
+        stamps = [step.ts for step in steps if not isinstance(step, Marker) and step.ts is not None]
+        span = min(stamps, default=None), max(stamps, default=None)
+    header = el("header", {"class": "session"}, el("h1", None, heading), _facts(s, *span, main=aid is None))
     prompts = (step.key for step in steps if isinstance(step, Said) and step.kind is Kind.PROMPT)
     numbers = {key: n for n, key in enumerate(prompts, 1)}
     shown = [step for step in steps if hidden or not _folded(step)]
@@ -555,8 +560,9 @@ def _back(href: str, label: str) -> Html:
     return el("a", {"class": "back", "href": href}, el("span", {"aria-hidden": "true"}, "←"), label)
 
 
-def _facts(s: SessionSummary, *, main: bool) -> Html:
-    first, last = _local(s.first_ts), _local(s.last_ts)
+def _facts(s: SessionSummary, start: Millis | None, end: Millis | None, *, main: bool) -> Html:
+    """Where and when; a subagent's span is its own, and the counts are the session's."""
+    first, last = _local(start), _local(end)
     span = duration = None
     if first and last:
         end = f"{last:%H:%M}" if last.date() == first.date() else _stamp(last)
@@ -733,7 +739,8 @@ def _step(
                 *_prose(text[command.end() :].lstrip() if command else text, here, terms),
             )
             label = el("p", {"class": "label"}, f"Prompt {numbers[key]}")
-            return el("div", {"class": "step prompt", "id": f"m{key}"}, label, said, raw_link)
+            css = "step prompt long" if _long(text) else "step prompt"
+            return el("div", {"class": css, "id": f"m{key}"}, label, said, raw_link)
         case Said(key, _, _, text):
             said = el("div", {"class": "text"}, *_prose(text.strip(), here, terms))
             return el("div", {"class": "step reply", "id": f"m{key}"}, said, raw_link)
@@ -777,8 +784,9 @@ def _step(
                 el(
                     "summary",
                     None,
-                    f"{_plural(len(lines), 'hidden line')}: {counts}",
+                    _plural(len(lines), "hidden line"),
                     el("span", {"class": "badge"}, "hidden"),
+                    el("span", {"class": "kinds"}, counts),
                 ),
                 el("ul", None, *(el("li", None, el("a", {"href": href_raw(sid, aid, o)}, name)) for o, name in lines)),
             )

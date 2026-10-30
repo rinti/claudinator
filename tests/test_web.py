@@ -394,14 +394,15 @@ def test_the_back_link_returns_to_the_results_a_page_was_opened_from(served):
 
 
 def test_prompts_are_numbered_from_the_start_of_their_own_transcript(served):
-    append(transcript(), user("one"), reply("ok"), user("/clear"), tool_call("Bash", {"command": "x"}), user("three"))
+    append(transcript(), user("one"), reply("ok"), user("/clear"), tool_call("Bash", {"command": "x"}), user("three\nfour\nfive\nsix"))
     append(transcript(agent=AID), user("the subagent's own first"))
     labels = r'<p class="label">(.*?)</p><div class="text">(.*?)</div>'
-    assert re.findall(labels, page(served, f"/s/{SID}")) == [
+    assert re.findall(labels, page(served, f"/s/{SID}"), re.S) == [
         ("Prompt 1", "one"),
         ("Prompt 2", '<span class="cmd">/clear</span>'),
-        ("Prompt 3", "three"),
+        ("Prompt 3", "three\nfour\nfive\nsix"),
     ]
+    assert re.findall(r'<div class="(step prompt[^"]*)"', page(served, f"/s/{SID}")) == ["step prompt"] * 2 + ["step prompt long"]
     assert re.findall(labels, page(served, f"/s/{SID}/{AID}")) == [("Prompt 1", "the subagent&#x27;s own first")]
 
 
@@ -455,6 +456,8 @@ def test_a_transcript_says_where_when_how_long_how_much_and_how_to_resume(served
     gone = page(served, f"/s/{SID2}")
     assert f'<p class="facts">{where}<span>Thu 29 Oct · 08:00 – 08:20</span><span class="faint">20m</span><span>1 prompt</span></p>' in gone
     assert '<code>claudinator resume 075b60d8</code></p><p class="gone">Claude Code deleted its copy. Resuming puts it back.</p>' in gone
+    subagent = page(served, f"/s/{SID}/{AID}")
+    assert f'<p class="facts">{where}<span>Thu 29 Oct · 23:00 – 23:00</span><span class="faint">0m</span></p>' in subagent
 
 
 def test_the_list_groups_sessions_by_day_and_reads_time_title_project_and_counts(served, monkeypatch):
@@ -548,8 +551,8 @@ def test_lines_that_show_nothing_fold_into_one_marker_with_a_raw_link_each(serve
     append(transcript(), *lines)
     at = offsets(*lines)
     assert (
-        '<details class="step note hidden" id="m0.0"><summary>2 hidden lines: 1 mode, 1 file-history-snapshot'
-        '<span class="badge">hidden</span></summary>'
+        '<details class="step note hidden" id="m0.0"><summary>2 hidden lines<span class="badge">hidden</span>'
+        '<span class="kinds">1 mode, 1 file-history-snapshot</span></summary>'
         f'<ul><li><a href="raw/{SID}/0">mode</a></li><li><a href="raw/{SID}/{at[1]}">file-history-snapshot</a></li></ul>'
         "</details>"
     ) in page(served, f"/s/{SID}?hidden=1")
