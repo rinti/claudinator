@@ -84,7 +84,7 @@ def test_open_rebuilds_the_projection_after_a_version_bump(monkeypatch):
         archive.sweep()
         assert found(archive, "quokka") == 1
     monkeypatch.setattr("claudinator.archive.PROJECTION_VERSION", PROJECTION_VERSION + 1)
-    monkeypatch.setattr("claudinator.archive.parse", lambda line: Unparsed())
+    monkeypatch.setattr("claudinator.lines.parse", lambda line: Unparsed())
     with open_archive() as archive:
         assert found(archive, "quokka") == 0
         assert archive.status().unparsed_lines == 2

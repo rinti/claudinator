@@ -1,0 +1,130 @@
+"""How a transcript's bytes become segments, and segments become lines.
+
+next_segment cuts the next segment of a file at a line boundary, and
+records turns consecutive segments back into the file's lines, a line that
+a settled tail left open across two segments included. No database: the
+archive hands these byte strings in and stores what they return."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
+
+from claudinator.record import Record, Unparsed, parse
+
+SEGMENT_BYTES = 1 << 20
+"""Target uncompressed segment size. Measured on 82.9 MB of this Mac's
+transcripts with zstd level 3: per-line 2.9x, 128 KiB 4.2x, 1 MiB 4.8x,
+whole-file 5.0x. 1 MiB keeps random access to one line at one ~1 ms
+decompress while losing 4% versus whole files."""
+
+
+def pread(fd: int, n: int, offset: int) -> bytes:
+    """Exactly n bytes at offset, or fewer only at end of file."""
+    parts = []
+    while n > 0:
+        part = os.pread(fd, min(n, 1 << 30), offset)
+        if not part:
+            break
+        parts.append(part)
+        n -= len(part)
+        offset += len(part)
+    return b"".join(parts)
+
+
+def next_segment(fd: int, start: int, size: int, settled: bool) -> tuple[bytes, bool]:
+    """The bytes of the next segment of a file, from start: through the
+    first newline at or past SEGMENT_BYTES, else through the last newline
+    before size, else, once the file has settled, through size. So every
+    segment ends with a newline except a settled tail, and no line is split
+    across segments except a settled tail and its later continuation. Reads
+    at most one line past SEGMENT_BYTES, so memory follows the longest line,
+    not the file.
+
+    Also whether another segment may follow before size: only when this one
+    stopped at SEGMENT_BYTES with bytes left. Otherwise it read through
+    size, and what it left is at most an unfinished line."""
+    buf = bytearray()
+    while start + len(buf) < size:
+        searched = len(buf)
+        part = pread(fd, min(SEGMENT_BYTES, size - start - len(buf)), start + len(buf))
+        if not part:
+            break
+        buf += part
+        if len(buf) >= SEGMENT_BYTES and (newline := buf.find(b"\n", max(searched, SEGMENT_BYTES - 1))) >= 0:
+            return bytes(buf[: newline + 1]), start + newline + 1 < size
+    return bytes(buf if settled else buf[: buf.rfind(b"\n") + 1]), False
+
+
+@dataclass(frozen=True, slots=True)
+class _Open:
+    """A line the segments so far end inside: a settled tail, archived
+    before its writer finished the line."""
+
+    off: int  # where the line's bytes so far begin
+    data: bytes  # those bytes
+    torn: bool  # projected as one Unparsed, not as a record
+
+
+def records(
+    segments: Iterable[tuple[int, bytes]], before: Iterable[tuple[int, bytes]] = ()
+) -> Iterator[tuple[int, Record, bool]]:
+    """Every line of consecutive segments as (file offset, record, mends),
+    in file order. Empty lines are skipped.
+
+    A line lies inside one segment unless a settled tail was archived
+    before its writer finished it; the line then goes on at the start of
+    the next segment. Its bytes so far and the continuation are parsed as
+    one line when that makes a record: a writer that paused for an hour.
+    Else the continuation alone, when it is a record: a restarted writer
+    that appended a whole record onto torn bytes. Else the line stays the
+    one Unparsed its tail was counted as. mends is True for a record that
+    replaces that Unparsed.
+
+    before is the line the archive already ends inside, as its segments
+    hold it (_open_line); its records were projected with those segments,
+    so only what the new segments add is yielded. Ingest, rebuild,
+    conversation, and search read lines through here, so they agree on
+    every line."""
+    left = None
+    for start, chunk in before:
+        _, left = _chunk_records(start, chunk, left)
+    for start, chunk in segments:
+        found, left = _chunk_records(start, chunk, left)
+        yield from found
+
+
+def _chunk_records(
+    start: int, chunk: bytes, left: _Open | None
+) -> tuple[list[tuple[int, Record, bool]], _Open | None]:
+    """The records of one segment that follows a line left open, and the
+    line it leaves open."""
+    found = []
+    pos = 0
+    if left is not None:
+        end = chunk.find(b"\n")
+        rest = chunk[: end if end >= 0 else len(chunk)]
+        pos = len(rest) + 1
+        if not isinstance(whole := parse(left.data + rest), Unparsed):
+            if left.torn:
+                found.append((left.off, whole, True))
+            left = _Open(left.off, left.data + rest, False)
+        elif not isinstance(alone := parse(rest), Unparsed) or not left.torn:
+            found.append((start, alone, False))  # glued onto torn bytes, or onto a record that lacked its newline
+            left = _Open(start, rest, isinstance(alone, Unparsed))
+        else:
+            left = _Open(left.off, left.data + rest, True)
+        if end >= 0:
+            left = None
+    while pos < len(chunk):
+        end = chunk.find(b"\n", pos)
+        if end < 0:
+            rec = parse(chunk[pos:])
+            found.append((start + pos, rec, False))
+            left = _Open(start + pos, chunk[pos:], isinstance(rec, Unparsed))
+            break
+        if end > pos:
+            found.append((start + pos, parse(chunk[pos:end]), False))
+        pos = end + 1
+    return found, left
