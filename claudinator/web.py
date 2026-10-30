@@ -239,11 +239,13 @@ def stylesheet(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str
     return Response(200, "text/css; charset=utf-8", STYLE)
 
 
-FONT = re.compile(r"/fonts/(Geist|GeistMono)-Variable\.woff2")
+FONT = re.compile(r"/fonts/([^/]+)")
 
 
 def font(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
-    return Response(200, "font/woff2", FONTS[m[1]], cache="max-age=31536000, immutable")
+    if (body := FONTS.get(m[1])) is None:
+        return _message(404, "Nothing is at this address.", root)
+    return Response(200, "font/woff2", body, cache="max-age=31536000, immutable")
 
 
 ROUTES: tuple[tuple[re.Pattern[str], Callable[[Config, str, Mapping[str, str], re.Match[str]], Response]], ...] = (

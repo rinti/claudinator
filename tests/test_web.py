@@ -220,7 +220,7 @@ def test_the_stylesheet_loads_its_bundled_fonts_and_the_page_policy_lets_it(serv
         assert (status, headers["content-type"], body[:4]) == (200, "font/woff2", b"wOF2"), name
         assert body == (Path(web.__file__).parent / name).read_bytes(), name
     assert "font-src 'self'" in get(served, "/")[1]["content-security-policy"].split("; ")
-    assert get(served, "/fonts/Inter-Variable.woff2")[0] == 404
+    assert [get(served, f"/fonts/{name}")[0] for name in ("Inter-Variable.woff2", "OFL.txt", "..%2Fweb.css")] == [404] * 3
 
 
 def test_a_transcript_shows_each_result_inside_the_call_it_answers(served):

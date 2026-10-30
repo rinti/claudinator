@@ -161,7 +161,7 @@ COMMAND = re.compile(r"/[^\W\d][\w:.-]*(?=\s|$)")
 
 
 def _title(s: SessionSummary) -> tuple[Html | str | None, ...]:
-    title = s.title or s.id[:8]
+    title = _name(s)
     command, gap, rest = _split_command(title)
     if command:
         return el("span", {"class": "cmd"}, command), gap, _rest(rest)
@@ -183,6 +183,14 @@ def _split_command(text: str) -> tuple[str, str, str]:
 def _split(text: str, lead: str) -> tuple[str, str, str]:
     rest = text.removeprefix(lead).strip()
     return lead, " " if rest else "", rest
+
+
+def _name(s: SessionSummary) -> str:
+    return s.title or s.id[:8]
+
+
+def _agent_name(aid: AgentId, agent: Subagent | None) -> str:
+    return (agent and agent.description) or f"Subagent {aid[:8]}"
 
 
 def _where(cwd: str | None) -> tuple[Html | None, Html]:
@@ -227,11 +235,11 @@ def _hit(hit: SessionHit, form: Form) -> Html:
     meta = el(
         "p",
         {"class": "meta"},
-        el("span", None, f"{when:%a} {when.day} {when:%b %Y} · {when:%H:%M}") if when else None,
+        el("span", None, _stamp(when, year=True)) if when else None,
         el("span", None, *_where(s.cwd)),
         el("span", {"class": "best"}, found + (f" · subagent {best.agent_id[:8]}" if best.agent_id else "")),
     )
-    title = el("a", {"class": "open", "href": href_transcript(s.id, best.agent_id, at, form)}, s.title or s.id[:8])
+    title = el("a", {"class": "open", "href": href_transcript(s.id, best.agent_id, at, form)}, _name(s))
     return el(
         "li",
         None,
@@ -305,13 +313,13 @@ def transcript_page(
     toggle = _toggle(href_transcript(s.id, aid, at, search, not hidden), sum(map(_folded, steps)), hidden)
     actions = el("div", {"class": "actions"}, _download(s.id, aid), toggle)
     if aid is None:
-        heading, back = s.title or s.id[:8], results or _back("./", "All sessions")
+        heading, back = _name(s), results or _back("./", "All sessions")
         span, counts = (s.first_ts, s.last_ts), (s.prompts, s.subagents)
         aside = _session_aside(session, actions)
     else:
         agent = next((a for a in session.agents if a.id == aid), None)
-        heading = (agent and agent.description) or f"Subagent {aid[:8]}"
-        back = results or _back(href_transcript(s.id), s.title or s.id[:8])
+        heading = _agent_name(aid, agent)
+        back = results or _back(href_transcript(s.id), _name(s))
         stamps = [step.ts for step in steps if not isinstance(step, Marker) and step.ts is not None]
         span, counts = (min(stamps, default=None), max(stamps, default=None)), None
         aside = _subagent_aside(s, agent, actions)
@@ -357,8 +365,8 @@ def _facts(cwd: str | None, start: Millis | None, end: Millis | None, counts: tu
     )
 
 
-def _stamp(when: datetime) -> str:
-    return f"{when:%a} {when.day} {when:%b} · {when:%H:%M}"
+def _stamp(when: datetime, *, year: bool = False) -> str:
+    return f"{when:%a} {when.day} {when:%b}" + (f" {when:%Y}" if year else "") + f" · {when:%H:%M}"
 
 
 def _duration(span: timedelta) -> str:
@@ -396,7 +404,7 @@ def _subagent_aside(s: SessionSummary, agent: Subagent | None, actions: Html) ->
             None,
             el("h2", None, "Subagent"),
             el("p", {"class": "kind"}, agent.agent_type) if agent and agent.agent_type else None,
-            el("p", None, "In ", el("a", {"href": href_transcript(s.id)}, s.title or s.id[:8])),
+            el("p", None, "In ", el("a", {"href": href_transcript(s.id)}, _name(s))),
             el("p", None, el("a", {"href": call}, "See the call that started it")) if call else None,
             actions,
         ),
@@ -410,7 +418,7 @@ def _agent(sid: SessionId, a: Subagent) -> Html:
         el(
             "a",
             {"href": href_transcript(sid, a.id)},
-            el("span", {"class": "name"}, a.description or f"Subagent {a.id[:8]}"),
+            el("span", {"class": "name"}, _agent_name(a.id, a)),
             el("span", {"class": "id"}, a.id[:8]),
             el("span", {"class": "type"}, a.agent_type) if a.agent_type else None,
         ),
@@ -548,12 +556,12 @@ def _step(view: _View, step: Step) -> Html:
         case Call():
             return _call(view, step)
         case Output(key):
-            first = (_plain(step).strip().splitlines() or [""])[0]
+            first = _first_line(_plain(step))
             panel = (*_output_body(view, step), view.raw(key))
             css = "output error" if step.error else "output"
             return _row(view, key, css, "Output", first, panel, end=_size(step), opened=key == view.at)
         case Thought(key, _, said):
-            first = (said.strip().splitlines() or [""])[0]
+            first = _first_line(said)
             panel = (el("div", {"class": "text"}, *view.prose(key, said.strip())), view.raw(key))
             size = el("span", {"class": "size"}, _lines(said))
             return _row(view, key, "thought", "Thinking", first, panel, end=size, opened=key == view.at)
@@ -592,7 +600,7 @@ def _note(view: _View, key: Key, note: Note) -> Html:
     gist = task_summary(note.text)
     quoted = note.notice not in STOCK and note.text.strip()
     if _long(note.text) or gist is not None:
-        first = gist or (note.text.strip().splitlines() or [""])[0]
+        first = gist or _first_line(note.text)
         said = NOTICES[note.notice] + (f": {human.clip(first, 120)}" if quoted else "")
         return view.frame("details", key, css, el("summary", None, said), el("pre", None, note.text))
     shown = el("span", {"class": "text"}, note.text) if quoted else None
@@ -686,6 +694,10 @@ def _cut(s: str) -> str:
     if len(s) > INLINE_CHARS:
         return s[:INLINE_CHARS] + f"\n… cut at {human.size(INLINE_CHARS)}; the raw line has all of it"
     return s
+
+
+def _first_line(s: str) -> str:
+    return (s.strip().splitlines() or [""])[0]
 
 
 def _long(s: str) -> bool:

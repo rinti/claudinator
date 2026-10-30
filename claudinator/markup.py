@@ -7,8 +7,8 @@ from importlib import resources
 from claudinator import human
 
 FONTS = {
-    name: resources.files("claudinator").joinpath(f"fonts/{name}-Variable.woff2").read_bytes()
-    for name in ("Geist", "GeistMono")
+    file: resources.files("claudinator").joinpath(f"fonts/{file}").read_bytes()
+    for file in ("Geist-Variable.woff2", "GeistMono-Variable.woff2")
 }
 
 
@@ -55,26 +55,29 @@ def el(tag: str, attrs: Mapping[str, str | bool | None] | None = None, *children
 def page(root: str | None, title: str, *body: Html | None) -> Html:
     """Every link on a page is relative to root, its <base>. A page that
     answers a request without the prefix gets None, so it cannot reveal it."""
+    linked = (
+        (el("base", {"href": root}), el("link", {"rel": "stylesheet", "href": "web.css"}), *map(_preload, FONTS))
+        if root
+        else ()
+    )
     head = el(
         "head",
         None,
         el("meta", {"charset": "utf-8"}),
         el("meta", {"name": "viewport", "content": "width=device-width, initial-scale=1"}),
         el("meta", {"name": "color-scheme", "content": "light dark"}),
-        el("base", {"href": root}) if root else None,
-        el("link", {"rel": "stylesheet", "href": "web.css"}) if root else None,
-        *(_preload(name) for name in FONTS if root),
+        *linked,
         el("title", None, human.printable(title)),
     )
     return el("html", {"lang": "en"}, head, el("body", None, *body))
 
 
-def _preload(name: str) -> Html:
+def _preload(file: str) -> Html:
     return el(
         "link",
         {
             "rel": "preload",
-            "href": f"fonts/{name}-Variable.woff2",
+            "href": f"fonts/{file}",
             "as": "font",
             "type": "font/woff2",
             "crossorigin": True,
