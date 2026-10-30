@@ -195,7 +195,27 @@ def test_lines_that_show_nothing_fold_into_one_marker_with_a_raw_link_each(serve
         '<details class="step hidden" id="m0.0"><summary>2 hidden lines: 1 mode, 1 file-history-snapshot</summary>'
         f'<ul><li><a href="/raw/{SID}/0">mode</a></li><li><a href="/raw/{SID}/{at[1]}">file-history-snapshot</a></li></ul>'
         "</details>"
-    ) in page(served, f"/s/{SID}")
+    ) in page(served, f"/s/{SID}?hidden=1")
+
+
+def test_hidden_lines_stay_out_of_the_way_until_asked_for_and_notices_always_show(served):
+    api_error = line({"type": "system", "subtype": "api_error", "error": {"message": "overloaded"}})
+    lines = (line({"type": "mode"}), user("hello"), api_error, line({"type": "mode"}), reply("the quokka line"), line({"type": "mode"}))
+    append(transcript(), *lines)
+    at = offsets(*lines)[4]
+    shown = page(served, f"/s/{SID}")
+    assert 'class="step hidden"' not in shown
+    assert '<span class="label">api error</span>' in shown
+    assert f'<span> · 3 hidden lines · <a href="/s/{SID}?hidden=1">show</a></span>' in shown
+    revealed = page(served, f"/s/{SID}?hidden=1")
+    assert revealed.count('class="step hidden"') == 3
+    assert '<span class="label">api error</span>' in revealed
+    assert f'<span> · 3 hidden lines · <a href="/s/{SID}">hide</a></span>' in revealed
+    landed = page(served, f"/s/{SID}?at={at}.0&q=quokka")
+    assert f'<a href="/s/{SID}?at={at}.0&amp;q=quokka&amp;hidden=1#m{at}.0">show</a>' in landed
+    revealed = page(served, f"/s/{SID}?at={at}.0&q=quokka&hidden=1")
+    assert f'<a href="/s/{SID}?at={at}.0&amp;q=quokka#m{at}.0">hide</a>' in revealed
+    assert "the <mark>quokka</mark> line" in revealed
 
 
 def test_a_raw_line_is_its_json_in_ascii(served):
@@ -276,7 +296,7 @@ def test_transcript_text_is_text_whatever_it_holds():
     with open_archive() as archive:
         archive.sweep()
         session = archive.session(SID)
-        shown = web.transcript_page(session, None, build(archive.lines(SID), session.agents, None), None, (), None)
+        shown = web.transcript_page(session, None, build(archive.lines(SID), session.agents, None), None, "", False, None)
     assert (
         '<div class="text">run &lt;script&gt;alert(1)&lt;/script&gt; and &lt;img src=x onerror=alert(2)&gt; on '
         '<span class="esc">\\x1b</span>[31mred <span class="esc">\\u202e</span>gpj.exe</div>'

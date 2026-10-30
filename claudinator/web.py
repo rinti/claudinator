@@ -200,12 +200,15 @@ def home(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
 TRANSCRIPT = re.compile(rf"/s/({SID})(?:/({AID}))?")
 
 
-def href_transcript(sid: SessionId, aid: AgentId | None = None, at: Key | None = None, q: str = "") -> str:
-    """The transcript, opened and marked at the step `at` names, which the fragment scrolls to."""
+def href_transcript(
+    sid: SessionId, aid: AgentId | None = None, at: Key | None = None, q: str = "", hidden: bool = False
+) -> str:
+    """The transcript, opened and marked at the step `at` names, which the
+    fragment scrolls to, and with its hidden lines shown if `hidden`."""
     path = f"/s/{sid}" + (f"/{aid}" if aid else "")
-    if at is None:
-        return path
-    return f"{path}?{urlencode({'at': str(at)} | ({'q': q} if q else {}))}#m{at}"
+    landed = {} if at is None else {"at": str(at)} | ({"q": q} if q else {})
+    query = landed | ({"hidden": "1"} if hidden else {})
+    return path + (f"?{urlencode(query)}" if query else "") + ("" if at is None else f"#m{at}")
 
 
 def href_call(sid: SessionId, parent: AgentId | None, tool_use_id: str) -> str:
@@ -223,8 +226,8 @@ def transcript(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Respo
             if isinstance(step, Call) and step.tool_use_id == query["call"]:
                 return Response(303, HTML, b"", headers=(("Location", href_transcript(sid, aid, step.key)),))
     at = re.fullmatch(rf"({OFFSET})\.(\d{{1,9}})", query.get("at", ""))
-    terms = searchable(Form(q=query.get("q", "")).terms())
-    body = transcript_page(session, aid, steps, at and Key(int(at[1]), int(at[2])), terms, swept)
+    landed = at and Key(int(at[1]), int(at[2]))
+    body = transcript_page(session, aid, steps, landed, query.get("q", ""), query.get("hidden") == "1", swept)
     return Response(200, HTML, _document(body))
 
 
@@ -356,10 +359,12 @@ def transcript_page(
     aid: AgentId | None,
     steps: Sequence[Step],
     at: Key | None,
-    terms: tuple[str, ...],
+    q: str,
+    hidden: bool,
     swept: SweepReport | None,
 ) -> Html:
     s = session.summary
+    terms = searchable(Form(q=q).terms())
     title = s.title or s.id[:8]
     agent = next((a for a in session.agents if a.id == aid), None)
     where = "on disk" if s.on_disk else "deleted by Claude Code, kept in the archive"
@@ -390,11 +395,21 @@ def transcript_page(
             el("code", None, f"claudinator resume {s.id[:8]}"),
             " · ",
             el("a", {"href": href_export(s.id, aid)}, "download .jsonl"),
+            el(
+                "span",
+                None,
+                f" · {_plural(folded, 'hidden line')} · ",
+                el("a", {"href": href_transcript(s.id, aid, at, q, not hidden)}, "hide" if hidden else "show"),
+            )
+            if (folded := sum(map(_folded, steps)))
+            else None,
         ),
         about,
     )
     body, speaker = [], None
     for step in steps:
+        if _folded(step) and not hidden:
+            continue
         who = _speaker(step)
         if who and who != speaker:
             body.append(el("h2", {"class": f"speaker {who}"}, f"{human.when(step.ts)}  {who}"))
@@ -406,6 +421,14 @@ def transcript_page(
 def _agent(sid: SessionId, a: Subagent) -> Html:
     link = el("a", {"href": href_transcript(sid, a.id)}, a.id[:8])
     return el("li", None, link, f" {a.agent_type or ''} ", a.description or "")
+
+
+def _folded(step: Step) -> int:
+    """How many lines a hidden-run marker folds; 0 for every other step."""
+    match step:
+        case Marker(shows=Hidden(lines)):
+            return len(lines)
+    return 0
 
 
 def _speaker(step: Step) -> str | None:
