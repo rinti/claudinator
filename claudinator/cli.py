@@ -65,9 +65,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 @contextmanager
-def _opened(cfg: Config, *, fresh: bool) -> Iterator[Archive]:
+def _opened(cfg: Config, *, sweep_first: bool) -> Iterator[Archive]:
     with Archive.open(cfg) as archive:
-        if fresh:
+        if sweep_first:
             _note(archive.sweep(wait=False))
         yield archive
 
@@ -104,7 +104,7 @@ def parse_agent(text: str) -> str:
 
 def cmd_search(cfg: Config, args: argparse.Namespace) -> int:
     query = Query(tuple(args.words), Filters(args.project, args.since, args.until), args.tools, args.limit)
-    with _opened(cfg, fresh=True) as archive:
+    with _opened(cfg, sweep_first=True) as archive:
         hits = archive.search(query)
     tty = sys.stdout.isatty()
     for hit in hits:
@@ -116,7 +116,7 @@ def cmd_search(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_sessions(cfg: Config, args: argparse.Namespace) -> int:
-    with _opened(cfg, fresh=True) as archive:
+    with _opened(cfg, sweep_first=True) as archive:
         rows = archive.sessions(Filters(args.project, args.since, args.until), args.limit)
     width = max([len("PROJECT")] + [len(printable(_short(s.cwd))) for s in rows])
     _emit(f"SESSION   LAST ACTIVE       PROMPTS  AGENTS  {'PROJECT':<{width}}  TITLE")
@@ -128,7 +128,7 @@ def cmd_sessions(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_show(cfg: Config, args: argparse.Namespace) -> int:
-    with _opened(cfg, fresh=True) as archive:
+    with _opened(cfg, sweep_first=True) as archive:
         session = archive.session(args.id)
         s = session.summary
         _emit(f'{s.id}  {_short(s.cwd)}  "{s.title or ""}"')
@@ -167,7 +167,7 @@ def cmd_resume(cfg: Config, args: argparse.Namespace) -> int:
     """Restore the main transcript if Claude Code deleted it, then replace
     this process with `claude --resume` in the session's directory. Checks
     that both can work before it writes anything."""
-    with _opened(cfg, fresh=True) as archive:
+    with _opened(cfg, sweep_first=True) as archive:
         s = archive.session(args.id).summary
         command = ["claude", "--resume", s.id]
         if not s.cwd or not os.path.isdir(s.cwd):
@@ -208,7 +208,7 @@ def cmd_export(cfg: Config, args: argparse.Namespace) -> int:
     if sys.stdout.isatty():
         _emit("claudinator: export writes the raw transcript; redirect it to a file", file=sys.stderr)
         return 2
-    with _opened(cfg, fresh=True) as archive:
+    with _opened(cfg, sweep_first=True) as archive:
         session = archive.session(args.id)
         agent = _agent(session, args.agent) if args.agent else None
         archive.export(session.summary.id, sys.stdout.buffer, agent, args.generation)
@@ -217,7 +217,7 @@ def cmd_export(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
-    with _opened(cfg, fresh=False) as archive:
+    with _opened(cfg, sweep_first=False) as archive:
         swept = archive.sweep(wait=False)
         return _print_status(archive.status(), swept, _cleanup_period(cfg))
 
@@ -270,7 +270,7 @@ def cmd_install(cfg: Config, args: argparse.Namespace) -> int:
     executable = _executable()
     paths = {"CLAUDINATOR_DB": cfg.db, "CLAUDE_CONFIG_DIR": cfg.claude_dir}
     env = {var: str(path) for var, path in paths.items() if os.environ.get(var)}
-    with _opened(cfg, fresh=False) as archive:
+    with _opened(cfg, sweep_first=False) as archive:
         changed = launchd.install(executable, cfg.db.parent / "sweep.log", env)
         state = "installed" if changed else "already installed"
         _emit(f"{state} {launchd.LABEL}: `{executable} sweep` hourly and at login")
@@ -296,7 +296,7 @@ def cmd_uninstall(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_sweep(cfg: Config, args: argparse.Namespace) -> int:
-    with _opened(cfg, fresh=False) as archive:
+    with _opened(cfg, sweep_first=False) as archive:
         report = archive.sweep(wait=True)
     _emit(f"{datetime.fromtimestamp(report.finished / 1000).isoformat(timespec='seconds')} {_report(report)}")
     for error in report.errors:
@@ -305,7 +305,7 @@ def cmd_sweep(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_rebuild(cfg: Config, args: argparse.Namespace) -> int:
-    with _opened(cfg, fresh=False) as archive:
+    with _opened(cfg, sweep_first=False) as archive:
         replayed = archive.rebuild(force=True)
     _emit(f"rebuilt the search index from {replayed} archived transcript generations")
     return 0
