@@ -370,6 +370,19 @@ def test_terminal_control_characters_in_a_transcript_are_shown_not_obeyed(capsys
     assert "  line one\\x1b[31m\n  line two\n" in run(capsys, "show", "8f2d")[1]
 
 
+INVISIBLE = set(map(chr, [0x061C, *range(0x200B, 0x2010), 0x2028, 0x2029, *range(0x202A, 0x202F), *range(0x2066, 0x206A), 0xFEFF]))
+
+
+def test_bidi_controls_and_invisible_characters_in_a_transcript_are_shown_escaped(capsys):
+    append(transcript(), user("the quokka \u2066hides"), ai_title("Invoice \u202egpj.exe\u200b"))
+    for argv in (["sessions"], ["show", "8f2d"], ["search", "quokka"]):
+        code, out, _ = run(capsys, *argv)
+        assert code == 0
+        assert INVISIBLE.isdisjoint(out), argv
+    assert "Invoice \\u202egpj.exe\\u200b" in out
+    assert "the [quokka] \\u2066hides" in out
+
+
 def test_show_into_a_pipe_that_closes_early_exits_0_quietly():
     append(transcript(), *(user(f"prompt number {i} " + "w" * 100) for i in range(3000)))
     reader = subprocess.Popen(

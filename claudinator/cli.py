@@ -445,14 +445,18 @@ def _emit(*parts: str, file: TextIO | None = None, end: str = "\n", flush: bool 
 
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_INVISIBLE = re.compile("[\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]")
 
 
 def printable(text: str) -> str:
     """text with every C0 and C1 control character except newline and tab
-    written as a visible \\xNN escape. Transcripts hold escape sequences
-    that would recolour the terminal, move the cursor, or, through OSC 52,
-    set the clipboard."""
-    return _CONTROL.sub(lambda m: f"\\x{ord(m[0]):02x}", text)
+    written as a visible \\xNN escape, and every bidi control, zero-width
+    character, line or paragraph separator, and byte-order mark as \\uNNNN.
+    Transcripts hold escape sequences that would recolour the terminal,
+    move the cursor, or, through OSC 52, set the clipboard, and a bidi
+    override makes a title or a command read as something it is not."""
+    text = _CONTROL.sub(lambda m: f"\\x{ord(m[0]):02x}", text)
+    return _INVISIBLE.sub(lambda m: f"\\u{ord(m[0]):04x}", text)
 
 
 def _clip(text: str, width: int) -> str:
