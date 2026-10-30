@@ -39,24 +39,23 @@ _FOLD = _FoldTable()
 _TOKEN = re.compile(r"[^\W_]+")
 
 
-def _term_pattern(term: str) -> re.Pattern[str] | None:
+def _term_pattern(term: str) -> re.Pattern[str]:
     """A typed term as a regex over folded text that matches what FTS5
     matches: consecutive whole tokens, the last one a prefix if the term ends
     with *, which then marks the whole token. So "launchd agent" also matches
     "launchd-agent"."""
     tokens = _TOKEN.findall(term.rstrip("*").translate(_FOLD))
-    if not tokens:
-        return None
     end = r"[^\W_]*" if term.endswith("*") else r"(?![^\W_])"
     return re.compile(r"(?<![^\W_])" + r"[\W_]+".join(map(re.escape, tokens)) + end)
 
 
 def excerpt(text: str, terms: tuple[str, ...], width: int = 160) -> tuple[str, tuple[tuple[int, int], ...]]:
-    """Window of `width` chars around the first match, whitespace collapsed,
-    with the [start, end) spans of every match inside the window."""
+    """Window of `width` chars around the first match of terms, as searchable
+    keeps them, whitespace collapsed, with the [start, end) spans of every
+    match inside the window."""
     flat = " ".join(text.split())
     folded = flat.translate(_FOLD)
-    spans = sorted(m.span() for t in terms if (p := _term_pattern(t)) for m in p.finditer(folded))
+    spans = sorted(m.span() for t in terms for m in _term_pattern(t).finditer(folded))
     merged: list[tuple[int, int]] = []
     for s, e in spans:
         if merged and s <= merged[-1][1]:
