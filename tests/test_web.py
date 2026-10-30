@@ -176,6 +176,7 @@ def test_every_response_forbids_scripts_and_caching(served):
     answers = {
         "page": get(served, f"/s/{SID}"),
         "stylesheet": get(served, "/web.css"),
+        "font": get(served, "/fonts/Geist-Variable.woff2"),
         "favicon": get(served, "/favicon.ico", prefix=""),
         "raw": get(served, f"/raw/{SID}/0"),
         "image": get(served, f"/image/{SID}/0.0"),
@@ -187,6 +188,7 @@ def test_every_response_forbids_scripts_and_caching(served):
     assert {name: status for name, (status, _, _) in answers.items()} == {
         "page": 200,
         "stylesheet": 200,
+        "font": 200,
         "favicon": 204,
         "raw": 200,
         "image": 200,
@@ -205,6 +207,18 @@ def test_every_response_forbids_scripts_and_caching(served):
         ), name
     assert all(answers[name][1]["content-security-policy"].endswith("; sandbox") for name in ("raw", "image", "download"))
     assert (answers["favicon"][2], "content-length" in answers["favicon"][1]) == (b"", False)
+
+
+def test_the_stylesheet_loads_its_bundled_fonts_and_the_page_policy_lets_it(served):
+    css = get(served, "/web.css")[2].decode()
+    fonts = re.findall(r"url\(([^)]*)\)", css)
+    assert fonts == ["fonts/Geist-Variable.woff2", "fonts/GeistMono-Variable.woff2"]
+    for name in fonts:
+        status, headers, body = get(served, "/" + name)
+        assert (status, headers["content-type"], body[:4]) == (200, "font/woff2", b"wOF2"), name
+        assert body == (Path(web.__file__).parent / name).read_bytes(), name
+    assert "font-src 'self'" in get(served, "/")[1]["content-security-policy"].split("; ")
+    assert get(served, "/fonts/Inter-Variable.woff2")[0] == 404
 
 
 def test_a_transcript_shows_each_result_inside_the_call_it_answers(served):

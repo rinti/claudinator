@@ -40,7 +40,8 @@ from claudinator.record import AgentId, Kind, Millis, Note, Notice, Picture, Ses
 from claudinator.search_text import marks, searchable
 
 PAGE_POLICY = (
-    "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'self'; frame-ancestors 'none'"
+    "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; base-uri 'self';"
+    " frame-ancestors 'none'"
 )
 FILE_POLICY = "default-src 'none'; sandbox"
 RASTER_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
@@ -49,6 +50,10 @@ FOLD_LINES, FOLD_CHARS = 3, 300
 INLINE_CHARS = 1 << 20
 HTML = "text/html; charset=utf-8"
 STYLE = resources.files("claudinator").joinpath("web.css").read_bytes()
+FONTS = {
+    name: resources.files("claudinator").joinpath(f"fonts/{name}-Variable.woff2").read_bytes()
+    for name in ("Geist", "GeistMono")
+}
 
 
 class Server(ThreadingHTTPServer):
@@ -272,6 +277,13 @@ def stylesheet(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str
     return Response(200, "text/css; charset=utf-8", STYLE)
 
 
+FONT = re.compile(r"/fonts/(Geist|GeistMono)-Variable\.woff2")
+
+
+def font(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
+    return Response(200, "font/woff2", FONTS[m[1]])
+
+
 ROUTES: tuple[tuple[re.Pattern[str], Callable[[Config, str, Mapping[str, str], re.Match[str]], Response]], ...] = (
     (HOME, home),
     (TRANSCRIPT, transcript),
@@ -279,6 +291,7 @@ ROUTES: tuple[tuple[re.Pattern[str], Callable[[Config, str, Mapping[str, str], r
     (IMAGE, picture),
     (EXPORT, export),
     (STYLESHEET, stylesheet),
+    (FONT, font),
 )
 
 
