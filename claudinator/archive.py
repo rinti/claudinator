@@ -630,8 +630,16 @@ class Archive:
                 self._db.execute("COMMIT")
 
     @contextmanager
-    def _write(self, *, wait: bool, newer_ok: bool = False) -> Iterator[None]:
-        """The connection is in autocommit mode, so every statement inside, DDL
+    def _write(self, *, wait: bool) -> Iterator[None]:
+        with self._write_unchecked(wait=wait):
+            if newer := self._newer():
+                raise newer
+            yield
+
+    @contextmanager
+    def _write_unchecked(self, *, wait: bool) -> Iterator[None]:
+        """A write transaction whatever claudinator stamped the archive. The
+        connection is in autocommit mode, so every statement inside, DDL
         included, joins this transaction."""
         self._db.execute(f"PRAGMA busy_timeout = {LOCK_WAIT_MS if wait else 0}")
         try:
@@ -648,8 +656,6 @@ class Archive:
         finally:
             self._db.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
         try:
-            if not newer_ok and (newer := self._newer()):
-                raise newer
             yield
             self._db.execute("COMMIT")
         except BaseException:
@@ -879,11 +885,12 @@ class Archive:
 
     def _record(self, report: SweepReport) -> SweepReport:
         try:
-            with self._write(wait=True, newer_ok=report.refused is not None):
-                if report.refused is None:
+            if report.refused is None:
+                with self._write(wait=True):
                     self._set_meta("last_sweep", json.dumps(asdict(report)))
-                else:
-                    refusal = Refusal(report.finished, report.refused, ARCHIVE_SCHEMA, PROJECTION_VERSION)
+            else:
+                refusal = Refusal(report.finished, report.refused, ARCHIVE_SCHEMA, PROJECTION_VERSION)
+                with self._write_unchecked(wait=True):
                     self._set_meta("last_refused", json.dumps(asdict(refusal)))
         except Exception as e:
             return replace(report, errors=report.errors + _failed("recording this sweep", e).errors)
