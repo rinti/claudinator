@@ -23,7 +23,10 @@ pre { font: 13px/1.4 ui-monospace, monospace; margin: 0.25rem 0; }
 .hidden ul { columns: 3; margin: 0.2rem 0; }
 summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 img { max-width: 100%; height: auto; display: block; }
-.raw { font-size: 0.7rem; color: var(--muted); }
+.output { position: relative; }
+/* opacity, not visibility, so a hidden raw link stays in the tab order and shows once it holds focus. */
+.raw { position: absolute; top: 0; right: 0; padding: 0 0.3rem; font-size: 0.7rem; color: var(--muted); background: Canvas; opacity: 0; }
+:hover > .raw, :focus-within > .raw { opacity: 1; }
 .spawned { display: block; margin: 0.2rem 0; }
 
 /* Where a search hit lands. */
