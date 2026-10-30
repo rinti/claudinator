@@ -154,7 +154,7 @@ The projection layer has three tables.
 Each access pattern maps onto this structure without an added index.
 
 - Reading a session in order scans its segments by primary key, decompresses them, and parses lines. That is the file's own order.
-- Search runs one FTS match per term, joins `entry` and `source`, and keeps the sessions in which every term matched an eligible entry, all in one query (`_SEARCH_SQL`). Each displayed hit decompresses one segment of at most 1 MiB to render its excerpt.
+- Search runs one FTS match per term, joins `entry` and `source`, and keeps the sessions in which every term matched an eligible entry, all in one query (`_SEARCH_SQL`). Each displayed hit decompresses the segment of about 1 MiB that holds its line to render its excerpt, and the segment before it too when the line starts a segment.
 - Listing sessions is one query over `source`, `transcript`, and `entry` counts (`_SESSIONS_SQL`, tested in memory against the schema).
 - Ingest reads the cursor from the primary key and appends.
 - Export concatenates segments.
