@@ -57,6 +57,8 @@ FONTS = {
 
 
 class Server(ThreadingHTTPServer):
+    request_queue_size = 64
+
     def __init__(self, cfg: Config, port: int) -> None:
         super().__init__(("127.0.0.1", port), _Handler)
         self.cfg = cfg
