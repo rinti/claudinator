@@ -22,8 +22,16 @@ def searchable(terms: Iterable[str]) -> tuple[str, ...]:
 
 
 class _FoldTable(dict[int, str]):
+    """Folds a character as FTS5's unicode61 tokenizer does: the base of its
+    canonical decomposition, case-folded unless that takes more than one
+    character (ß, ﬁ). One to one, so a span in folded text is a span in the
+    text."""
+
     def __missing__(self, codepoint: int) -> str:
-        folded = unicodedata.normalize("NFKD", chr(codepoint))[:1].lower()[:1]
+        base = unicodedata.normalize("NFD", chr(codepoint))[:1]
+        folded = base.casefold()
+        if len(folded) != 1:
+            folded = base.lower()[:1]
         self[codepoint] = folded
         return folded
 
