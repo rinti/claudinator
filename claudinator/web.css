@@ -1,7 +1,7 @@
-:root { color-scheme: light dark; --you: #eef3ff; --muted: #888; --error: #b3261e; --line: #ccc; --mark: #ffe58a; }
-@media (prefers-color-scheme: dark) { :root { --you: #1d2733; --line: #444; --mark: #6b5a00; } }
+:root { color-scheme: light dark; --you: #eef3ff; --muted: #888; --error: #b3261e; --line: #ccc; --mark: #ffe58a; --link: #0b57d0; }
+@media (prefers-color-scheme: dark) { :root { --you: #1d2733; --line: #444; --mark: #6b5a00; --link: #8ab4f8; } }
 body { font: 15px/1.45 system-ui, sans-serif; max-width: 64rem; margin: 0 auto; padding: 1rem; }
-a { color: inherit; text-decoration: none; }
+a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 .text, pre { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: isolate; }
@@ -24,7 +24,7 @@ summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-spac
 img { max-width: 100%; height: auto; display: block; }
 .output { position: relative; }
 /* Opacity, not visibility, so a hidden raw link stays in the tab order and shows once it holds focus. */
-.raw { position: absolute; top: 0; right: 0; padding: 0 0.3rem; font-size: 0.7rem; color: var(--muted); background: Canvas; opacity: 0; }
+.raw { position: absolute; top: 0; right: 0; padding: 0 0.3rem; font-size: 0.7rem; background: Canvas; opacity: 0; }
 :hover > .raw, :focus-within > .raw { opacity: 1; }
 .spawned { display: block; margin: 0.2rem 0; }
 
@@ -40,6 +40,5 @@ table.sessions td.title { width: 100%; white-space: normal; }
 .hits li { margin: 0.6rem 0; }
 .excerpt { display: block; }
 .muted, .gone { color: var(--muted); }
-.muted a { color: CanvasText; }
 .banner { background: #fff4e5; color: #222; padding: 0.5rem; border-radius: 4px; }
 .agents { margin: 0.3rem 0; }
