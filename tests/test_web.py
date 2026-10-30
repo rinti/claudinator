@@ -170,7 +170,7 @@ def test_on_port_80_a_host_without_a_port_is_this_server(served, monkeypatch):
     assert get(served, "/", host="evil.example")[0] == 403
 
 
-def test_every_response_forbids_scripts_and_caching(served):
+def test_every_response_forbids_scripts_and_only_a_font_may_be_cached(served):
     pasted = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(PNG).decode()}}
     append(transcript(), line({"type": "user", "message": {"content": [pasted]}}))
     open_archive().sweep()
