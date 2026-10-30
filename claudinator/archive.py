@@ -467,14 +467,14 @@ class Archive:
 
         wait=True (launchd, install, `claudinator sweep`): block on the write
         lock up to LOCK_WAIT_MS per file, and record the report as the last
-        sweep. wait=False (every read command): give up at the first busy
-        lock and report busy=True; the reader proceeds on what is already
-        archived.
+        sweep, or as the last refusal when a newer claudinator's stamp
+        refused it, so status can say why without hiding the sweep that last
+        wrote. A sweep that gave up on the lock is not recorded. wait=False
+        (every read command): give up at the first busy lock and report
+        busy=True; the reader proceeds on what is already archived.
 
         A file that fails for any reason becomes one entry in errors and the
-        sweep moves on, so one bad file never keeps the rest unarchived. A
-        refused sweep is recorded apart from the last sweep, so status can
-        say why without hiding the sweep that last wrote."""
+        sweep moves on, so one bad file never keeps the rest unarchived."""
         started = now()
         found = discover(self.cfg)
         total, changed = _Delta(errors=found.errors, stop=self._newer()), 0
