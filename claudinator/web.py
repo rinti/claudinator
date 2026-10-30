@@ -884,8 +884,10 @@ def _fences(s: str) -> Iterator[tuple[re.Match[str], re.Match[str]]]:
 def _prose(s: str, here: bool, terms: tuple[str, ...]) -> tuple[Html, ...]:
     s, out, at = _cut(s), [], 0
     for opener, closer in _fences(s):
-        body = s[opener.end() + 1 : closer.start()].removesuffix("\n")
-        out += (*_inline(s[at : opener.start()], here, terms), el("pre", {"class": "code"}, _mark(body, here, terms)))
+        info, body = opener["info"].strip(), s[opener.end() + 1 : closer.start()].removesuffix("\n")
+        label = el("span", {"class": "info"}, _mark(info, here, terms)) if info else None
+        out += _inline(s[at : opener.start()], here, terms)
+        out.append(el("pre", {"class": "code"}, label, _mark(body, here, terms)))
         at = closer.end() + 1
     return (*out, *_inline(s[at:], here, terms))
 

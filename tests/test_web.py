@@ -417,19 +417,22 @@ def test_prompts_are_numbered_from_the_start_of_their_own_transcript(served):
     assert re.findall(labels, page(served, f"/s/{SID}/{AID}")) == [("Prompt 1", "the subagent&#x27;s own first")]
 
 
-def test_prose_sets_fenced_and_inline_code_as_code_and_leaves_a_stray_backtick_as_it_is(served):
-    said = 'Run `uv sync` then:\n```bash\necho "<b>quokka</b>"\n```\nA stray ` stays.\nSo does `this\none`.'
+def test_prose_sets_code_as_code_under_its_fences_label_and_leaves_a_stray_backtick_as_it_is(served):
+    said = 'Run `uv sync` then:\n``` bash \necho "<b>quokka</b>"\n```\nA stray ` stays.\nSo does `this\none`.\n```\nbare\n```'
     lines = (user("/pstack:poteto-mode fix `web.py`"), reply(said))
     append(transcript(), *lines)
     at = offsets(*lines)[1]
     shown = page(served, f"/s/{SID}")
     assert '<div class="text"><span class="cmd">/pstack:poteto-mode</span> fix <code>web.py</code></div>' in shown
     assert (
-        '<div class="text">Run <code>uv sync</code> then:\n<pre class="code">echo &quot;&lt;b&gt;quokka&lt;/b&gt;&quot;</pre>'
-        "A stray ` stays.\nSo does `this\none`.</div>"
+        '<div class="text">Run <code>uv sync</code> then:\n<pre class="code"><span class="info">bash</span>'
+        'echo &quot;&lt;b&gt;quokka&lt;/b&gt;&quot;</pre>A stray ` stays.\nSo does `this\none`.\n<pre class="code">bare</pre></div>'
     ) in shown
-    landed = page(served, f"/s/{SID}?at={at}.0&q=quokka+sync")
-    assert 'Run <code>uv <mark>sync</mark></code> then:\n<pre class="code">echo &quot;&lt;b&gt;<mark>quokka</mark>&lt;/b&gt;&quot;</pre>' in landed
+    landed = page(served, f"/s/{SID}?at={at}.0&q=quokka+sync+bash")
+    assert (
+        'Run <code>uv <mark>sync</mark></code> then:\n<pre class="code"><span class="info"><mark>bash</mark></span>'
+        "echo &quot;&lt;b&gt;<mark>quokka</mark>&lt;/b&gt;&quot;</pre>"
+    ) in landed
 
 
 def test_a_reply_of_unclosed_fences_renders_in_well_under_a_second():
