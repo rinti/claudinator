@@ -74,7 +74,7 @@ class SessionSummary:
     subagents: int
     transcript: Path  # main transcript path; may no longer exist
     on_disk: bool
-    heading: str | None = None  # the "# " line a first-prompt title starts with; the one-line title loses its end
+    heading: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

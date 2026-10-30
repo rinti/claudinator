@@ -291,8 +291,6 @@ FONT = re.compile(r"/fonts/(Geist|GeistMono)-Variable\.woff2")
 
 
 def font(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
-    """Cached, unlike everything else: a font is no secret, and refetching both
-    on every page held each page's load back. A new run's token makes a new URL."""
     return Response(200, "font/woff2", FONTS[m[1]], cache="max-age=31536000, immutable")
 
 
@@ -386,8 +384,6 @@ def _session_row(s: SessionSummary) -> Html:
 
 
 COMMAND = re.compile(r"/[^\W\d][\w:.-]*(?=\s|$)")
-"""A leading slash command, as Claude Code writes one into the prompt it
-records: /clear or /pstack:poteto-mode, never a path like /Users/me."""
 
 
 def _title(s: SessionSummary) -> tuple[Html | str, ...]:
@@ -401,7 +397,6 @@ def _title(s: SessionSummary) -> tuple[Html | str, ...]:
 
 
 def _rest(s: str) -> tuple[Html | str, ...]:
-    """The space keeps a link's name and a copied title readable: "/clear and go", not "/clearand go"."""
     return (" ", el("span", {"class": "rest"}, s.strip())) if s.strip() else ()
 
 
@@ -569,7 +564,6 @@ def _back(href: str, label: str) -> Html:
 
 
 def _facts(s: SessionSummary, start: Millis | None, end: Millis | None, *, main: bool) -> Html:
-    """Where and when; a subagent's span is its own, and the counts are the session's."""
     first, last = _local(start), _local(end)
     span = duration = None
     if first and last:
@@ -699,8 +693,6 @@ def _dated(
     terms: tuple[str, ...],
     numbers: Mapping[Key, int],
 ) -> Iterator[Html]:
-    """Each minute's run, after a divider wherever the local day changes.
-    Within a run, consecutive calls, outputs, and thoughts share one box."""
     seen = None
     for minute, run in _minutes(steps):
         if minute is not None and minute.date() != seen:
@@ -803,8 +795,6 @@ def _step(
 def _row(
     key: Key, css: str, name: str, gist: str, end: Html | None, panel: Sequence[Html | None], opened: bool, *after: Html
 ) -> Html:
-    """One row of a box: a chevron, a name, a gist, and at its end a size, an
-    error, or a link to the subagent; opening it shows the panel."""
     summary = el("summary", None, el("b", None, name), " ", el("span", {"class": "gist"}, human.clip(gist, 160)), end)
     details = el("details", {"open": opened}, summary, el("div", {"class": "panel"}, *panel))
     return el("div", {"class": f"step {css}", "id": f"m{key}"}, details, *after)
@@ -876,13 +866,9 @@ def _img(sid: SessionId, aid: AgentId | None, key: Key, shown: Picture) -> Html:
 
 
 CODE = re.compile(r"^```[^\n`]*\n(.*?)\n?^```[ \t]*$\n?|`([^`\n]+)`", re.S | re.M)
-"""A fenced block, its fences each on a line of their own, or inline code
-within one line. A backtick that closes neither stays as it is."""
 
 
 def _prose(s: str, here: bool, terms: tuple[str, ...]) -> tuple[Html, ...]:
-    """Text with its code set as code. Marks land per segment, so a phrase
-    that runs into code is not marked."""
     s, out, at = _cut(s), [], 0
     for m in CODE.finditer(s):
         if m[1] is not None:

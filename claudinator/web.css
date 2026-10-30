@@ -21,7 +21,6 @@
   --line2: light-dark(oklch(0.249 0.024 77 / 0.17), oklch(0.926 0.017 85 / 0.14));
   --ink: light-dark(oklch(0.219 0.008 85), oklch(0.937 0.01 87));
   --ink2: light-dark(oklch(0.414 0.014 85), oklch(0.726 0.015 89));
-  /* A step past the mockup's, so it holds 4.5:1 on the bg3 of a prompt card too. */
   --ink3: light-dark(oklch(0.506 0.015 82), oklch(0.631 0.014 87));
   --acc: light-dark(oklch(0.488 0.208 282), oklch(0.773 0.124 290));
   --accbg: light-dark(oklch(0.488 0.208 282 / 0.09), oklch(0.773 0.124 290 / 0.12));
@@ -76,8 +75,6 @@ mark { padding-inline: 0.1875rem; border-radius: 0.25rem; background: var(--mark
 .esc { color: var(--ink3); font-family: var(--mono); font-size: 0.85em; }
 .text, pre { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: isolate; }
 
-/* The header */
-
 .top {
   position: sticky;
   inset-block-start: 0;
@@ -131,8 +128,6 @@ mark { padding-inline: 0.1875rem; border-radius: 0.25rem; background: var(--mark
 }
 .find button:focus-visible { outline-color: var(--ink); }
 .find button:active { background: var(--ink2); }
-
-/* The toolbar over the list and the results */
 
 .toolbar {
   display: flex;
@@ -200,8 +195,6 @@ mark { padding-inline: 0.1875rem; border-radius: 0.25rem; background: var(--mark
   color: var(--ink2);
   font-size: 0.875rem;
 }
-
-/* The session list */
 
 .day { margin-block-start: 1.75rem; }
 .day-head {
@@ -281,8 +274,6 @@ a.project:active .leaf { color: var(--acc); }
 .count { display: flex; justify-content: end; gap: 0.3125rem; color: var(--ink3); font-family: var(--mono); font-size: 0.78125rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .count .n { color: var(--ink2); }
 
-/* Search results */
-
 .hits {
   container-type: inline-size;
   max-inline-size: 56.25rem;
@@ -321,8 +312,6 @@ a.project:active .leaf { color: var(--acc); }
   color: var(--ink2);
 }
 .none .big { color: var(--ink); font-size: 1.5rem; font-weight: 600; line-height: 1.2; letter-spacing: -0.025em; }
-
-/* A transcript */
 
 .transcript { padding-block-start: 1.75rem; }
 .back { display: inline-flex; align-items: center; gap: 0.5rem; justify-self: start; color: var(--ink2); font-size: 0.84375rem; }
