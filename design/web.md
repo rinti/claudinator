@@ -102,6 +102,7 @@ Rejected: fable's move of the write path to `sweep.py` (tests patch `archive.pro
 - **`Marker` holds `Note | Hidden`, and torn lines are counted, not marked.** A notice and a hidden run are the two things a `Marker` shows, so it carries one field of that union instead of two optional ones. A torn line counts as `unparsed` inside its hidden run, beside the other types, rather than taking a marker of its own. `record.line_type()` names each counted line: an `Other`'s own `type`, which `Other` now keeps, `ai-title`, `custom-title`, or `unparsed`.
 - **Queued attachments from agents and background tasks are notifications.** On this Mac 113 `queued_command` attachments come from a person and 701 from a peer or a task notification, and none of the 701 appears again as a user line (a structure-only scan). So `QUEUED` covers the ones a person typed, and the rest are `NOTIFICATION`, beside the user lines with those origins.
 - **`Output` keeps `tool_use_id`.** `build` pairs a result with its call by that id, so the step carries it.
+- **`human.py` takes only what the pages use.** `ago` stays in `cli.py`, because only `status` prints it. `LARGEST` moves with `parse_when`, which checks against it, and `cli.py` reads both as `human.*`.
 - **`show` changes in one more case than the design names.** A result now prints after its own call whenever anything came between them, a prompt included, not only when calls ran in parallel. A fork's copy of the call that started it no longer points at the fork.
 
 ## Open questions and risks

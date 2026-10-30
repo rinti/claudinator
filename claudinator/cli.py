@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
-from claudinator import launchd
+from claudinator import human, launchd
 from claudinator.archive import (
     AmbiguousSession,
     Archive,
@@ -30,9 +30,6 @@ from claudinator.layout import AGENT_ID, Config, staged
 from claudinator.record import AgentId, Kind, Millis, cleanup_period_days
 
 _NOTE_ARCHIVED_BYTES = 4 << 20
-_LARGEST = 2**62
-"""The largest number argv may give. SQLite stores integers in 64 bits, and
-a time that far back can still be subtracted from now."""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -55,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     except AmbiguousSession as e:
         _emit(f"claudinator: {e}; be more specific:", file=sys.stderr)
         for s in e.candidates:
-            _emit(f"  {s.id}  {_when(s.last_ts)}  {_short(s.cwd)}  {s.title or ''}", file=sys.stderr)
+            _emit(f"  {s.id}  {human.when(s.last_ts)}  {human.short(s.cwd)}  {s.title or ''}", file=sys.stderr)
         return 1
     except (ArchiveError, launchd.LaunchdError, OSError) as e:
         _emit(f"claudinator: {e}", file=sys.stderr)
@@ -71,24 +68,6 @@ def _opened(cfg: Config, *, sweep_first: bool) -> Iterator[Archive]:
         if sweep_first:
             _note(archive.sweep(wait=False))
         yield archive
-
-
-def parse_when(text: str, now: Millis) -> Millis:
-    """'2026-10-01' (local midnight), '2026-10-01T14:00' (local), '7d', '12h' (ago)."""
-    if m := re.fullmatch(r"(\d+)([dh])", text):
-        if (ago := int(m[1]) * {"d": 86_400_000, "h": 3_600_000}[m[2]]) > _LARGEST:
-            raise ValueError(f"{text!r} is out of range")
-        return Millis(now - ago)
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M"):
-        try:
-            local = datetime.strptime(text, fmt)
-        except ValueError:
-            continue
-        try:
-            return Millis(int(local.timestamp()) * 1000)
-        except (ValueError, OverflowError, OSError):
-            raise ValueError(f"{text!r} is out of range") from None
-    raise ValueError(f"expected 2026-10-01, 2026-10-01T14:00, 7d, or 12h, not {text!r}")
 
 
 def parse_ref(text: str) -> str:
@@ -119,12 +98,12 @@ def cmd_search(cfg: Config, args: argparse.Namespace) -> int:
 def cmd_sessions(cfg: Config, args: argparse.Namespace) -> int:
     with _opened(cfg, sweep_first=True) as archive:
         rows = archive.sessions(Filters(args.project, args.since, args.until), args.limit)
-    width = max([len("PROJECT")] + [len(printable(_short(s.cwd))) for s in rows])
+    width = max([len("PROJECT")] + [len(human.printable(human.short(s.cwd))) for s in rows])
     _emit(f"SESSION   LAST ACTIVE       PROMPTS  AGENTS  {'PROJECT':<{width}}  TITLE")
     for s in rows:
-        project = _short(s.cwd) + " " * (width - len(printable(_short(s.cwd))))
-        title = _clip(s.title or "", 60) + ("" if s.on_disk else "  [gone]")
-        _emit(f"{s.id[:8]}  {_when(s.last_ts)}  {s.prompts:>7}  {s.subagents:>6}  {project}  {title}")
+        project = human.short(s.cwd) + " " * (width - len(human.printable(human.short(s.cwd))))
+        title = human.clip(s.title or "", 60) + ("" if s.on_disk else "  [gone]")
+        _emit(f"{s.id[:8]}  {human.when(s.last_ts)}  {s.prompts:>7}  {s.subagents:>6}  {project}  {title}")
     return 0
 
 
@@ -132,10 +111,11 @@ def cmd_show(cfg: Config, args: argparse.Namespace) -> int:
     with _opened(cfg, sweep_first=True) as archive:
         session = archive.session(args.id)
         s = session.summary
-        _emit(f'{s.id}  {_short(s.cwd)}  "{s.title or ""}"')
+        _emit(f'{s.id}  {human.short(s.cwd)}  "{s.title or ""}"')
         where = "on disk" if s.on_disk else "deleted by Claude Code, kept in the archive"
         prompts = f"{s.prompts} prompt{'' if s.prompts == 1 else 's'}"
-        _emit(f"{_when(s.first_ts)} to {_when(s.last_ts)}, {prompts}, {where} (claudinator resume {s.id[:8]})")
+        span = f"{human.when(s.first_ts)} to {human.when(s.last_ts)}"
+        _emit(f"{span}, {prompts}, {where} (claudinator resume {s.id[:8]})")
         agent = _agent(session, args.agent) if args.agent else None
         for a in session.agents:
             if agent is None or a.id == agent:
@@ -146,7 +126,7 @@ def cmd_show(cfg: Config, args: argparse.Namespace) -> int:
                 case Said(ts=ts, kind=kind, text=text):
                     who, out = "you" if kind is Kind.PROMPT else "claude", [_indent(text)]
                 case Call(ts=ts, text=text, spawned=spawned, result=result):
-                    who, out = "claude", [f"  > {_clip(' '.join(text.split()), 200)}"]
+                    who, out = "claude", [f"  > {human.clip(' '.join(text.split()), 200)}"]
                     if spawned:
                         out.append(f"    (subagent: claudinator show {s.id[:8]} --agent {spawned.id[:8]})")
                     if result:
@@ -156,7 +136,7 @@ def cmd_show(cfg: Config, args: argparse.Namespace) -> int:
                 case _:
                     continue
             if who != speaker:
-                _emit(f"\n{_when(ts)}  {who}")
+                _emit(f"\n{human.when(ts)}  {who}")
                 speaker = who
             for line in out:
                 _emit(line)
@@ -168,7 +148,7 @@ def _output(text: str, full: bool) -> str:
     if full:
         return "  < " + "\n    ".join(lines)
     more = f"  ({len(lines)} lines)" if len(lines) > 1 else ""
-    return f"  < {_clip(lines[0], 160)}{more}"
+    return f"  < {human.clip(lines[0], 160)}{more}"
 
 
 def cmd_resume(cfg: Config, args: argparse.Namespace) -> int:
@@ -179,7 +159,7 @@ def cmd_resume(cfg: Config, args: argparse.Namespace) -> int:
         s = archive.session(args.id).summary
         command = ["claude", "--resume", s.id]
         if not s.cwd or not os.path.isdir(s.cwd):
-            _emit(f"claudinator: the session's directory {_short(s.cwd)} no longer exists. Resume it from another one with:")
+            _emit(f"claudinator: the session's directory {human.short(s.cwd)} no longer exists. Resume it from another one with:")
             _emit(f"  {shlex.join(command)}")
             return 1
         if shutil.which("claude") is None:
@@ -188,7 +168,7 @@ def cmd_resume(cfg: Config, args: argparse.Namespace) -> int:
         try:
             _restore(archive, s)
         except OSError as e:
-            _emit(f"claudinator: cannot restore {_short(str(s.transcript))}: {e.strerror or e}", file=sys.stderr)
+            _emit(f"claudinator: cannot restore {human.short(str(s.transcript))}: {e.strerror or e}", file=sys.stderr)
             return 1
     _exec(s.cwd, command)
     return 0
@@ -207,9 +187,9 @@ def _restore(archive: Archive, s: SessionSummary) -> None:
                 os.fsync(f.fileno())
             os.link(scratch, final)
         except FileExistsError:
-            _emit(f"{_short(str(final))} appeared while restoring it; resuming with that file as it is")
+            _emit(f"{human.short(str(final))} appeared while restoring it; resuming with that file as it is")
         else:
-            _emit(f"restored {_short(str(final))} from the archive")
+            _emit(f"restored {human.short(str(final))} from the archive")
 
 
 def cmd_export(cfg: Config, args: argparse.Namespace) -> int:
@@ -239,7 +219,10 @@ def _print_status(st: Status, swept: SweepReport, cleanup_days: int | None) -> i
     failed_now = bool(swept.errors or swept.refused)
     refused = st.last_refused if st.last_refused and (last is None or st.last_refused.at > last.finished) else None
     unarchived = sum(p.unarchived_bytes for p in st.pending)
-    _emit(f"archive   {_short(str(st.db_path))}  {_size(st.db_bytes)} ({_size(st.uncompressed_bytes)} of transcripts)")
+    _emit(
+        f"archive   {human.short(str(st.db_path))}  {human.size(st.db_bytes)}"
+        f" ({human.size(st.uncompressed_bytes)} of transcripts)"
+    )
     _emit(
         f"coverage  {st.transcripts} transcripts in {st.sessions} sessions, {unarchived} unarchived bytes,"
         f" {st.unparsed_lines} unparsed lines, {st.multi_generation} rewritten files"
@@ -250,7 +233,7 @@ def _print_status(st: Status, swept: SweepReport, cleanup_days: int | None) -> i
         _emit(f"          {error}")
     if refused:
         _emit(
-            f"refused   an older claudinator tried to sweep at {_when(refused.at)} and was refused:"
+            f"refused   an older claudinator tried to sweep at {human.when(refused.at)} and was refused:"
             f" {refused.reason} (reinstall: claudinator install)"
         )
     if failed_now or swept.transcripts_changed:
@@ -261,7 +244,7 @@ def _print_status(st: Status, swept: SweepReport, cleanup_days: int | None) -> i
         _emit(f"gone      {st.gone} transcripts deleted by Claude Code live on in the archive")
     for p in st.pending:
         if p.settled:
-            _emit(f"warning   {_short(str(p.path))} has bytes the sweeper has not archived for an hour")
+            _emit(f"warning   {human.short(str(p.path))} has bytes the sweeper has not archived for an hour")
     if n := len(st.unreadable):
         files = "transcript" if n == 1 else "transcripts"
         _emit(f"unread    {n} {files} could not be read to count unarchived bytes: {st.unreadable[0]}")
@@ -298,7 +281,7 @@ def _cleanup_period(cfg: Config) -> int | None:
 
 def cmd_uninstall(cfg: Config, args: argparse.Namespace) -> int:
     launchd.uninstall()
-    kept = f"; the archive stays at {_short(str(cfg.db))}" if cfg.db.exists() else ""
+    kept = f"; the archive stays at {human.short(str(cfg.db))}" if cfg.db.exists() else ""
     _emit(f"unloaded {launchd.LABEL}{kept}")
     return 0
 
@@ -331,13 +314,13 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
 
     def number(least: int) -> Callable[[str], object]:
         def parse(text: str) -> int:
-            if not text.isdigit() or not least <= int(text) <= _LARGEST:
+            if not text.isdigit() or not least <= int(text) <= human.LARGEST:
                 raise ValueError(f"expected a number from {least} to 2**62, not {text!r}")
             return int(text)
 
         return checked(parse)
 
-    when = checked(lambda text: parse_when(text, now))
+    when = checked(lambda text: human.parse_when(text, now))
     ref = checked(parse_ref)
     agent = checked(parse_agent)
     parser = argparse.ArgumentParser(
@@ -413,15 +396,15 @@ def _note(report: SweepReport) -> None:
     elif report.busy:
         _emit("claudinator: another sweep is writing; showing what is already archived", file=sys.stderr)
     if report.bytes_archived > _NOTE_ARCHIVED_BYTES:
-        _emit(f"claudinator: archived {_size(report.bytes_archived)} of new transcript bytes", file=sys.stderr)
+        _emit(f"claudinator: archived {human.size(report.bytes_archived)} of new transcript bytes", file=sys.stderr)
 
 
 def _progress(path: Path) -> None:
-    _emit(Markup("\r"), f"archiving {_clip(path.name, 60):<60}", end="", file=sys.stderr, flush=True)
+    _emit(Markup("\r"), f"archiving {human.clip(path.name, 60):<60}", end="", file=sys.stderr, flush=True)
 
 
 def _report(r: SweepReport) -> str:
-    text = f"{r.transcripts_changed} of {r.transcripts_seen} transcripts changed, {_size(r.bytes_archived)}"
+    text = f"{r.transcripts_changed} of {r.transcripts_seen} transcripts changed, {human.size(r.bytes_archived)}"
     if r.new_generations:
         text += f", {r.new_generations} rewritten"
     if r.errors:
@@ -433,7 +416,7 @@ def _report(r: SweepReport) -> str:
 
 def _session_line(s: SessionSummary) -> str:
     gone = "" if s.on_disk else "  [gone]"
-    return f"{s.id[:8]}  {_when(s.last_ts)}  {_short(s.cwd)}  {_clip(s.title or '', 60)}{gone}"
+    return f"{s.id[:8]}  {human.when(s.last_ts)}  {human.short(s.cwd)}  {human.clip(s.title or '', 60)}{gone}"
 
 
 def _marked(text: str, marks: tuple[tuple[int, int], ...], tty: bool) -> list[str]:
@@ -455,35 +438,8 @@ class Markup(str):
 
 
 def _emit(*parts: str, file: TextIO | None = None, end: str = "\n", flush: bool = False) -> None:
-    text = "".join(part if isinstance(part, Markup) else printable(part) for part in parts)
+    text = "".join(part if isinstance(part, Markup) else human.printable(part) for part in parts)
     print(text, file=file or sys.stdout, end=end, flush=flush)
-
-
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
-_INVISIBLE = re.compile("[\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]")
-
-
-def printable(text: str) -> str:
-    """text with every C0 and C1 control character except newline and tab
-    written as a visible \\xNN escape, and every bidi control, zero-width
-    character, line or paragraph separator, and byte-order mark as \\uNNNN."""
-    text = _CONTROL.sub(lambda m: f"\\x{ord(m[0]):02x}", text)
-    return _INVISIBLE.sub(lambda m: f"\\u{ord(m[0]):04x}", text)
-
-
-def _clip(text: str, width: int) -> str:
-    return text if len(text) <= width else text[: width - 1] + "…"
-
-
-def _short(path: str | None) -> str:
-    if not path:
-        return "?"
-    home = str(Path.home())
-    return "~" + path[len(home) :] if path == home or path.startswith(home + "/") else path
-
-
-def _when(ms: int | None) -> str:
-    return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M") if ms is not None else "?"
 
 
 def _ago(ms: int) -> str:
@@ -493,11 +449,3 @@ def _ago(ms: int) -> str:
     if minutes < 48 * 60:
         return f"{minutes // 60} h ago"
     return f"{minutes // (24 * 60)} days ago"
-
-
-def _size(n: int) -> str:
-    for unit, scale in (("GB", 10**9), ("MB", 10**6), ("KB", 10**3)):
-        if n >= scale:
-            return f"{n / scale:.3g} {unit}"
-    return f"{n} B"
-

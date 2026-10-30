@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 import claudinator.archive as archive_module
-from claudinator import cli, launchd
+from claudinator import cli, human, launchd
 from claudinator.layout import Config
 from claudinator.record import PROJECTION_VERSION
 from test_concurrency import LOCKER
@@ -207,13 +207,13 @@ def test_a_number_too_large_for_the_archive_is_a_usage_error(capsys, argv):
     ],
 )
 def test_parse_when(text, expected):
-    assert cli.parse_when(text, NOW) == expected
+    assert human.parse_when(text, NOW) == expected
 
 
 @pytest.mark.parametrize("text", ["yesterday", "7w", "2026-13-01", "-1d", ""])
 def test_parse_when_rejects_anything_else(text):
     with pytest.raises(ValueError):
-        cli.parse_when(text, NOW)
+        human.parse_when(text, NOW)
 
 
 @pytest.mark.parametrize(("text", "where"), [("0001-01-01", "UTC"), ("9999-12-31T23:00", "Europe/Stockholm")])
