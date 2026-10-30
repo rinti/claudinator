@@ -405,6 +405,21 @@ def test_prompts_are_numbered_from_the_start_of_their_own_transcript(served):
     assert re.findall(labels, page(served, f"/s/{SID}/{AID}")) == [("Prompt 1", "the subagent&#x27;s own first")]
 
 
+def test_prose_sets_fenced_and_inline_code_as_code_and_leaves_a_stray_backtick_as_it_is(served):
+    said = 'Run `uv sync` then:\n```bash\necho "<b>quokka</b>"\n```\nA stray ` stays.\nSo does `this\none`.'
+    lines = (user("/pstack:poteto-mode fix `web.py`"), reply(said))
+    append(transcript(), *lines)
+    at = offsets(*lines)[1]
+    shown = page(served, f"/s/{SID}")
+    assert '<div class="text"><span class="cmd">/pstack:poteto-mode</span>fix <code>web.py</code></div>' in shown
+    assert (
+        '<div class="text">Run <code>uv sync</code> then:\n<pre class="code">echo &quot;&lt;b&gt;quokka&lt;/b&gt;&quot;</pre>'
+        "A stray ` stays.\nSo does `this\none`.</div>"
+    ) in shown
+    landed = page(served, f"/s/{SID}?at={at}.0&q=quokka+sync")
+    assert 'Run <code>uv <mark>sync</mark></code> then:\n<pre class="code">echo &quot;&lt;b&gt;<mark>quokka</mark>&lt;/b&gt;&quot;</pre>' in landed
+
+
 def test_a_transcript_shows_the_time_once_a_minute_and_a_heading_where_the_day_changes(served):
     lines = (
         user("first", ts="2026-10-29T22:38:05Z"),

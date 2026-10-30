@@ -858,8 +858,24 @@ def _img(sid: SessionId, aid: AgentId | None, key: Key, shown: Picture) -> Html:
     return el("img", {"loading": "lazy", "alt": about, "src": href_image(sid, aid, key, shown.part)})
 
 
+CODE = re.compile(r"^```[^\n`]*\n(.*?)\n?^```[ \t]*$\n?|`([^`\n]+)`", re.S | re.M)
+"""A fenced block, its fences each on a line of their own, or inline code
+within one line. A backtick that closes neither stays as it is."""
+
+
 def _prose(s: str, here: bool, terms: tuple[str, ...]) -> tuple[Html, ...]:
-    return (_text(s, here, terms),)
+    """Text with its code set as code. Marks land per segment, so a phrase
+    that runs into code is not marked."""
+    s, out, at = _cut(s), [], 0
+    for m in CODE.finditer(s):
+        if m[1] is not None:
+            code = el("pre", {"class": "code"}, _mark(m[1], here, terms))
+        else:
+            code = el("code", None, _mark(m[2], here, terms))
+        out += (_mark(s[at : m.start()], here, terms), code)
+        at = m.end()
+    out.append(_mark(s[at:], here, terms))
+    return tuple(out)
 
 
 def _text(s: str, here: bool, terms: tuple[str, ...]) -> Html:
