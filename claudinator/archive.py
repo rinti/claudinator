@@ -202,7 +202,7 @@ class _Busy(Exception):
 @dataclass(frozen=True, slots=True)
 class _Delta:
     bytes: int = 0
-    rewritten: int = 0
+    new_generations: int = 0
     docs: int = 0
     errors: tuple[str, ...] = ()
     stop: _Busy | Locked | NewerArchive | None = None
@@ -210,7 +210,7 @@ class _Delta:
     def __add__(self, other: _Delta) -> _Delta:
         return _Delta(
             self.bytes + other.bytes,
-            self.rewritten + other.rewritten,
+            self.new_generations + other.new_generations,
             self.docs + other.docs,
             self.errors + other.errors,
             self.stop or other.stop,
@@ -447,7 +447,7 @@ class Archive:
             transcripts_seen=len(found.transcripts),
             transcripts_changed=changed,
             bytes_archived=total.bytes,
-            new_generations=total.rewritten,
+            new_generations=total.new_generations,
             docs_changed=total.docs,
             errors=total.errors,
             busy=isinstance(total.stop, _Busy),
@@ -681,7 +681,7 @@ class Archive:
             (source_id, n.cursor, n.cursor + len(n.chunk), tail_sha256, zstd.compress(n.chunk), archived_at),
         )
         self._project(source_id, records([(n.cursor, n.chunk)], before))
-        return _Delta(len(n.chunk), rewritten=n.generation > 0 and n.cursor == 0), n.more
+        return _Delta(len(n.chunk), new_generations=n.generation > 0 and n.cursor == 0), n.more
 
     def _project(self, source_id: int, parsed: Iterable[tuple[int, Record, bool]]) -> None:
         row = self._db.execute(
