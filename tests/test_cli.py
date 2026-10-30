@@ -569,9 +569,10 @@ def test_status_names_the_reason_the_last_sweep_was_refused(capsys):
     db.commit()
     db.close()
     assert run(capsys, "sweep")[0] == 1
-    code, out, _ = run(capsys, "status")
+    code, out, err = run(capsys, "status")
     assert code == 1
     assert "transcripts changed, 0 B, refused: this archive was written by a newer claudinator)\n" in out
+    assert err == ""
 
 
 def test_status_reports_a_directory_its_own_sweep_cannot_list_and_exits_1(capsys):

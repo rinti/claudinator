@@ -2,14 +2,14 @@
 environment is parsed here, and every line a person reads is formatted here."""
 
 import argparse
-import enum
 import os
 import re
 import shlex
 import shutil
 import sqlite3
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import TextIO
@@ -45,14 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         return e.code if isinstance(e.code, int) else 2
     cfg = Config.from_env()
     try:
-        if args.needs is _Needs.CONFIG:
-            code = args.run(cfg, args)
-        else:
-            with Archive.open(cfg) as archive:
-                swept = archive.sweep(wait=False) if args.needs is _Needs.FRESH else None
-                if swept:
-                    _note(swept)
-                code = args.run(archive, args, swept)
+        code = args.run(cfg, args)
         sys.stdout.flush()
         return code
     except BrokenPipeError:
@@ -73,13 +66,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-class _Needs(enum.Enum):
-    """What a command needs before it runs, which also fixes how it is
-    called."""
-
-    CONFIG = enum.auto()  # run(cfg, args): the paths only, whatever state the archive is in
-    ARCHIVE = enum.auto()  # run(archive, args, None)
-    FRESH = enum.auto()  # run(archive, args, swept): new bytes archived first with wait=False
+@contextmanager
+def _opened(cfg: Config, *, fresh: bool) -> Iterator[Archive]:
+    """The open archive. fresh archives new bytes first with wait=False, so
+    a read command sees the turn that just finished in another terminal
+    without any hook, and _note says on stderr what that sweep could not
+    do."""
+    with Archive.open(cfg) as archive:
+        if fresh:
+            _note(archive.sweep(wait=False))
+        yield archive
 
 
 def parse_when(text: str, now: Millis) -> Millis:
@@ -112,10 +108,12 @@ def parse_agent(text: str) -> str:
     raise ValueError(f"expected the start of an agent id (letters, digits, - and _), not {text!r}")
 
 
-def cmd_search(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
-    filters = Filters(args.project, args.since, args.until)
+def cmd_search(cfg: Config, args: argparse.Namespace) -> int:
+    query = Query(tuple(args.words), Filters(args.project, args.since, args.until), args.tools, args.limit)
+    with _opened(cfg, fresh=True) as archive:
+        hits = archive.search(query)
     tty = sys.stdout.isatty()
-    for hit in archive.search(Query(tuple(args.words), filters, args.tools, args.limit)):
+    for hit in hits:
         _emit(f"{_session_line(hit.session)}  ({hit.hits} hit{'' if hit.hits == 1 else 's'})")
         best = hit.best
         label = best.kind.value + (f" in agent {best.agent_id[:8]}" if best.agent_id else "")
@@ -123,8 +121,9 @@ def cmd_search(archive: Archive, args: argparse.Namespace, swept: SweepReport | 
     return 0
 
 
-def cmd_sessions(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
-    rows = archive.sessions(Filters(args.project, args.since, args.until), args.limit)
+def cmd_sessions(cfg: Config, args: argparse.Namespace) -> int:
+    with _opened(cfg, fresh=True) as archive:
+        rows = archive.sessions(Filters(args.project, args.since, args.until), args.limit)
     width = max([len("PROJECT")] + [len(printable(_short(s.cwd))) for s in rows])
     _emit(f"SESSION   LAST ACTIVE       PROMPTS  AGENTS  {'PROJECT':<{width}}  TITLE")
     for s in rows:
@@ -134,60 +133,62 @@ def cmd_sessions(archive: Archive, args: argparse.Namespace, swept: SweepReport 
     return 0
 
 
-def cmd_show(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
-    session = archive.session(args.id)
-    s = session.summary
-    _emit(f'{s.id}  {_short(s.cwd)}  "{s.title or ""}"')
-    where = "on disk" if s.on_disk else "deleted by Claude Code, kept in the archive"
-    prompts = f"{s.prompts} prompt{'' if s.prompts == 1 else 's'}"
-    _emit(f"{_when(s.first_ts)} to {_when(s.last_ts)}, {prompts}, {where} (claudinator resume {s.id[:8]})")
-    agent = _agent(session, args.agent) if args.agent else None
-    for a in session.agents:
-        if agent is None or a.id == agent:
-            _emit(f"agent {a.id[:8]}  {a.agent_type or ''}  {a.description or ''}".rstrip())
-    speaker = None
-    for m in archive.conversation(s.id, agent):
-        if not m.text.strip() and m.kind is not Kind.TOOL_OUTPUT:
-            continue
-        if (who := "you" if m.kind is Kind.PROMPT else "claude") != speaker:
-            _emit(f"\n{_when(m.ts)}  {who}")
-            speaker = who
-        match m.kind:
-            case Kind.TOOL_CALL:
-                _emit(f"  > {_clip(' '.join(m.text.split()), 200)}")
-                if m.spawned:
-                    _emit(f"    (subagent: claudinator show {s.id[:8]} --agent {m.spawned[:8]})")
-            case Kind.TOOL_OUTPUT:
-                lines = m.text.splitlines() or [""]
-                if args.full:
-                    _emit("  < " + "\n    ".join(lines))
-                else:
-                    more = f"  ({len(lines)} lines)" if len(lines) > 1 else ""
-                    _emit(f"  < {_clip(lines[0], 160)}{more}")
-            case _:
-                _emit(_indent(m.text))
+def cmd_show(cfg: Config, args: argparse.Namespace) -> int:
+    with _opened(cfg, fresh=True) as archive:
+        session = archive.session(args.id)
+        s = session.summary
+        _emit(f'{s.id}  {_short(s.cwd)}  "{s.title or ""}"')
+        where = "on disk" if s.on_disk else "deleted by Claude Code, kept in the archive"
+        prompts = f"{s.prompts} prompt{'' if s.prompts == 1 else 's'}"
+        _emit(f"{_when(s.first_ts)} to {_when(s.last_ts)}, {prompts}, {where} (claudinator resume {s.id[:8]})")
+        agent = _agent(session, args.agent) if args.agent else None
+        for a in session.agents:
+            if agent is None or a.id == agent:
+                _emit(f"agent {a.id[:8]}  {a.agent_type or ''}  {a.description or ''}".rstrip())
+        speaker = None
+        for m in archive.conversation(s.id, agent):
+            if not m.text.strip() and m.kind is not Kind.TOOL_OUTPUT:
+                continue
+            if (who := "you" if m.kind is Kind.PROMPT else "claude") != speaker:
+                _emit(f"\n{_when(m.ts)}  {who}")
+                speaker = who
+            match m.kind:
+                case Kind.TOOL_CALL:
+                    _emit(f"  > {_clip(' '.join(m.text.split()), 200)}")
+                    if m.spawned:
+                        _emit(f"    (subagent: claudinator show {s.id[:8]} --agent {m.spawned[:8]})")
+                case Kind.TOOL_OUTPUT:
+                    lines = m.text.splitlines() or [""]
+                    if args.full:
+                        _emit("  < " + "\n    ".join(lines))
+                    else:
+                        more = f"  ({len(lines)} lines)" if len(lines) > 1 else ""
+                        _emit(f"  < {_clip(lines[0], 160)}{more}")
+                case _:
+                    _emit(_indent(m.text))
     return 0
 
 
-def cmd_resume(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
+def cmd_resume(cfg: Config, args: argparse.Namespace) -> int:
     """Restore the main transcript if Claude Code deleted it, then replace
     this process with `claude --resume` in the session's directory. Checks
     that both can work before it writes anything. The only writer under
     ~/.claude."""
-    s = archive.session(args.id).summary
-    command = ["claude", "--resume", s.id]
-    if not s.cwd or not os.path.isdir(s.cwd):
-        _emit(f"claudinator: the session's directory {_short(s.cwd)} no longer exists. Resume it from another one with:")
-        _emit(f"  {shlex.join(command)}")
-        return 1
-    if shutil.which("claude") is None:
-        _emit(f"claudinator: claude is not on PATH. Run: cd {shlex.quote(s.cwd)} && {shlex.join(command)}")
-        return 1
-    try:
-        _restore(archive, s)
-    except OSError as e:
-        _emit(f"claudinator: cannot restore {_short(str(s.transcript))}: {e.strerror or e}", file=sys.stderr)
-        return 1
+    with _opened(cfg, fresh=True) as archive:
+        s = archive.session(args.id).summary
+        command = ["claude", "--resume", s.id]
+        if not s.cwd or not os.path.isdir(s.cwd):
+            _emit(f"claudinator: the session's directory {_short(s.cwd)} no longer exists. Resume it from another one with:")
+            _emit(f"  {shlex.join(command)}")
+            return 1
+        if shutil.which("claude") is None:
+            _emit(f"claudinator: claude is not on PATH. Run: cd {shlex.quote(s.cwd)} && {shlex.join(command)}")
+            return 1
+        try:
+            _restore(archive, s)
+        except OSError as e:
+            _emit(f"claudinator: cannot restore {_short(str(s.transcript))}: {e.strerror or e}", file=sys.stderr)
+            return 1
     _exec(s.cwd, command)
     return 0
 
@@ -219,19 +220,24 @@ def _restore(archive: Archive, s: SessionSummary) -> None:
         staged.unlink(missing_ok=True)
 
 
-def cmd_export(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
+def cmd_export(cfg: Config, args: argparse.Namespace) -> int:
     if sys.stdout.isatty():
         _emit("claudinator: export writes the raw transcript; redirect it to a file", file=sys.stderr)
         return 2
-    session = archive.session(args.id)
-    agent = _agent(session, args.agent) if args.agent else None
-    archive.export(session.summary.id, sys.stdout.buffer, agent, args.generation)
+    with _opened(cfg, fresh=True) as archive:
+        session = archive.session(args.id)
+        agent = _agent(session, args.agent) if args.agent else None
+        archive.export(session.summary.id, sys.stdout.buffer, agent, args.generation)
     sys.stdout.buffer.flush()
     return 0
 
 
-def cmd_status(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
-    return _print_status(archive, archive.status(), swept)
+def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
+    """Sweeps first like every read command, and judges that sweep itself
+    instead of noting it, so its errors and refusal are reported once."""
+    with _opened(cfg, fresh=False) as archive:
+        swept = archive.sweep(wait=False)
+        return _print_status(archive, archive.status(), swept)
 
 
 def _print_status(archive: Archive, st: Status, swept: SweepReport) -> int:
@@ -276,19 +282,19 @@ def _print_status(archive: Archive, st: Status, swept: SweepReport) -> int:
     return 1 if not loaded or failed or failed_now or stale or st.unclassified else 0
 
 
-def cmd_install(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
+def cmd_install(cfg: Config, args: argparse.Namespace) -> int:
     executable = _executable()
-    cfg = archive.cfg
     paths = {"CLAUDINATOR_DB": cfg.db, "CLAUDE_CONFIG_DIR": cfg.claude_dir}
     env = {var: str(path) for var, path in paths.items() if os.environ.get(var)}
-    changed = launchd.install(executable, cfg.db.parent / "sweep.log", env)
-    state = "installed" if changed else "already installed"
-    _emit(f"{state} {launchd.LABEL}: `{executable} sweep` hourly and at login")
-    progress = _progress if sys.stderr.isatty() else None
-    report = archive.sweep(wait=True, progress=progress)
-    if progress:
-        _emit(file=sys.stderr)
-    return _print_status(archive, archive.status(), report)
+    with _opened(cfg, fresh=False) as archive:
+        changed = launchd.install(executable, cfg.db.parent / "sweep.log", env)
+        state = "installed" if changed else "already installed"
+        _emit(f"{state} {launchd.LABEL}: `{executable} sweep` hourly and at login")
+        progress = _progress if sys.stderr.isatty() else None
+        report = archive.sweep(wait=True, progress=progress)
+        if progress:
+            _emit(file=sys.stderr)
+        return _print_status(archive, archive.status(), report)
 
 
 def cmd_uninstall(cfg: Config, args: argparse.Namespace) -> int:
@@ -298,18 +304,20 @@ def cmd_uninstall(cfg: Config, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_sweep(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
-    report = archive.sweep(wait=True)
+def cmd_sweep(cfg: Config, args: argparse.Namespace) -> int:
+    with _opened(cfg, fresh=False) as archive:
+        report = archive.sweep(wait=True)
     _emit(f"{datetime.fromtimestamp(report.finished / 1000).isoformat(timespec='seconds')} {_report(report)}")
     for error in report.errors:
         _emit(f"  {error}")
     return 1 if report.errors or report.refused else 0
 
 
-def cmd_rebuild(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
-    _emit(f"rebuilt the search index from {archive.rebuild(force=True)} archived transcript generations")
+def cmd_rebuild(cfg: Config, args: argparse.Namespace) -> int:
+    with _opened(cfg, fresh=False) as archive:
+        replayed = archive.rebuild(force=True)
+    _emit(f"rebuilt the search index from {replayed} archived transcript generations")
     return 0
-
 
 
 def _parser(now: Millis) -> argparse.ArgumentParser:
@@ -335,12 +343,9 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
-    def command(name: str, run: Callable[..., int], about: str, needs: _Needs) -> argparse.ArgumentParser:
-        """A read command needs FRESH: it archives new bytes before it
-        answers, so it sees the turn that just finished in another terminal
-        without any hook."""
+    def command(name: str, run: Callable[[Config, argparse.Namespace], int], about: str) -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=about)
-        p.set_defaults(run=run, needs=needs)
+        p.set_defaults(run=run)
         return p
 
     def window(p: argparse.ArgumentParser, limit: int) -> None:
@@ -349,26 +354,26 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
         p.add_argument("--until", type=when, metavar="WHEN")
         p.add_argument("--limit", type=checked(positive), default=limit, metavar="N")
 
-    p = command("search", cmd_search, "find sessions where every word appears", _Needs.FRESH)
+    p = command("search", cmd_search, "find sessions where every word appears")
     p.add_argument("words", nargs="+", metavar="WORDS", help='"a phrase" in quotes, deploy* for a prefix')
     p.add_argument("--tools", action="store_true", help="also search tool calls and tool output")
     window(p, 20)
-    window(command("sessions", cmd_sessions, "list sessions by last activity", _Needs.FRESH), 30)
-    p = command("show", cmd_show, "print a conversation from the archive", _Needs.FRESH)
+    window(command("sessions", cmd_sessions, "list sessions by last activity"), 30)
+    p = command("show", cmd_show, "print a conversation from the archive")
     p.add_argument("id", type=ref, metavar="ID")
     p.add_argument("--agent", type=agent, metavar="AID", help="print one subagent's transcript")
     p.add_argument("--full", action="store_true", help="print tool output in full")
-    p = command("resume", cmd_resume, "run claude --resume, restoring a deleted transcript first", _Needs.FRESH)
+    p = command("resume", cmd_resume, "run claude --resume, restoring a deleted transcript first")
     p.add_argument("id", type=ref, metavar="ID")
-    p = command("export", cmd_export, "write the archived transcript byte for byte", _Needs.FRESH)
+    p = command("export", cmd_export, "write the archived transcript byte for byte")
     p.add_argument("id", type=ref, metavar="ID")
     p.add_argument("--agent", type=agent, metavar="AID")
     p.add_argument("--generation", type=int, metavar="N", help="an earlier generation of a rewritten file")
-    command("status", cmd_status, "archive size, coverage, and sweeper health", _Needs.FRESH)
-    command("sweep", cmd_sweep, "archive new bytes now", _Needs.ARCHIVE)
-    command("rebuild", cmd_rebuild, "re-derive the search index from the archive", _Needs.ARCHIVE)
-    command("install", cmd_install, "load the hourly sweeper and archive everything on disk", _Needs.ARCHIVE)
-    command("uninstall", cmd_uninstall, "unload the sweeper; the database stays", _Needs.CONFIG)
+    command("status", cmd_status, "archive size, coverage, and sweeper health")
+    command("sweep", cmd_sweep, "archive new bytes now")
+    command("rebuild", cmd_rebuild, "re-derive the search index from the archive")
+    command("install", cmd_install, "load the hourly sweeper and archive everything on disk")
+    command("uninstall", cmd_uninstall, "unload the sweeper; the database stays")
     return parser
 
 
