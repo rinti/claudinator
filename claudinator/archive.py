@@ -418,15 +418,13 @@ class _Next:
 
 def _next(path: Path, a: _Archived | None) -> _Next | None:
     """The next segment to archive of a file whose latest archived
-    generation is a, or None when there is none yet: the file is gone,
+    generation is a, or None when there is none yet: the file is
     unchanged, a copy still being written, empty, or has no complete new
     line and has not settled. A sweep calls it outside the lock to skip
     files with nothing to do, and _ingest_segment calls it again under the
-    lock, so the two cannot disagree."""
-    try:
-        fd = os.open(path, os.O_RDONLY)
-    except FileNotFoundError:
-        return None
+    lock, so the two cannot disagree. Raises OSError, FileNotFoundError for
+    a file deleted meanwhile included, for _failed to map."""
+    fd = os.open(path, os.O_RDONLY)
     try:
         st = os.fstat(fd)
         settled = _settled(st)
@@ -443,6 +441,14 @@ def _next(path: Path, a: _Archived | None) -> _Next | None:
     finally:
         os.close(fd)
     return _Next(generation, cursor, window, chunk, settled) if chunk else None
+
+
+def _doc_stat(path: Path, stored: tuple[int, int] | None) -> os.stat_result | None:
+    """The stat of a side file whose size and mtime differ from the pair
+    stored with its body, else None: a file that matches is not read.
+    Raises OSError, FileNotFoundError included, for _failed to map."""
+    st = path.stat()
+    return st if (st.st_size, st.st_mtime_ns) != stored else None
 
 
 def _settled(st: os.stat_result) -> bool:
@@ -1061,64 +1067,59 @@ class Archive:
         """Store the latest bytes of each side file whose sha256 changed. A
         file whose size and mtime match its row is not read, and the lock is
         taken only when some file's do not. Under the lock each such file is
-        stat'ed, read, and compared with its row as it is then, so a sweep
-        never overwrites a body another sweep committed with older bytes, or
-        stamps that body with the stat of its own read. DESKTOP docs get
-        their session id from the body."""
-        errors = []
-        rows = self._db.execute("SELECT path, size, mtime_ns FROM doc")
-        known = {path: (size, mtime_ns) for path, size, mtime_ns in rows}
-        changed = []
+        decided again against its row as it is then, so a sweep never
+        overwrites a body another sweep committed with older bytes, or
+        stamps that body with the stat of its own read."""
+        rows = self._db.execute("SELECT path, size, mtime_ns FROM doc").fetchall()
+        stored = {path: (size, mtime_ns) for path, size, mtime_ns in rows}
+        seen, changed = _Delta(), []
         for d in docs:
             try:
-                st = d.path.stat()
-            except FileNotFoundError:
-                continue
+                if _doc_stat(d.path, stored.get(str(d.path))):
+                    changed.append(d)
             except OSError as e:
-                errors.append(f"{d.path}: {e!r}")
-                continue
-            if known.get(str(d.path)) != (st.st_size, st.st_mtime_ns):
-                changed.append(d)
+                seen += _failed(str(d.path), e)
         if not changed:
-            return _Delta(errors=tuple(errors))
-        stored = 0
+            return seen
+        written = _Delta()
         try:
             with self._write(wait=wait):
                 for d in changed:
-                    row = self._db.execute("SELECT size, mtime_ns, sha256 FROM doc WHERE path = ?", (str(d.path),))
-                    size, mtime_ns, sha = row.fetchone() or (None, None, None)
                     try:
-                        st = d.path.stat()  # before the read, so a write during it shows up as a change next time
-                        if (size, mtime_ns) == (st.st_size, st.st_mtime_ns):
-                            continue
-                        body = d.path.read_bytes()
-                    except FileNotFoundError:
-                        continue
+                        written += self._store_doc(d)
                     except OSError as e:
-                        errors.append(f"{d.path}: {e!r}")
-                        continue
-                    if (digest := hashlib.sha256(body).digest()) == sha:
-                        self._db.execute(
-                            "UPDATE doc SET size = ?, mtime_ns = ? WHERE path = ?",
-                            (st.st_size, st.st_mtime_ns, str(d.path)),
-                        )
-                        continue
-                    session_id = d.session_id
-                    if d.role is DocRole.DESKTOP and (desktop := desktop_session(body)) is not None:
-                        session_id = desktop.cli_session_id
-                    self._db.execute(
-                        "INSERT INTO doc (path, role, session_id, agent_id, sha256, body, size, mtime_ns, archived_at)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                        " ON CONFLICT (path) DO UPDATE SET role = excluded.role, session_id = excluded.session_id,"
-                        " agent_id = excluded.agent_id, sha256 = excluded.sha256, body = excluded.body,"
-                        " size = excluded.size, mtime_ns = excluded.mtime_ns, archived_at = excluded.archived_at",
-                        (str(d.path), d.role.value, session_id, d.agent_id, digest, body,
-                         st.st_size, st.st_mtime_ns, now()),
-                    )
-                    stored += 1
+                        written += _failed(str(d.path), e)
         except Exception as e:
-            return _Delta(errors=tuple(errors)) + _failed("side files", e)
-        return _Delta(docs=stored, errors=tuple(errors))
+            return seen + _Delta(errors=written.errors) + _failed("side files", e)
+        return seen + written
+
+    def _store_doc(self, d: SideFile) -> _Delta:
+        """Store one side file's bytes if its sha256 changed, inside the
+        caller's transaction. DESKTOP docs get their session id from the
+        body."""
+        row = self._db.execute("SELECT size, mtime_ns, sha256 FROM doc WHERE path = ?", (str(d.path),)).fetchone()
+        if (st := _doc_stat(d.path, row and row[:2])) is None:
+            return _Delta()
+        body = d.path.read_bytes()  # after the stat, so a write during the read shows up as a change next time
+        digest = hashlib.sha256(body).digest()
+        if row and digest == row[2]:
+            self._db.execute(
+                "UPDATE doc SET size = ?, mtime_ns = ? WHERE path = ?", (st.st_size, st.st_mtime_ns, str(d.path))
+            )
+            return _Delta()
+        session_id = d.session_id
+        if d.role is DocRole.DESKTOP and (desktop := desktop_session(body)) is not None:
+            session_id = desktop.cli_session_id
+        self._db.execute(
+            "INSERT INTO doc (path, role, session_id, agent_id, sha256, body, size, mtime_ns, archived_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (path) DO UPDATE SET role = excluded.role, session_id = excluded.session_id,"
+            " agent_id = excluded.agent_id, sha256 = excluded.sha256, body = excluded.body,"
+            " size = excluded.size, mtime_ns = excluded.mtime_ns, archived_at = excluded.archived_at",
+            (str(d.path), d.role.value, session_id, d.agent_id, digest, body,
+             st.st_size, st.st_mtime_ns, now()),
+        )
+        return _Delta(docs=1)
 
     def _record(self, report: SweepReport) -> SweepReport:
         """Store report as the last sweep, or a refused one as the last

@@ -545,6 +545,22 @@ def test_a_side_file_with_the_same_size_and_mtime_is_not_read_again():
             meta_path().chmod(0o600)
 
 
+def test_a_side_file_that_cannot_be_read_is_one_error_and_the_others_are_stored():
+    append(transcript(), user("delegate"))
+    append(transcript(agent=AID), user("task"))
+    meta_path().write_text('{"description":"readable"}')
+    unreadable = projects() / SLUG / SID / "custom-title.json"
+    unreadable.write_text('{"customTitle":"Mine"}')
+    unreadable.chmod(0)
+    try:
+        with open_archive() as archive:
+            report = archive.sweep()
+            assert (report.docs_changed, report.errors) == (1, (f"{unreadable}: PermissionError(13, 'Permission denied')",))
+            assert description(archive) == "readable"
+    finally:
+        unreadable.chmod(0o600)
+
+
 def test_a_failure_partway_through_a_large_file_keeps_the_segments_before_it(monkeypatch):
     path = transcript()
     block = "y" * 1000
