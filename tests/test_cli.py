@@ -509,7 +509,7 @@ def deleted_session(capsys, tmp_path) -> tuple[Path, bytes]:
     return workdir, original
 
 
-def test_resume_never_shows_a_partial_transcript_at_its_path(capsys, tmp_path, monkeypatch, execs):
+def test_resume_never_shows_a_partial_transcript_at_its_path(capsys, tmp_path, monkeypatch):
     workdir, original = deleted_session(capsys, tmp_path)
     seen_while_writing = []
     real_export = archive_module.Archive.export
@@ -538,14 +538,14 @@ def test_resume_without_claude_on_path_writes_nothing_and_exits_1(capsys, tmp_pa
     assert execs == []
 
 
-def test_resume_without_its_directory_writes_nothing(capsys, tmp_path, execs):
+def test_resume_without_its_directory_writes_nothing(capsys, tmp_path):
     workdir, _ = deleted_session(capsys, tmp_path)
     workdir.rmdir()
     assert run(capsys, "resume", "8f2d")[0] == 1
     assert not transcript().exists()
 
 
-def test_resume_replaces_a_staged_file_left_by_a_dead_process_with_its_pid(capsys, tmp_path, execs):
+def test_resume_replaces_a_staged_file_left_by_a_dead_process_with_its_pid(capsys, tmp_path):
     _, original = deleted_session(capsys, tmp_path)
     stale = transcript().with_name(f".{transcript().name}.staged-{os.getpid()}")
     stale.write_bytes(b"half of an earlier restore")
@@ -566,7 +566,7 @@ def test_resume_that_cannot_write_the_transcript_says_so_and_exits_1(capsys, tmp
     assert execs == []
 
 
-def test_a_sweep_after_a_restore_archives_no_new_generation(capsys, tmp_path, execs):
+def test_a_sweep_after_a_restore_archives_no_new_generation(capsys, tmp_path):
     deleted_session(capsys, tmp_path)
     run(capsys, "resume", "8f2d")
     append(transcript(), user("the resumed session goes on"))
@@ -733,7 +733,7 @@ def test_uninstall_unloads_the_sweeper_whatever_state_the_archive_is_in(capsys, 
     archive(db)
     before = db.read_bytes() if db.exists() else None
     launchctl.loaded = True
-    code, out, _ = run(capsys, "uninstall")
+    code, _, _ = run(capsys, "uninstall")
     assert (code, launchctl.loaded) == (0, False)
     assert (db.read_bytes() if db.exists() else None) == before
 
@@ -796,7 +796,7 @@ def test_an_agent_file_name_with_a_control_character_is_unknown_and_shown_escape
     assert "\\x1b]52;c;ZXZpbA==\\x07.jsonl\n" in out
 
 
-def test_a_session_directory_with_a_control_character_is_shown_escaped(capsys, tmp_path, monkeypatch, execs):
+def test_a_session_directory_with_a_control_character_is_shown_escaped(capsys, tmp_path, monkeypatch):
     workdir = tmp_path / "project\x1b]0;owned\x07"
     workdir.mkdir()
     append(transcript(), user("hello", cwd=str(workdir)))
@@ -831,7 +831,7 @@ def test_install_retries_a_bootstrap_that_fails_while_the_bootout_finishes(capsy
     assert len(sleeps) == 2
 
 
-def test_install_gives_up_on_a_bootstrap_that_keeps_failing(capsys, home, launchctl):
+def test_install_gives_up_on_a_bootstrap_that_keeps_failing(capsys, launchctl):
     launchctl.bootstrap_exits = [5] * 100
     code, _, err = run(capsys, "install")
     assert (code, launchctl.loaded) == (1, False)

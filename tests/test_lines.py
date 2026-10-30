@@ -8,6 +8,7 @@ from helpers import line, user
 
 PAUSED = user("the paused writer's quokka")
 WHOLE = user("a whole wombat")
+ROW = b"x" * 99 + b"\n"
 
 
 def shapes(found) -> list[tuple[int, type, bool]]:
@@ -61,13 +62,12 @@ def file(tmp_path):
 
 
 def test_a_segment_ends_at_the_first_newline_past_segment_bytes_and_says_more_may_follow(file):
-    row = b"x" * 99 + b"\n"
-    data = row * (SEGMENT_BYTES * 3 // 2 // len(row))
+    data = ROW * (SEGMENT_BYTES * 3 // 2 // len(ROW))
     fd = file(data)
     try:
         chunk, more = next_segment(fd, 0, len(data), settled=False)
-        assert (len(chunk) >= SEGMENT_BYTES, len(chunk) % len(row), more) == (True, 0, True)
-        assert len(chunk) < SEGMENT_BYTES + len(row)
+        assert (len(chunk) >= SEGMENT_BYTES, len(chunk) % len(ROW), more) == (True, 0, True)
+        assert len(chunk) < SEGMENT_BYTES + len(ROW)
         assert next_segment(fd, len(chunk), len(data), settled=False) == (data[len(chunk) :], False)
     finally:
         os.close(fd)
@@ -89,9 +89,6 @@ def test_a_line_longer_than_a_segment_is_one_segment(file):
         assert next_segment(fd, 0, len(long) + 5, settled=False) == (long, True)
     finally:
         os.close(fd)
-
-
-ROW = b"x" * 99 + b"\n"
 
 
 @pytest.mark.parametrize(

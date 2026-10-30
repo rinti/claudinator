@@ -73,7 +73,7 @@ def test_search_input_is_never_fts_syntax(term):
     append(transcript(), user('this is NOT a drill: a or b, col x, start "quoted" (x y)'))
     with open_archive() as archive:
         archive.sweep()
-        assert isinstance(archive.search(Query((term,))), list)
+        archive.search(Query((term,)))
         assert matching(archive, "NOT") == [SID]
         assert matching(archive, "a OR b") == [SID]
 

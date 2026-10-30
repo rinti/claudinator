@@ -179,15 +179,19 @@ def test_side_files_are_archived_when_they_change(home):
         assert archive.sweep().docs_changed == 1
 
 
+def set_meta(key: str, value: str) -> None:
+    db = sqlite3.connect(Config.from_env().db)
+    db.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
+    db.commit()
+    db.close()
+
+
 def test_older_claudinator_reads_but_refuses_to_sweep_a_newer_archive():
     path = transcript()
     append(path, user("archived by the newer version"))
     with open_archive() as archive:
         archive.sweep()
-    db = sqlite3.connect(Config.from_env().db)
-    db.execute("UPDATE meta SET value = '99' WHERE key = 'archive_schema'")
-    db.commit()
-    db.close()
+    set_meta("archive_schema", "99")
     append(path, user("new bytes"))
     with open_archive() as archive:
         report = archive.sweep()
@@ -196,7 +200,7 @@ def test_older_claudinator_reads_but_refuses_to_sweep_a_newer_archive():
         assert exported(archive) == user("archived by the newer version")
 
 
-def test_classify_knows_the_layout(home):
+def test_classify_knows_the_layout():
     cfg = Config.from_env()
     p = cfg.claude_dir / "projects" / SLUG
     desktop = cfg.desktop_dir / "claude-code-sessions"
@@ -235,10 +239,7 @@ def test_missing_claude_directories_are_not_errors():
 def test_an_archive_stamped_with_an_older_schema_is_refused_not_migrated():
     with open_archive():
         pass
-    db = sqlite3.connect(Config.from_env().db)
-    db.execute("UPDATE meta SET value = '0' WHERE key = 'archive_schema'")
-    db.commit()
-    db.close()
+    set_meta("archive_schema", "0")
     with pytest.raises(ArchiveError, match="archive schema 0"):
         open_archive()
     db = sqlite3.connect(Config.from_env().db)
@@ -259,13 +260,6 @@ def test_the_database_and_its_wal_files_are_private_whatever_the_umask(tmp_path,
     finally:
         os.umask(previous)
     assert modes == {"archive.db": 0o600, "archive.db-wal": 0o600, "archive.db-shm": 0o600}
-
-
-def set_meta(key: str, value: str) -> None:
-    db = sqlite3.connect(Config.from_env().db)
-    db.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value))
-    db.commit()
-    db.close()
 
 
 def test_an_open_archive_stops_writing_once_a_newer_claudinator_takes_over():
