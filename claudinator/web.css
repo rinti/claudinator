@@ -90,6 +90,7 @@ main > .day:first-child { margin-block-start: 0; }
 
 .call, .step.output, .hidden { font: var(--small)/1.45 var(--mono); color: var(--faint); }
 summary { cursor: pointer; list-style: none; }
+summary:active { background: color-mix(in oklch, var(--rule) 70%, transparent); }
 summary::-webkit-details-marker { display: none; }
 summary::before { content: "▸"; display: inline-block; inline-size: 2ch; font-style: normal; }
 details[open] > summary::before { content: "▾"; }
