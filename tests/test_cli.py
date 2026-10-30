@@ -35,7 +35,7 @@ from helpers import (
 )
 
 REAL_EXECUTABLE = cli._executable
-NOW = 1790848800000 + 60_000  # a minute after the fixtures' 2026-10-01T10:00Z
+NOW = 1790848800000 + 60_000
 
 
 def run(capsys, *argv: str) -> tuple[int, str, str]:

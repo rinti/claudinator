@@ -1,5 +1,3 @@
-"""Build Claude Code transcript trees under a temp HOME."""
-
 import io
 import json
 import os
@@ -92,13 +90,10 @@ def exported(archive: Archive, sid: str = SID, agent: str | None = None, generat
 
 
 def found(archive: Archive, *terms: str, tools: bool = False) -> int:
-    """Matching units across all sessions."""
     return sum(hit.hits for hit in archive.search(Query(terms, tools=tools, limit=1000)))
 
 
 def projection_dump(archive: Archive, root: Path) -> list[tuple]:
-    """Every transcript row and every entry with the text it indexes, keyed
-    by path relative to root, so two databases can be compared."""
     db = sqlite3.connect(archive.cfg.db)
     try:
         dump = []

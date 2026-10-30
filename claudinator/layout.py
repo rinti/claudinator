@@ -1,7 +1,3 @@
-"""Where Claude Code keeps transcripts and side files on disk, and the
-walk that finds them. classify() is the only code that knows these path
-shapes."""
-
 from __future__ import annotations
 
 import enum
@@ -15,16 +11,16 @@ from claudinator.record import AgentId, SessionId
 
 
 class DocRole(enum.StrEnum):
-    SUBAGENT_META = "subagent-meta"  # <sid>/subagents/agent-<aid>.meta.json
-    SESSION_FILE = "session-file"  # any other non-.jsonl file under <slug>/<sid>/, except tool-results/
-    DESKTOP = "desktop"  # <desktop>/claude-code-sessions/*/*/local_*.json
+    SUBAGENT_META = "subagent-meta"
+    SESSION_FILE = "session-file"
+    DESKTOP = "desktop"
 
 
 @dataclass(frozen=True, slots=True)
 class Config:
-    db: Path  # $CLAUDINATOR_DB or ~/.claudinator/claudinator.db
-    claude_dir: Path  # $CLAUDE_CONFIG_DIR or ~/.claude
-    desktop_dir: Path  # ~/Library/Application Support/Claude
+    db: Path
+    claude_dir: Path
+    desktop_dir: Path
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Config:
@@ -45,14 +41,14 @@ class Config:
 class TranscriptFile:
     path: Path
     session_id: SessionId
-    agent_id: AgentId | None  # None = main transcript
+    agent_id: AgentId | None
 
 
 @dataclass(frozen=True, slots=True)
 class SideFile:
     path: Path
     role: DocRole
-    session_id: SessionId | None  # DESKTOP: None until the body is parsed
+    session_id: SessionId | None
     agent_id: AgentId | None
 
 
@@ -60,8 +56,6 @@ Location = TranscriptFile | SideFile
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 AGENT_ID = re.compile(r"[0-9A-Za-z_-]+")
-"""An agent id, from the name of its file. It is printed and typed back
-as --agent, so a file name with any other character is unclassified."""
 _TOOL_RESULTS = re.compile(rf"[^/]+/{_UUID}/tool-results")
 
 _PROJECTS_LAYOUT: tuple[tuple[re.Pattern[str], Callable[[Path, re.Match[str]], Location | None]], ...] = (
@@ -87,8 +81,7 @@ _DESKTOP_LAYOUT = re.compile(r"[^/]+/[^/]+/local_[^/]+\.json")
 
 
 def classify(path: Path, cfg: Config) -> Location | None:
-    """The only code that knows Claude Code's on-disk layout.
-
+    """
         <claude>/projects/<slug>/<sid>.jsonl                           -> TranscriptFile(sid, None)
         <claude>/projects/<slug>/<sid>/subagents/agent-<aid>.jsonl     -> TranscriptFile(sid, aid)
         <claude>/projects/<slug>/<sid>/subagents/agent-<aid>.meta.json -> SideFile(SUBAGENT_META)
@@ -114,8 +107,6 @@ def classify(path: Path, cfg: Config) -> Location | None:
 
 @dataclass(frozen=True, slots=True)
 class Discovery:
-    """One walk of projects/ and the desktop sessions directory."""
-
     transcripts: tuple[TranscriptFile, ...]
     side_files: tuple[SideFile, ...]
     unclassified: tuple[Path, ...]  # *.jsonl under projects/ that classify() does not know

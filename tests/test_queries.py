@@ -25,8 +25,8 @@ from helpers import (
     user,
 )
 
-OCT_1 = 1790812800000  # 2026-10-01T00:00:00Z
-SEP_4 = 1788480000000  # 2026-09-04T00:00:00Z
+OCT_1 = 1790812800000
+SEP_4 = 1788480000000
 
 
 def matching(archive, *terms, **query) -> list[str]:
@@ -319,7 +319,7 @@ def test_search_prefers_an_excerpt_with_every_word_over_a_stronger_match_of_one(
 
 @pytest.mark.parametrize("read", ["sessions", "search"])
 def test_a_read_sees_one_snapshot_while_a_rebuild_commits_partway(monkeypatch, read):
-    newer, older = transcript(SID2), transcript()  # the sweep archives SID2's file first
+    newer, older = transcript(SID2), transcript()
     append(newer, user("the newer quokka session", ts="2026-10-02T10:00:00.000Z"))
     append(older, user("the older quokka session", ts="2026-10-01T10:00:00.000Z"))
     with open_archive() as archive:
@@ -331,7 +331,7 @@ def test_a_read_sees_one_snapshot_while_a_rebuild_commits_partway(monkeypatch, r
     def exists(path):
         if armed[0] and path == str(newer):
             armed[0] = False
-            other.rebuild(force=True)  # renumbers the entries: the newer file's come first now
+            other.rebuild(force=True)
         return real_exists(path)
 
     monkeypatch.setattr(os.path, "exists", exists)

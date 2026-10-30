@@ -1,7 +1,3 @@
-"""Search terms as FTS5 sees them and as an excerpt marks them: the FTS5
-expression for a term, token folding that agrees with the unicode61
-tokenizer, and the excerpt around a hit."""
-
 from __future__ import annotations
 
 import re
@@ -14,8 +10,7 @@ def fts_expr(term: str) -> str:
 
     The term becomes a quoted string ("" escapes "), and a trailing * stays
     outside the quotes as a prefix query. So "launchd agent" -> '"launchd
-    agent"' and sync* -> '"sync"*'. FTS5 operators are not exposed; nobody
-    has to learn them."""
+    agent"' and sync* -> '"sync"*'. FTS5 operators are not exposed."""
     word = term.rstrip("*")
     return '"' + word.replace('"', '""') + '"' + ("*" if word != term else "")
 
@@ -27,11 +22,6 @@ def searchable(terms: Iterable[str]) -> tuple[str, ...]:
 
 
 class _FoldTable(dict[int, str]):
-    """str.translate table that folds case and diacritics one character at a
-    time, so offsets in the folded text are offsets in the original. Agrees
-    with unicode61 remove_diacritics 2 on the scripts this Mac's transcripts
-    use. Filled on first sight of each character."""
-
     def __missing__(self, codepoint: int) -> str:
         folded = unicodedata.normalize("NFKD", chr(codepoint))[:1].lower()[:1]
         self[codepoint] = folded

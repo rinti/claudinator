@@ -1,5 +1,3 @@
-"""The hourly sweeper: plist rendering, bootstrap, bootout."""
-
 import os
 import plistlib
 import subprocess
@@ -18,12 +16,10 @@ class LaunchdError(Exception):
 
 
 def launchctl(*args: str) -> int:
-    """Run launchctl and return its exit status. The tests replace this."""
     return subprocess.run(["launchctl", *args], capture_output=True).returncode
 
 
 def sleep(seconds: float) -> None:
-    """The tests replace this."""
     time.sleep(seconds)
 
 

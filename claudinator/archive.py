@@ -1,11 +1,3 @@
-"""The archive: the only owner of the SQLite file.
-
-Ingests the bytes of the files layout.discover() finds as append-only zstd
-segments, folds the projection, answers queries, exports bytes, and rebuilds
-the projection. cli.py calls this module, which calls layout.py, lines.py,
-record.py, and search_text.py; nothing reaches past it into the database.
-"""
-
 from __future__ import annotations
 
 import enum
@@ -50,28 +42,10 @@ _ARCHIVE_DDL, _MARKER, _PROJECTION_DDL = (
 assert _MARKER, "schema.sql lost its -- @projection marker"
 
 ARCHIVE_SCHEMA = 2
-"""The shape of the archive layer. A new database is stamped with it, and a
-database stamped with any other value is not written. There are no
-migrations: none has been needed, and an untested one would be worse."""
-
 LOCK_WAIT_MS = 60_000
-"""How long a write that may wait (sweep(wait=True), rebuild) waits for
-another process's write lock before it gives up with Locked."""
-
 BUSY_MS = 5000
-"""How long a statement waits on another process's lock. Only BEGIN
-IMMEDIATE in _write sets its own wait, and only for that one statement."""
-
 TAIL_BYTES = 4096
-"""Each segment stores a sha256 of the file's last TAIL_BYTES bytes before
-its end. Before treating a file as unchanged or as an append, a sweep reads
-those bytes back from the file and compares, which catches a rewrite that
-kept the head and did not shrink the file."""
-
 SETTLE_SECONDS = 3600
-"""A file untouched this long with bytes after its last newline has a torn
-tail from a crashed writer. The sweep archives that tail so nothing on disk
-is left unarchived. A live writer never leaves a partial line for an hour."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,13 +73,13 @@ class SessionSummary:
     prompts: int
     subagents: int
     transcript: Path  # main transcript path; may no longer exist
-    on_disk: bool  # stat at read time; derived, never stored
+    on_disk: bool
 
 
 @dataclass(frozen=True, slots=True)
 class Subagent:
     id: AgentId
-    description: str | None  # from its .meta.json doc
+    description: str | None
     agent_type: str | None
     first_ts: Millis | None
 
@@ -120,7 +94,7 @@ class Session:
 class Excerpt:
     kind: Kind
     ts: Millis | None
-    agent_id: AgentId | None  # set when the hit is inside a subagent transcript
+    agent_id: AgentId | None
     text: str  # ~160 chars around the first matched term, single line
     marks: tuple[tuple[int, int], ...]  # [start, end) spans of matched terms in text
 
@@ -129,16 +103,16 @@ class Excerpt:
 class SessionHit:
     session: SessionSummary
     hits: int  # matching units in this session (main + subagents)
-    best: Excerpt  # highest bm25-ranked unit
+    best: Excerpt
 
 
 @dataclass(frozen=True, slots=True)
 class Message:
     ts: Millis | None
-    kind: Kind  # PROMPT | REPLY | TOOL_CALL | TOOL_OUTPUT
-    text: str  # full text; display truncation is the caller's choice
+    kind: Kind
+    text: str
     tool: str | None = None
-    spawned: AgentId | None = None  # TOOL_CALL that started this subagent
+    spawned: AgentId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,8 +132,7 @@ class SweepReport:
 @dataclass(frozen=True, slots=True)
 class Refusal:
     """A sweep that waited for the lock and was refused because a newer
-    claudinator had stamped the archive: the hourly sweeper of an older
-    install, usually."""
+    claudinator had stamped the archive."""
 
     at: Millis
     reason: str
@@ -172,8 +145,8 @@ class Pending:
     """A file a sweep would archive bytes of now."""
 
     path: Path
-    unarchived_bytes: int  # the length of its next segment, so a lower bound when more segments follow
-    settled: bool  # unchanged for SETTLE_SECONDS, so no writer is about to finish it
+    unarchived_bytes: int
+    settled: bool  # unchanged for SETTLE_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,14 +154,14 @@ class Status:
     checked_at: Millis
     db_path: Path
     db_bytes: int
-    archived_bytes: int  # sum of byte_end - byte_start
-    stored_bytes: int  # sum of length(zstd)
+    archived_bytes: int
+    stored_bytes: int
     sessions: int
     transcripts: int
     gone: int  # main transcripts no longer on disk (still in the archive)
     multi_generation: int  # files that were rewritten at least once
     unparsed_lines: int
-    pending: tuple[Pending, ...]  # files with bytes a sweep would archive now
+    pending: tuple[Pending, ...]
     unclassified: tuple[Path, ...]  # *.jsonl under projects/ in no known layout, so never archived
     last_sweep: SweepReport | None  # the last sweep that waited for the lock and was not refused
     last_refused: Refusal | None  # the last sweep that waited for the lock and was refused
@@ -222,18 +195,16 @@ class Locked(ArchiveError):
 
 
 class _Busy(Exception):
-    """Internal: BEGIN IMMEDIATE failed with SQLITE_BUSY under wait=False."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class _Delta:
-    """What part of a sweep did: one file, or the side files."""
-
     bytes: int = 0
-    rewritten: int = 0  # new generations started
-    docs: int = 0  # side-file bodies stored
+    rewritten: int = 0
+    docs: int = 0
     errors: tuple[str, ...] = ()
-    stop: _Busy | Locked | NewerArchive | None = None  # why the sweep ends here
+    stop: _Busy | Locked | NewerArchive | None = None
 
     def __add__(self, other: _Delta) -> _Delta:
         return _Delta(
@@ -246,10 +217,6 @@ class _Delta:
 
 
 def _failed(what: str, e: Exception) -> _Delta:
-    """What an exception means for a sweep. The one place that decides it:
-    another writer (wait=False), a lock held past LOCK_WAIT_MS, or a newer
-    claudinator ends the sweep; a file deleted meanwhile is nothing; any
-    other exception is one error, and the sweep goes on."""
     match e:
         case _Busy() | NewerArchive():
             return _Delta(stop=e)
@@ -263,20 +230,18 @@ def _failed(what: str, e: Exception) -> _Delta:
 
 @dataclass(frozen=True, slots=True)
 class _Archived:
-    """What the archive holds of one file: its latest generation."""
-
     source_id: int
     generation: int
-    head: bytes  # file bytes [0, len(head)) when the generation began
-    cursor: int  # archived end, from the last segment
-    tail: bytes  # sha256 of file bytes [cursor - TAIL_BYTES, cursor), from 0 in a short file
+    head: bytes
+    cursor: int
+    tail: bytes
 
 
 class Plan(enum.Enum):
-    UNCHANGED = "unchanged"  # the file is exactly what is archived
-    APPEND = "append"  # the archived bytes are a prefix of the file, and more follow
-    NEW_GENERATION = "new generation"  # the file was rewritten
-    WAIT = "wait"  # shorter but with the same head: a copy of the transcript still being written
+    UNCHANGED = "unchanged"
+    APPEND = "append"
+    NEW_GENERATION = "new generation"
+    WAIT = "wait"
 
 
 def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_head: bytes, file_window: bytes) -> Plan:
@@ -285,11 +250,8 @@ def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_h
     file_head is the file's bytes [0, len(head)), fewer if the file is
     shorter. file_window is its bytes [cursor - TAIL_BYTES, cursor), read
     only when size >= cursor. A shorter file with the same head waits until
-    it settles, because that is what a copy written in place looks like
-    halfway: `claudinator export ID > path`, the restore the README offers,
-    or a copy from a backup. Treating it as a rewrite would archive the
-    half as a new generation. Any other shorter file, a changed head, or a
-    changed window is a rewrite. A rewrite that keeps both the head and the
+    it settles. Any other shorter file, a changed head, or a changed window
+    is a rewrite. A rewrite that keeps both the head and the
     window is not detected."""
     head_kept = file_head == head[: len(file_head)]
     if size < cursor:
@@ -300,7 +262,6 @@ def plan(head: bytes, tail: bytes, cursor: int, size: int, settled: bool, file_h
 
 
 def _look(fd: int, a: _Archived, size: int, settled: bool) -> tuple[Plan, bytes]:
-    """plan() for an open file, and the window it compared."""
     n = min(TAIL_BYTES, a.cursor)
     window = pread(fd, n, a.cursor - n) if size >= a.cursor else b""
     return plan(a.head, a.tail, a.cursor, size, settled, pread(fd, len(a.head), 0), window), window
@@ -308,24 +269,15 @@ def _look(fd: int, a: _Archived, size: int, settled: bool) -> tuple[Plan, bytes]
 
 @dataclass(frozen=True, slots=True)
 class _Next:
-    """The next segment of a file, as a sweep would archive it now."""
-
-    generation: int  # of the source it extends or starts
-    cursor: int  # its first byte in the file; 0 starts a new source
-    window: bytes  # file bytes [cursor - TAIL_BYTES, cursor), matched against the archive's tail
-    chunk: bytes  # its bytes, never empty
-    settled: bool  # the file has not changed for SETTLE_SECONDS
-    more: bool  # another segment may follow it within the size this was planned against
+    generation: int
+    cursor: int
+    window: bytes
+    chunk: bytes
+    settled: bool
+    more: bool
 
 
 def _next(path: Path, a: _Archived | None) -> _Next | None:
-    """The next segment to archive of a file whose latest archived
-    generation is a, or None when there is none yet: the file is
-    unchanged, a copy still being written, empty, or has no complete new
-    line and has not settled. A sweep calls it outside the lock to skip
-    files with nothing to do, and _ingest_segment calls it again under the
-    lock, so the two cannot disagree. Raises OSError, FileNotFoundError for
-    a file deleted meanwhile included, for _failed to map."""
     fd = os.open(path, os.O_RDONLY)
     try:
         st = os.fstat(fd)
@@ -346,9 +298,6 @@ def _next(path: Path, a: _Archived | None) -> _Next | None:
 
 
 def _doc_stat(path: Path, stored: tuple[int, int] | None) -> os.stat_result | None:
-    """The stat of a side file whose size and mtime differ from the pair
-    stored with its body, else None: a file that matches is not read.
-    Raises OSError, FileNotFoundError included, for _failed to map."""
     st = path.stat()
     return st if (st.st_size, st.st_mtime_ns) != stored else None
 
@@ -358,22 +307,15 @@ def _settled(st: os.stat_result) -> bool:
 
 
 def now() -> Millis:
-    """The clock, for archive.py and cli.py alike."""
     return Millis(time.time_ns() // 1_000_000)
 
 
 def _create(path: Path) -> None:
-    """Build a new database in a private file and publish it whole.
-
-    The file is made with mode 0600, so its -wal and -shm files are too, and
-    gets the schema, WAL mode, and its version stamps before any other
-    process can see it. os.link then publishes it only if the path is still
-    free. A process that loses that race uses the winner's database, and no
-    process ever opens a half-made archive or switches its journal mode."""
+    """The file is made with mode 0600, so its -wal and -shm files are too."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     private = path.with_name(f".{path.name}.new-{os.getpid()}")
     for leftover in (private, Path(f"{private}-wal"), Path(f"{private}-shm")):
-        leftover.unlink(missing_ok=True)  # only a dead process with this pid can have left these
+        leftover.unlink(missing_ok=True)
     os.close(os.open(private, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
     try:
         db = sqlite3.connect(private, autocommit=True)
@@ -396,18 +338,10 @@ def _create(path: Path) -> None:
 
 @dataclass
 class Archive:
-    """The archive. Every public method is safe to call from many processes at
-    once: SQLite's write lock is the only serialization, held per segment,
-    and every write transaction re-reads the state it depends on after
-    taking the lock.
-
-    Hides: segments, zstd, derived cursors, generations, the projection and
-    its version, FTS syntax, path layouts, desktop/meta side files."""
+    """Every public method is safe to call from many processes at once."""
 
     cfg: Config
     _db: sqlite3.Connection = field(repr=False)
-
-    # -- lifecycle ----------------------------------------------------------
 
     @classmethod
     def open(cls, cfg: Config) -> Archive:
@@ -454,8 +388,6 @@ class Archive:
             except NewerArchive:
                 pass
 
-    # -- writing ------------------------------------------------------------
-
     def sweep(
         self,
         *,
@@ -465,16 +397,14 @@ class Archive:
         """Archive every byte on disk that is not archived yet. Idempotent:
         a second run with no file changes archives nothing.
 
-        wait=True (launchd, install, `claudinator sweep`): block on the write
-        lock up to LOCK_WAIT_MS per file, and record the report as the last
-        sweep, or as the last refusal when a newer claudinator's stamp
-        refused it, so status can say why without hiding the sweep that last
-        wrote. A sweep that gave up on the lock is not recorded. wait=False
-        (every read command): give up at the first busy lock and report
-        busy=True; the reader proceeds on what is already archived.
+        wait=True: block on the write lock up to LOCK_WAIT_MS per file, and
+        record the report as the last sweep, or as the last refusal when a
+        newer claudinator's stamp refused it. A sweep that gave up on the
+        lock is not recorded. wait=False: give up at the first busy lock and
+        report busy=True.
 
         A file that fails for any reason becomes one entry in errors and the
-        sweep moves on, so one bad file never keeps the rest unarchived."""
+        sweep moves on."""
         started = now()
         found = discover(self.cfg)
         total, changed = _Delta(errors=found.errors, stop=self._newer()), 0
@@ -507,10 +437,9 @@ class Archive:
 
     def rebuild(self, *, force: bool = False) -> int:
         """Drop and re-derive the projection from the archive in one write
-        transaction. open() runs it after an upgrade; `claudinator rebuild`
-        runs it with force=True. Readers in other processes keep seeing the
-        old projection (WAL snapshot) until commit. Returns how many sources
-        it replayed: one per transcript file and generation."""
+        transaction. Readers in other processes keep seeing the old
+        projection (WAL snapshot) until commit. Returns how many sources it
+        replayed: one per transcript file and generation."""
         with self._write(wait=True):
             if not force and self._projection_current():
                 return 0
@@ -520,8 +449,6 @@ class Archive:
                 self._project(source_id, records(self._segments(source_id)))
             self._set_meta("projection_version", str(PROJECTION_VERSION))
         return len(sources)
-
-    # -- reading ------------------------------------------------------------
 
     def search(self, q: Query) -> list[SessionHit]:
         """Sessions in which every term matches some eligible unit, best
@@ -613,8 +540,7 @@ class Archive:
     ) -> int:
         """Write the archived bytes of a transcript, byte for byte as Claude
         Code wrote them: the latest generation, or the one named. Returns
-        bytes written. This is what makes `claude --resume` possible after
-        Claude Code's cleanup deleted the file."""
+        bytes written."""
         with self._read():
             segments = self._segments(self._source(session_id, agent_id, generation))
         written = 0
@@ -641,7 +567,7 @@ class Archive:
                 try:
                     n = _next(loc.path, known.get(loc.path))
                 except OSError:
-                    continue  # the sweep that reads it reports why it cannot
+                    continue
                 if n is not None:
                     pending.append(Pending(loc.path, len(n.chunk), n.settled))
             last, refused = self._meta("last_sweep"), self._meta("last_refused")
@@ -662,15 +588,8 @@ class Archive:
                 last_refused=_known(Refusal, json.loads(refused)) if refused else None,
             )
 
-    # -- private -----------------------------------------------------------
-
     @contextmanager
     def _read(self) -> Iterator[None]:
-        """One read transaction around the statements of a public read
-        method, so they all see one snapshot even when another process
-        commits a sweep or a rebuild between them. Entry ids, for one, are
-        renumbered by every rebuild. In WAL mode a reader neither waits for
-        a writer nor holds one up."""
         self._db.execute("BEGIN")
         try:
             yield
@@ -680,13 +599,8 @@ class Archive:
 
     @contextmanager
     def _write(self, *, wait: bool, newer_ok: bool = False) -> Iterator[None]:
-        """One write transaction. The connection is in autocommit mode, so
-        every statement inside, DDL included, joins this transaction.
-
-        Raises NewerArchive when a newer claudinator has stamped the file,
-        checked under the lock because one may upgrade it while this
-        process has it open. newer_ok skips that check, for the one write
-        an older claudinator may make: the record of its refusal."""
+        """The connection is in autocommit mode, so every statement inside, DDL
+        included, joins this transaction."""
         self._db.execute(f"PRAGMA busy_timeout = {LOCK_WAIT_MS if wait else 0}")
         try:
             self._db.execute("BEGIN IMMEDIATE")
@@ -712,24 +626,6 @@ class Archive:
             raise
 
     def _ingest(self, f: TranscriptFile, hint: _Archived | None, wait: bool) -> _Delta:
-        """Archive and project the new complete lines of one transcript, one
-        segment per write transaction, so neither memory nor the time the
-        lock is held grows with the file. hint is what the archive held
-        before the sweep; a file with nothing to archive against it takes
-        no lock, and any other takes it once per segment.
-
-        Concurrency: each transaction reads the archived state, reads the
-        file, and writes, all under BEGIN IMMEDIATE. A second process
-        ingesting the same file blocks on the lock, then re-reads a cursor
-        that already covers the first one's bytes and archives only what is
-        newer, usually nothing. The segment primary key and the contiguity
-        trigger turn any bug that would double- or skip-archive into a failed
-        transaction.
-
-        Crash safety: a segment, its entry and FTS rows, and the transcript
-        facts commit together. A crash leaves the segments committed before
-        it, a line-aligned prefix of the file, and the next sweep goes on
-        from that cursor."""
         done = _Delta()
         try:
             more = _next(f.path, hint) is not None
@@ -742,9 +638,6 @@ class Archive:
         return done
 
     def _ingest_segment(self, f: TranscriptFile) -> tuple[_Delta, bool]:
-        """Archive and project the next segment of a file inside the caller's
-        transaction, if there is one, and say whether another may follow,
-        so the caller takes the lock again only then."""
         a = self._archived(f.path).get(f.path)
         if (n := _next(f.path, a)) is None:
             return _Delta(), False
@@ -767,13 +660,6 @@ class Archive:
         return _Delta(len(n.chunk), rewritten=n.generation > 0 and n.cursor == 0), n.more
 
     def _project(self, source_id: int, parsed: Iterable[tuple[int, Record, bool]]) -> None:
-        """Fold records into the projection. Shared by _ingest and rebuild;
-        must run inside a write transaction.
-
-        Total: each record's rows go in under a savepoint, and a record whose
-        fold or rows fail for any reason is rolled back to it and counts as
-        one unparsed line. The projection is disposable and must never keep
-        a segment from committing."""
         row = self._db.execute(
             "SELECT cwd, first_ts, last_ts, ai_title, custom_title, unparsed FROM transcript WHERE source_id = ?",
             (source_id,),
@@ -809,10 +695,6 @@ class Archive:
         )
 
     def _archived(self, path: Path | None = None) -> dict[Path, _Archived]:
-        """The latest generation of every archived file, or of one. Outside a
-        lock this is a hint for filtering; _ingest reads it again under the
-        lock. The cursor and tail come from the last segment through the
-        primary key; nothing about them is stored separately."""
         rows = self._db.execute(
             "SELECT s.path, s.id, s.generation, s.head, g.byte_end, g.tail"
             "  FROM source s"
@@ -825,26 +707,19 @@ class Archive:
         return {Path(row[0]): _Archived(*row[1:]) for row in rows}
 
     def _segments(self, source_id: int) -> Iterator[tuple[int, bytes]]:
-        """(byte_start, payload) of every segment of a source in file order.
-
-        The starts are read now, in the caller's snapshot, and each payload
-        by its key when the iterator reaches it. A segment never changes
-        once written, so that is the payload the snapshot holds, and no
-        statement stays open while the caller works on a segment. rebuild
-        projects as it reads, and once its DDL has run, the ROLLBACK TO
+        """rebuild projects as it reads, and once its DDL has run, the ROLLBACK TO
         with which _project drops a refused record aborts every statement
         open on the connection."""
         starts = self._starts(source_id)
         return ((start, self._payload(source_id, start)) for start in starts)
 
     def _starts(self, source_id: int) -> list[int]:
-        """The first byte of every segment of a source, in file order."""
         rows = self._db.execute("SELECT byte_start FROM segment WHERE source_id = ? ORDER BY byte_start", (source_id,))
         return [start for (start,) in rows.fetchall()]
 
     def _payload(self, source_id: int, start: int) -> bytes:
-        """The bytes of one segment. A lookup by primary key, so fetching its
-        one row finishes the statement."""
+        """A lookup by primary key, so fetching its one row finishes the
+        statement."""
         (blob,) = self._db.execute(
             "SELECT zstd FROM segment WHERE source_id = ? AND byte_start = ?", (source_id, start)
         ).fetchone()
@@ -858,8 +733,6 @@ class Archive:
     def _session_rows(
         self, filters: Filters, limit: int | None, prefix: str | None = None, ids: str | None = None
     ) -> list[sqlite3.Row]:
-        """The rows of _SESSIONS_SQL. ids, a JSON list of session ids, keeps
-        only those sessions."""
         cursor = self._db.cursor()
         cursor.row_factory = sqlite3.Row
         return cursor.execute(
@@ -895,20 +768,15 @@ class Archive:
         )
 
     def _entry_text(self, source_id: int, line_off: int, block: int) -> str:
-        """The text of one entry, from the record records() makes at
-        line_off: the last one there, which replaces a torn tail's Unparsed
-        when the line was mended."""
         made = [rec for off, rec, _ in records(self._line(source_id, line_off)) if off == line_off]
         try:
             return text_of(made[-1], block)
-        except LookupError:  # no record starts at line_off, or it has no such block
+        except LookupError:
             raise ArchiveError(
                 f"the archive is damaged: entry {block} of the line at byte {line_off} of source {source_id} has no text"
             ) from None
 
     def _line(self, source_id: int, offset: int) -> list[tuple[int, bytes]]:
-        """The pieces of the line that holds byte offset, as the segments
-        hold it (lines.line_at), reading only the segments it touches."""
         starts = self._starts(source_id)
         return line_at(starts, lambda k: self._payload(source_id, starts[k]), offset)
 
@@ -918,7 +786,6 @@ class Archive:
         ).fetchall()
 
     def _source(self, session_id: SessionId, agent_id: AgentId | None, generation: int | None = None) -> int:
-        """The latest generation of a transcript, or the one named."""
         row = self._db.execute(
             "SELECT id FROM source WHERE session_id = ? AND agent_id IS ? AND (?3 IS NULL OR generation = ?3)"
             " ORDER BY id DESC LIMIT 1",
@@ -930,12 +797,6 @@ class Archive:
         return row[0]
 
     def _store_docs(self, docs: Iterable[SideFile], wait: bool) -> _Delta:
-        """Store the latest bytes of each side file whose sha256 changed. A
-        file whose size and mtime match its row is not read, and the lock is
-        taken only when some file's do not. Under the lock each such file is
-        decided again against its row as it is then, so a sweep never
-        overwrites a body another sweep committed with older bytes, or
-        stamps that body with the stat of its own read."""
         rows = self._db.execute("SELECT path, size, mtime_ns FROM doc").fetchall()
         stored = {path: (size, mtime_ns) for path, size, mtime_ns in rows}
         seen, changed = _Delta(), []
@@ -960,13 +821,10 @@ class Archive:
         return seen + written
 
     def _store_doc(self, d: SideFile) -> _Delta:
-        """Store one side file's bytes if its sha256 changed, inside the
-        caller's transaction. DESKTOP docs get their session id from the
-        body."""
         row = self._db.execute("SELECT size, mtime_ns, sha256 FROM doc WHERE path = ?", (str(d.path),)).fetchone()
         if (st := _doc_stat(d.path, row[:2] if row else None)) is None:
             return _Delta()
-        body = d.path.read_bytes()  # after the stat, so a write during the read shows up as a change next time
+        body = d.path.read_bytes()
         digest = hashlib.sha256(body).digest()
         if row and digest == row[2]:
             self._db.execute(
@@ -988,10 +846,6 @@ class Archive:
         return _Delta(docs=1)
 
     def _record(self, report: SweepReport) -> SweepReport:
-        """Store report as the last sweep, or a refused one as the last
-        refusal, so status can tell a sweeper that cannot write from one
-        that stopped running, and a refusal never replaces the report of
-        the newer claudinator's own last sweep."""
         try:
             with self._write(wait=True, newer_ok=report.refused is not None):
                 if report.refused is None:
@@ -1004,8 +858,6 @@ class Archive:
         return report
 
     def _newer(self) -> NewerArchive | None:
-        """Whether a newer claudinator has stamped this archive, and so owns
-        its writes."""
         if (self._meta_int("archive_schema") or 0) > ARCHIVE_SCHEMA or (
             self._meta_int("projection_version") or 0
         ) > PROJECTION_VERSION:
@@ -1114,12 +966,9 @@ SELECT k.session_id, k.hits, e.source_id, e.line_off, e.block, e.kind, e.ts, s.a
 
 
 def _report(obj: dict) -> SweepReport:
-    """The stored last-sweep JSON as a SweepReport."""
     return replace(_known(SweepReport, obj), errors=tuple(obj.get("errors", ())))
 
 
 def _known[T](cls: type[T], obj: dict) -> T:
-    """A dataclass from its stored JSON. Keys this version does not know
-    come from a newer claudinator and are dropped."""
     names = {f.name for f in fields(cls)}
     return cls(**{k: v for k, v in obj.items() if k in names})

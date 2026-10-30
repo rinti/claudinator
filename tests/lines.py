@@ -1,9 +1,3 @@
-"""Real transcript lines from ~/.claude/projects.
-
-Long strings are cut to 100 characters and bulky bookkeeping keys (usage,
-classifier context) are dropped. Everything else is as Claude Code wrote it.
-"""
-
 HUMAN_PROMPT = r'''{"parentUuid":null,"isSidechain":false,"promptId":"5f7e897a-a85c-424f-99b4-305c9f023761","type":"user","message":{"role":"user","content":"in herdr i want ctrl+w to switch to next pane"},"uuid":"c6042a67-e720-42d1-8784-ca919b14c2bd","timestamp":"2026-09-28T16:07:04.057Z","permissionMode":"auto","origin":{"kind":"human"},"promptSource":"typed","turnOrigin":"human","userType":"external","entrypoint":"cli","cwd":"/Users/andreas/dotfiles","sessionId":"062efdab-c321-4283-a77f-88c6adb0683a","version":"2.1.283","gitBranch":"master"}'''
 
 SLASH_COMMAND = r'''{"parentUuid":"55a0720f-648f-4781-9134-55a992fa5bb5","isSidechain":false,"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n           …"},"uuid":"fd8b64d4-1c96-4f0e-9b89-208b7f810bb1","timestamp":"2026-10-08T07:00:03.638Z","userType":"external","entrypoint":"cli","cwd":"/Users/andreas/dotfiles","sessionId":"53aceeae-a783-4c6b-81b7-59c0e08916b6","version":"2.1.287","gitBranch":"master"}'''
@@ -72,7 +66,6 @@ BASH_STDOUT = r'''{"parentUuid":"62eb8c7d-4713-4cc3-8bdc-fcc2181223ea","isSidech
 
 LOCAL_COMMAND_STDOUT = r'''{"parentUuid":"7a51f96a-9ff2-4427-a1d4-9a2ab3e2ec65","isSidechain":false,"promptId":"ac1fc8a5-9da0-4b42-ac87-9d9cb6e5e2fb","type":"user","message":{"role":"user","content":"<local-command-stdout>(no content)</local-command-stdout>"},"uuid":"b6db0632-e1d2-43ea-a636-0f48d45ead47","timestamp":"2026-10-26T15:53:06.612Z","userType":"external","entrypoint":"cli","cwd":"/Users/andreas/dev/AmericanExpress-SST-CmsPoc","sessionId":"54a0102d-24ba-4830-8110-2cb3fd28ec52","version":"2.1.310","gitBranch":"tx"}'''
 
-# The content is kept whole here, past the 100-character cut, so the <command-args> tag survives.
 SLASH_COMMAND_WITH_ARGS = r'''{"parentUuid":"1bc07405-adba-4d82-a49b-8fc1967634ac","isSidechain":false,"promptId":"4ae783fe-193d-4951-a838-7b50674319a5","type":"user","message":{"role":"user","content":"<command-message>pstack:arena</command-message>\n<command-name>/pstack:arena</command-name>\n<command-args>Find a good solution to make them work</command-args>"},"uuid":"ccccb8c6-c8c9-47b2-ba19-ef1442735821","timestamp":"2026-10-16T13:28:01.188Z","origin":{"kind":"human"},"turnOrigin":"human","turnPosition":{"promptIndex":2,"turnIndex":16},"userType":"external","entrypoint":"cli","cwd":"/Users/andreas/dev/AmericanExpress-SST-CmsPoc","sessionId":"cdaaf9c9-40bd-4f62-9788-6fc940200acc","version":"2.1.299","gitBranch":"tx"}'''
 
 INTERRUPTED = r'''{"parentUuid":"4ca8693b-2b01-4606-9a8e-2d2cde790a1e","isSidechain":true,"promptId":"9d1ad29e-f342-4693-97a9-137b85fa4661","agentId":"a5d5d787ffe3d39bd","type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]},"uuid":"84cae154-6fb9-46f5-abc2-c3d445c2677a","timestamp":"2026-10-21T12:34:53.562Z","userType":"external","entrypoint":"cli","cwd":"/Users/andreas/dev/SBR-stockholmbusinessregion.se/.audit/baseline-a.json.bodies","sessionId":"12dee4d1-a080-4c43-9e1f-d51f889a0956","version":"2.1.303","gitBranch":"feature/query-performance"}'''

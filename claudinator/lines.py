@@ -1,10 +1,3 @@
-"""How a transcript's bytes become segments, and segments become lines.
-
-next_segment cuts the next segment of a file at a line boundary, and
-records turns consecutive segments back into the file's lines, a line that
-a settled tail left open across two segments included. No database: the
-archive hands these byte strings in and stores what they return."""
-
 from __future__ import annotations
 
 import os
@@ -15,10 +8,6 @@ from dataclasses import dataclass
 from claudinator.record import Record, Unparsed, parse
 
 SEGMENT_BYTES = 1 << 20
-"""Target uncompressed segment size. Measured on 82.9 MB of this Mac's
-transcripts with zstd level 3: per-line 2.9x, 128 KiB 4.2x, 1 MiB 4.8x,
-whole-file 5.0x. 1 MiB keeps random access to one line at one ~1 ms
-decompress while losing 4% versus whole files."""
 
 
 def pread(fd: int, n: int, offset: int) -> bytes:
@@ -60,12 +49,9 @@ def next_segment(fd: int, start: int, size: int, settled: bool) -> tuple[bytes, 
 
 @dataclass(frozen=True, slots=True)
 class _Open:
-    """A line the segments so far end inside: a settled tail, archived
-    before its writer finished the line."""
-
-    off: int  # where the line's bytes so far begin
-    data: bytes  # those bytes
-    torn: bool  # projected as one Unparsed, not as a record
+    off: int
+    data: bytes
+    torn: bool
 
 
 def records(
@@ -85,9 +71,7 @@ def records(
 
     before is the line the archive already ends inside, as its segments
     hold it (line_at); its records were projected with those segments,
-    so only what the new segments add is yielded. Ingest, rebuild,
-    conversation, and search read lines through here, so they agree on
-    every line."""
+    so only what the new segments add is yielded."""
     left = None
     for start, chunk in before:
         _, left = _chunk_records(start, chunk, left)
@@ -99,8 +83,6 @@ def records(
 def _chunk_records(
     start: int, chunk: bytes, left: _Open | None
 ) -> tuple[list[tuple[int, Record, bool]], _Open | None]:
-    """The records of one segment that follows a line left open, and the
-    line it leaves open."""
     found = []
     pos = 0
     if left is not None:
@@ -112,7 +94,7 @@ def _chunk_records(
                 found.append((left.off, whole, True))
             left = _Open(left.off, left.data + rest, False)
         elif not isinstance(alone := parse(rest), Unparsed) or not left.torn:
-            found.append((start, alone, False))  # glued onto torn bytes, or onto a record that lacked its newline
+            found.append((start, alone, False))
             left = _Open(start, rest, isinstance(alone, Unparsed))
         else:
             left = _Open(left.off, left.data + rest, True)
@@ -137,10 +119,7 @@ def line_at(starts: Sequence[int], payload: Callable[[int], bytes], offset: int)
     the newline at or after it, else through the last segment's end. starts
     are the segments' first bytes in file order, and payload(i) the bytes of
     segment i, called only for the segments the line touches. Usually one
-    piece of one segment; a line a settled tail left open spans more.
-
-    The archive asks for the line at an entry's offset to show its text, and
-    for the line that holds its last byte when it ends mid-line."""
+    piece of one segment; a line a settled tail left open spans more."""
     i = bisect_right(starts, offset) - 1
     if i < 0:
         return []

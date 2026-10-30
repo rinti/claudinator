@@ -1,6 +1,3 @@
-"""claudinator's command line. The boundary: every string from argv and the
-environment is parsed here, and every line a person reads is formatted here."""
-
 import argparse
 import os
 import re
@@ -51,8 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.flush()
         return code
     except BrokenPipeError:
-        # The reader (head, a closed less) is gone, which is how a pipe ends. Point stdout at
-        # /dev/null so the flush at exit does not fail again and turn exit 0 into 120.
+        # Point stdout at /dev/null so the flush at exit does not fail again and turn exit 0 into 120.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
     except AmbiguousSession as e:
@@ -70,10 +66,6 @@ def main(argv: list[str] | None = None) -> int:
 
 @contextmanager
 def _opened(cfg: Config, *, fresh: bool) -> Iterator[Archive]:
-    """The open archive. fresh archives new bytes first with wait=False, so
-    a read command sees the turn that just finished in another terminal
-    without any hook, and _note says on stderr what that sweep could not
-    do."""
     with Archive.open(cfg) as archive:
         if fresh:
             _note(archive.sweep(wait=False))
@@ -94,19 +86,17 @@ def parse_when(text: str, now: Millis) -> Millis:
         try:
             return Millis(int(local.timestamp()) * 1000)
         except (ValueError, OverflowError, OSError):
-            raise ValueError(f"{text!r} is out of range") from None  # its instant falls outside years 1 to 9999
+            raise ValueError(f"{text!r} is out of range") from None
     raise ValueError(f"expected 2026-10-01, 2026-10-01T14:00, 7d, or 12h, not {text!r}")
 
 
 def parse_ref(text: str) -> str:
-    """Session id prefix: [0-9a-f-]{4,36}, lowercased."""
     if re.fullmatch(r"[0-9a-f-]{4,36}", ref := text.lower()):
         return ref
     raise ValueError(f"expected at least 4 characters of an id, not {text!r}")
 
 
 def parse_agent(text: str) -> str:
-    """Agent id prefix, in the characters classify() admits, case kept."""
     if AGENT_ID.fullmatch(text):
         return text
     raise ValueError(f"expected the start of an agent id (letters, digits, - and _), not {text!r}")
@@ -176,8 +166,7 @@ def cmd_show(cfg: Config, args: argparse.Namespace) -> int:
 def cmd_resume(cfg: Config, args: argparse.Namespace) -> int:
     """Restore the main transcript if Claude Code deleted it, then replace
     this process with `claude --resume` in the session's directory. Checks
-    that both can work before it writes anything. The only writer under
-    ~/.claude."""
+    that both can work before it writes anything."""
     with _opened(cfg, fresh=True) as archive:
         s = archive.session(args.id).summary
         command = ["claude", "--resume", s.id]
@@ -198,18 +187,12 @@ def cmd_resume(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def _restore(archive: Archive, s: SessionSummary) -> None:
-    """Write the archived transcript back to its path if nothing is there.
-
-    The bytes go to a hidden sibling that classify() ignores, are synced,
-    and are published with os.link, which never replaces a file. So the
-    transcript path never holds a partial file, and a transcript that
-    appears in the meantime is left as it is."""
     final = s.transcript
     if final.exists():
         return
     final.parent.mkdir(parents=True, exist_ok=True)
     staged = final.with_name(f".{final.name}.restore-{os.getpid()}")
-    staged.unlink(missing_ok=True)  # only a dead process with this pid can have left it
+    staged.unlink(missing_ok=True)
     try:
         with os.fdopen(os.open(staged, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as f:
             archive.export(s.id, f)
@@ -237,20 +220,12 @@ def cmd_export(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
-    """Sweeps first like every read command, and judges that sweep itself
-    instead of noting it, so its errors and refusal are reported once."""
     with _opened(cfg, fresh=False) as archive:
         swept = archive.sweep(wait=False)
         return _print_status(archive.status(), swept, _cleanup_period(cfg))
 
 
 def _print_status(st: Status, swept: SweepReport, cleanup_days: int | None) -> int:
-    """Exit 1 when the sweeper is not loaded, the last sweep failed, an
-    older claudinator's sweep was refused after it, the last sweep is older
-    than two intervals, the sweep this command just ran failed or was
-    refused, or a transcript sits in a layout claudinator does not know (so
-    it is not being archived). That sweep is shown when it archived
-    something or failed."""
     loaded = launchd.loaded()
     last = st.last_sweep
     at = st.checked_at
@@ -307,9 +282,6 @@ def cmd_install(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def _cleanup_period(cfg: Config) -> int | None:
-    """cleanupPeriodDays from Claude Code's settings.json, None when it is
-    unset or the file cannot be read: missing, a directory, unreadable, or
-    deleted meanwhile."""
     try:
         return cleanup_period_days((cfg.claude_dir / "settings.json").read_bytes())
     except OSError:
@@ -408,15 +380,11 @@ def _agent(session: Session, ref: str) -> AgentId:
 
 
 def _exec(cwd: str, argv: list[str]) -> None:
-    """Replace this process. The tests replace this."""
     os.chdir(cwd)
     os.execvp(argv[0], argv)
 
 
 def _executable() -> Path:
-    """The claudinator the sweeper will run: the console script running now,
-    so the sweeper is the version that wrote its plist, else the one on
-    PATH. The tests replace this."""
     running = Path(sys.argv[0])
     for candidate in (running if running.name == "claudinator" else None, shutil.which("claudinator")):
         if candidate and Path(candidate).is_file():
@@ -427,8 +395,6 @@ def _executable() -> Path:
 
 
 def _note(report: SweepReport) -> None:
-    """What a read command's sweep-first could not do, on stderr. The exit
-    code stays the command's own; status is where sweeper health is judged."""
     if n := len(report.errors):
         _emit(f"claudinator: {n} error{'' if n == 1 else 's'} while archiving new bytes, the first: {report.errors[0]}",
               file=sys.stderr)
@@ -479,11 +445,6 @@ class Markup(str):
 
 
 def _emit(*parts: str, file: TextIO | None = None, end: str = "\n", flush: bool = False) -> None:
-    """The one way text reaches the terminal. Every part but Markup has its
-    control characters escaped by printable(), because transcripts, file
-    names, paths, and error messages that quote them all hold bytes a
-    writer chose. export does not come here: it writes the archived bytes,
-    not a terminal view."""
     text = "".join(part if isinstance(part, Markup) else printable(part) for part in parts)
     print(text, file=file or sys.stdout, end=end, flush=flush)
 
@@ -495,10 +456,7 @@ _INVISIBLE = re.compile("[\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2
 def printable(text: str) -> str:
     """text with every C0 and C1 control character except newline and tab
     written as a visible \\xNN escape, and every bidi control, zero-width
-    character, line or paragraph separator, and byte-order mark as \\uNNNN.
-    Transcripts hold escape sequences that would recolour the terminal,
-    move the cursor, or, through OSC 52, set the clipboard, and a bidi
-    override makes a title or a command read as something it is not."""
+    character, line or paragraph separator, and byte-order mark as \\uNNNN."""
     text = _CONTROL.sub(lambda m: f"\\x{ord(m[0]):02x}", text)
     return _INVISIBLE.sub(lambda m: f"\\u{ord(m[0]):04x}", text)
 

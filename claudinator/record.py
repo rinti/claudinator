@@ -1,10 +1,3 @@
-"""One JSONL line of a Claude Code transcript, as a Record, and the projection fold.
-
-Pure: no I/O, no sqlite, no clock. This is the drift boundary. It is the only
-module that reads Claude Code field names, transcript lines and side files
-alike.
-"""
-
 from __future__ import annotations
 
 import enum
@@ -15,28 +8,19 @@ from datetime import UTC, datetime, timedelta
 from typing import NewType
 
 PROJECTION_VERSION = 8
-"""Bump when parse() or project() would produce different rows for the same
-bytes, or when the projection section of schema.sql changes. open() compares
-this number only, so two builds that share it never rebuild over each other.
 
-tests/test_projection_golden.py projects a fixture corpus of real (redacted)
-lines and compares a digest of the rows, and a digest of the projection DDL
-without its comments, with the ones recorded for PROJECTION_VERSION, so a
-forgotten bump fails the suite instead of silently mixing projections."""
-
-SessionId = NewType("SessionId", str)  # transcript file stem, a UUID
-AgentId = NewType("AgentId", str)  # subagent file stem without "agent-"
+SessionId = NewType("SessionId", str)
+AgentId = NewType("AgentId", str)
 Millis = NewType("Millis", int)  # epoch milliseconds, UTC
 
 
 class Kind(enum.StrEnum):
-    """What a searchable unit is. The single list; schema.sql stores .value
-    and has no CHECK duplicating it."""
+    """What a searchable unit is."""
 
     PROMPT = "prompt"  # human-typed (main) or parent-written (subagent) user text
     REPLY = "reply"  # assistant text block
     TOOL_CALL = "tool_call"  # assistant tool_use: name + compact JSON input
-    TOOL_OUTPUT = "tool_output"  # user tool_result content text
+    TOOL_OUTPUT = "tool_output"
     TITLE = "title"  # ai-title or custom-title, one entry per change
 
 
@@ -48,10 +32,10 @@ TOOLS: frozenset[Kind] = frozenset({Kind.TOOL_CALL, Kind.TOOL_OUTPUT})
 class Block:
     """One displayable, indexable content block of a user or assistant line."""
 
-    kind: Kind  # never TITLE
+    kind: Kind
     text: str
-    tool: str | None = None  # TOOL_CALL: tool name
-    tool_use_id: str | None = None  # TOOL_CALL: links an Agent call to its subagent meta doc
+    tool: str | None = None
+    tool_use_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,8 +55,8 @@ class Turn:
 @dataclass(frozen=True, slots=True)
 class Title:
     text: str
-    custom: bool  # custom-title (/rename) outranks ai-title
-    ts: Millis | None = None  # the title line's own timestamp; none of this Mac's title lines has one
+    custom: bool
+    ts: Millis | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,8 +81,6 @@ Record = Turn | Title | Other | Unparsed
 
 @dataclass(frozen=True, slots=True)
 class Facts:
-    """Folded per-transcript facts; one transcript row. Owner: project()."""
-
     cwd: str | None = None
     first_ts: Millis | None = None
     last_ts: Millis | None = None
@@ -118,9 +100,8 @@ def parse(line: bytes) -> Record:
     """Total function from one JSONL line (without its newline) to a Record.
 
     It never raises. Anything it does not recognise becomes Other or
-    Unparsed, and the raw bytes stay in the archive for a later
-    PROJECTION_VERSION to reinterpret. Every str it returns is valid UTF-8
-    text that SQLite can store (see _text)."""
+    Unparsed. Every str it returns is valid UTF-8 text that SQLite can
+    store (see _text)."""
     try:
         obj = json.loads(line)
     except ValueError, RecursionError:
@@ -145,9 +126,8 @@ def parse(line: bytes) -> Record:
 def project(facts: Facts, record: Record) -> tuple[Facts, list[EntryDraft]]:
     """Fold one record into its transcript's facts and emit searchable units.
 
-    Pure and deterministic. Incremental ingest and rebuild both call it on the
-    same records in the same order, so the two paths produce identical rows.
-    The text for each EntryDraft is re-derived by the caller with text_of()."""
+    Pure and deterministic. The text for each EntryDraft is re-derived by the
+    caller with text_of()."""
     match record:
         case Unparsed():
             return replace(facts, unparsed=facts.unparsed + 1), []
@@ -165,10 +145,7 @@ def project(facts: Facts, record: Record) -> tuple[Facts, list[EntryDraft]]:
 
 
 def text_of(record: Record, block: int) -> str:
-    """The indexed and displayed text of entry `block` of this record.
-
-    Used for the FTS insert and for re-rendering a search hit from raw bytes,
-    so the indexed text and the shown text cannot drift apart."""
+    """The indexed and displayed text of entry `block` of this record."""
     match record:
         case Turn(blocks=blocks):
             for i, b in blocks:
@@ -187,7 +164,6 @@ class SubagentMeta:
 
 
 def subagent_meta(body: bytes) -> SubagentMeta:
-    """<sid>/subagents/agent-<aid>.meta.json -> what show and search need."""
     obj = _json_object(body)
     return SubagentMeta(_str(obj.get("description")), _str(obj.get("agentType")), _str(obj.get("toolUseId")))
 
@@ -209,7 +185,7 @@ def desktop_session(body: bytes) -> DesktopSession | None:
 def cleanup_period_days(settings: bytes) -> int | None:
     """<claude>/settings.json -> how many days Claude Code keeps a transcript
     after its last write, when the user set it to a whole number of days, 1
-    or more. Decoded leniently, like every side file."""
+    or more."""
     days = _json_object(settings).get("cleanupPeriodDays")
     return days if isinstance(days, int) and not isinstance(days, bool) and days >= 1 else None
 
@@ -234,10 +210,8 @@ def _turn(message: object, text_kind: Kind, ts: Millis | None, cwd: str | None) 
 
 
 def _from_a_person(blocks: tuple[tuple[int, Block], ...]) -> tuple[tuple[int, Block], ...]:
-    """Sort the blocks of a user line that a person (or a parent agent) is
-    behind. A line that carries a tool result is tool output throughout,
-    including any text Claude Code put next to it. Otherwise each text
-    block is what _typed() says it is."""
+    """A line that carries a tool result is tool output throughout,
+    including any text Claude Code put next to it."""
     if any(b.kind is Kind.TOOL_OUTPUT for _, b in blocks):
         return tuple((i, replace(b, kind=Kind.TOOL_OUTPUT)) for i, b in blocks)
     return tuple((i, t) for i, b in blocks if (t := _typed(b) if b.kind is Kind.PROMPT else b) is not None)
@@ -252,10 +226,6 @@ _COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 
 
 def _typed(block: Block) -> Block | None:
-    """A prompt block as what the person did. Claude Code wraps some of it:
-    a slash command becomes "/name args" and a ! shell command "! cmd", as
-    typed. The output of either is TOOL_OUTPUT. Claude Code's interrupt
-    marker is no prompt at all."""
     text = block.text
     if text.lstrip().startswith(_INTERRUPTED):
         return None
@@ -290,8 +260,6 @@ def _title(value: object, custom: bool, ts: Millis | None) -> Title | None:
 
 
 def _or(ts: Millis | None, fallback: Millis | None) -> Millis | None:
-    """A title entry's time: its own line's timestamp, else the latest
-    activity before it."""
     return ts if ts is not None else fallback
 
 
@@ -314,9 +282,6 @@ _END = datetime(9999, 12, 31, 10, tzinfo=UTC)
 
 
 def _millis(value: object) -> Millis | None:
-    """ISO 8601 ('2026-10-13T14:48:22.241Z') -> epoch ms. None on anything
-    else, and outside [1970-01-01T00:00Z, 9999-12-31T10:00Z), where the
-    local date the CLI prints may not exist in every time zone."""
     if not isinstance(value, str):
         return None
     try:
@@ -331,8 +296,6 @@ def _millis(value: object) -> Millis | None:
 
 
 def _result_text(content: object) -> str:
-    """tool_result content (str, or a list of text/image parts) -> text.
-    Images become "[image]". toolUseResult duplicates this and is ignored."""
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
@@ -356,9 +319,8 @@ _SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def _text(value: str) -> str:
-    """value with every lone surrogate replaced by U+FFFD. json.loads turns
-    an escape such as "\\ud800" with no partner into a str that is not valid
-    Unicode, and SQLite cannot store it."""
+    """json.loads turns an escape such as "\\ud800" with no partner into a
+    str that is not valid Unicode, and SQLite cannot store it."""
     try:
         value.encode()
     except UnicodeEncodeError:
@@ -367,9 +329,6 @@ def _text(value: str) -> str:
 
 
 def _json_object(body: bytes) -> dict:
-    """A JSON object from a side file, {} for anything else. The bytes are
-    read as UTF-8 with undecodable bytes replaced: these files are kept
-    verbatim and only a few fields of them are read."""
     try:
         obj = json.loads(body.decode("utf-8", "replace"))
     except ValueError, RecursionError:

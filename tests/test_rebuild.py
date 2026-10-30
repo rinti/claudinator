@@ -65,7 +65,7 @@ def test_incremental_projection_equals_rebuild(home):
                 if rnd.random() < 0.15:
                     settle(path)
                     if rnd.random() < 0.5:
-                        rest = rest[rest.find(b"\n") + 1 :]  # the writer died; its successor starts a fresh line
+                        rest = rest[rest.find(b"\n") + 1 :]
                 pending[path] = rest
             assert archive.sweep().errors == ()
         incremental = projection_dump(archive, home)

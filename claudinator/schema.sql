@@ -1,59 +1,31 @@
--- claudinator: one SQLite file, two layers.
---
--- Archive layer (above the @projection marker). The durable copy of every
--- transcript byte. Append-only and never dropped. It is created once, with
--- the database, and has no migrations: claudinator refuses a database whose
--- meta.archive_schema differs from archive.ARCHIVE_SCHEMA.
---
--- Projection layer (below the marker). A pure function of the archive layer
--- (claudinator/record.py). Dropped and recreated in one transaction whenever
--- meta.projection_version is older than record.PROJECTION_VERSION. An edit to
--- this section needs a version bump; tests/test_projection_golden.py says so.
---
--- Pragmas live in code, not here. archive._create sets journal_mode=WAL once,
--- on the private file it publishes; every connection sets synchronous=NORMAL,
--- foreign_keys=ON, and busy_timeout.
-
 CREATE TABLE meta (
-  key   TEXT PRIMARY KEY,   -- 'archive_schema' | 'projection_version' | 'last_sweep' | 'last_refused'
+  key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT;
 
--- One row per (transcript file, generation). A row exists only once its first
--- segment exists: both are inserted in the same transaction.
 CREATE TABLE source (
   id          INTEGER PRIMARY KEY,
-  path        TEXT    NOT NULL,            -- absolute path of the .jsonl file
-  generation  INTEGER NOT NULL DEFAULT 0,  -- +1 when the file stops being an append of what we archived
-  session_id  TEXT    NOT NULL,            -- from the path, never from file content
-  agent_id    TEXT,                        -- NULL = main transcript; else subagents/agent-<agent_id>.jsonl
+  path        TEXT    NOT NULL,
+  generation  INTEGER NOT NULL DEFAULT 0,
+  session_id  TEXT    NOT NULL,
+  agent_id    TEXT,
   head        BLOB    NOT NULL CHECK (length(head) BETWEEN 1 AND 1024),
-                                           -- file bytes [0, len(head)) when generation began; rewrite detector
-  first_seen  INTEGER NOT NULL,            -- epoch ms
+  first_seen  INTEGER NOT NULL,
   UNIQUE (path, generation)
 ) STRICT;
 CREATE INDEX source_by_session ON source (session_id, agent_id);
 
--- The archive proper. Concatenating a source's segments in byte_start order
--- reproduces the file's bytes [0, cursor) exactly, where cursor is the
--- byte_end of the last segment. The cursor is derived, never stored.
 CREATE TABLE segment (
   source_id   INTEGER NOT NULL REFERENCES source (id),
   byte_start  INTEGER NOT NULL,
   byte_end    INTEGER NOT NULL,
   tail        BLOB    NOT NULL CHECK (length(tail) = 32),
-                                  -- sha256 of file bytes [byte_end - 4096, byte_end), from 0 when byte_end < 4096;
-                                  -- read back from the file to tell an append from a rewrite (archive.TAIL_BYTES)
-  zstd        BLOB    NOT NULL,   -- one zstd frame of file bytes [byte_start, byte_end), at most ~1 MiB
-                                  -- uncompressed unless a single line is larger
-  archived_at INTEGER NOT NULL,   -- epoch ms
+  zstd        BLOB    NOT NULL,
+  archived_at INTEGER NOT NULL,
   PRIMARY KEY (source_id, byte_start),
   CHECK (byte_end > byte_start)
 ) STRICT;
 
--- Contiguity: a segment must start exactly where its source's archive ends.
--- Together with the primary key this makes a double ingest or a gap fail the
--- transaction instead of corrupting the archive.
 CREATE TRIGGER segment_contiguous
 BEFORE INSERT ON segment
 WHEN NEW.byte_start IS NOT COALESCE(
@@ -74,62 +46,47 @@ BEGIN SELECT RAISE(ABORT, 'the archive is append-only'); END;
 CREATE TRIGGER source_no_delete BEFORE DELETE ON source
 BEGIN SELECT RAISE(ABORT, 'the archive is append-only'); END;
 
--- Latest content of small side files that Claude Code rewrites in place
--- instead of appending: subagent *.meta.json, <session>/custom-title.json,
--- <session>/session-memory/summary.md, and desktop-app local_*.json.
--- role and session_id/agent_id are set by the discovery classifier, the only
--- code that knows these path shapes.
 CREATE TABLE doc (
-  path        TEXT    PRIMARY KEY,   -- absolute path
-  role        TEXT    NOT NULL,      -- archive.DocRole value
-  session_id  TEXT,                  -- desktop docs: parsed cliSessionId
+  path        TEXT    PRIMARY KEY,
+  role        TEXT    NOT NULL,
+  session_id  TEXT,
   agent_id    TEXT,
-  sha256      BLOB    NOT NULL,      -- of body; decides whether a new read changed anything
-  body        BLOB    NOT NULL,      -- the file's bytes, verbatim; record.py decodes leniently
-  size        INTEGER NOT NULL,      -- st_size and st_mtime_ns when body was read: a sweep
-  mtime_ns    INTEGER NOT NULL,      -- that sees both unchanged does not read the file
-  archived_at INTEGER NOT NULL       -- epoch ms
+  sha256      BLOB    NOT NULL,
+  body        BLOB    NOT NULL,
+  size        INTEGER NOT NULL,
+  mtime_ns    INTEGER NOT NULL,
+  archived_at INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX doc_by_session ON doc (session_id, role);
 
 -- @projection
--- Everything below is disposable. Archive.rebuild executes this section as one
--- script inside one write transaction, then replays every segment.
 
 DROP TABLE IF EXISTS entry_fts;
 DROP TABLE IF EXISTS entry;
 DROP TABLE IF EXISTS transcript;
 
--- Per-source facts folded by record.project() over the source's records in
--- file order. Exactly-once because each fold step commits with its segment.
 CREATE TABLE transcript (
   source_id    INTEGER PRIMARY KEY REFERENCES source (id),
-  cwd          TEXT,      -- first cwd seen; resume runs here
-  first_ts     INTEGER,   -- epoch ms, min over records
-  last_ts      INTEGER,   -- epoch ms, max over records
-  ai_title     TEXT,      -- latest ai-title record
-  custom_title TEXT,      -- latest custom-title record (/rename)
-  unparsed     INTEGER NOT NULL DEFAULT 0   -- lines that were not a JSON object
+  cwd          TEXT,
+  first_ts     INTEGER,
+  last_ts      INTEGER,
+  ai_title     TEXT,
+  custom_title TEXT,
+  unparsed     INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 
--- One row per searchable unit: a content block of a user/assistant line, or a
--- title change. Text is not stored here or in FTS; it is re-derived from the
--- segment that holds (source_id, line_off) when a hit is displayed.
 CREATE TABLE entry (
-  id        INTEGER PRIMARY KEY,   -- = entry_fts rowid
+  id        INTEGER PRIMARY KEY,
   source_id INTEGER NOT NULL REFERENCES source (id),
-  line_off  INTEGER NOT NULL,      -- byte offset of the JSONL line in the file
-  block     INTEGER NOT NULL,      -- index into message.content; 0 for string content and titles
-  kind      TEXT    NOT NULL,      -- record.Kind value; the enum is the single list
-  ts        INTEGER,               -- epoch ms
+  line_off  INTEGER NOT NULL,
+  block     INTEGER NOT NULL,
+  kind      TEXT    NOT NULL,
+  ts        INTEGER,
   UNIQUE (source_id, line_off, block)
 ) STRICT;
 CREATE INDEX entry_by_source_kind ON entry (source_id, kind);
 
--- Contentless: the index only. bm25 ranking works; snippet()/highlight() do
--- not, by design (see design.md, "Query surface and indexes").
--- unicode61 without porter: the user writes Swedish and English, and porter
--- stems English only. remove_diacritics 2 lets "forsta" match "Första".
+-- Contentless: the index only. bm25 ranking works; snippet()/highlight() do not.
 CREATE VIRTUAL TABLE entry_fts USING fts5 (
   text,
   content = '',
