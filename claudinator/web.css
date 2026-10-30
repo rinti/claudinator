@@ -422,7 +422,7 @@ aside section > p > a:active { color: var(--ink); }
   font: 400 0.8125rem/1.6 var(--mono);
   letter-spacing: 0;
 }
-.code .info { display: block; margin-block-end: 0.25rem; color: var(--ink3); font-size: 0.6875rem; }
+.code .info { display: block; margin-block-end: 0.25rem; color: var(--ink3); font-size: 0.6875rem; user-select: none; }
 .image img { border: 1px solid var(--line); border-radius: 0.625rem; }
 
 .box { --row: 2.125rem; display: flex; flex-direction: column; gap: 1px; overflow: clip; border: 1px solid var(--line); border-radius: 0.625rem; background: var(--line); }
