@@ -460,7 +460,7 @@ def _step(sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms
                 el(
                     "details",
                     {"class": "input", "open": here},
-                    el("summary", None, el("b", None, tool), " ", human.clip(given, 160)),
+                    el("summary", None, el("b", None, tool), " ", _gist(given)),
                     el("pre", None, _text(json.dumps(json.loads(given), indent=2, ensure_ascii=False), here, terms)),
                 ),
                 subagent,
@@ -501,6 +501,15 @@ def _step(sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms
                 el("summary", None, f"{_plural(len(lines), 'hidden line')}: {counts}"),
                 el("ul", None, *(el("li", None, el("a", {"href": href_raw(sid, aid, o)}, name)) for o, name in lines)),
             )
+
+
+def _gist(given: str) -> str:
+    """A call's input on one line: its first string field, such as Bash's
+    command or Read's file_path, else its compact JSON."""
+    value = json.loads(given)
+    fields = value.values() if isinstance(value, dict) else ()
+    first = next((v for v in fields if isinstance(v, str) and v.strip()), None)
+    return human.clip(" ".join(first.split()) if first else given, 160)
 
 
 def _output(

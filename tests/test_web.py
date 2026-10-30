@@ -155,6 +155,26 @@ def test_a_transcript_shows_each_result_inside_the_call_it_answers(served):
     assert f'<div class="output error" id="m{at[3]}.0"><span class="label">error</span><pre>exit 1</pre>' in bash
 
 
+def test_a_call_sums_up_its_input_by_its_first_string_field(served):
+    calls = (
+        ("Bash", {"command": "ls -la\n   /tmp", "description": "List tmp"}),
+        ("Read", {"limit": 5, "file_path": "/a/b.py"}),
+        ("Agent", {"description": "", "prompt": "Find the cursor"}),
+        ("Grep", {"pattern": "x" * 200}),
+        ("TodoWrite", {"todos": [{"content": "ship"}], "merge": True}),
+    )
+    append(transcript(), user("go"), *(tool_call(name, given, tool_use_id=f"toolu_{i}") for i, (name, given) in enumerate(calls)))
+    summaries = re.findall(r'<details class="input"><summary>(.*?)</summary>', page(served, f"/s/{SID}"))
+    assert summaries == [
+        "<b>Bash</b> ls -la /tmp",
+        "<b>Read</b> /a/b.py",
+        "<b>Agent</b> Find the cursor",
+        "<b>Grep</b> " + "x" * 159 + "…",
+        "<b>TodoWrite</b> {&quot;todos&quot;:[{&quot;content&quot;:&quot;ship&quot;}],&quot;merge&quot;:true}",
+    ]
+    assert '<pre>{\n  &quot;command&quot;: &quot;ls -la\\n   /tmp&quot;,\n  &quot;description&quot;: &quot;List tmp&quot;\n}</pre>' in page(served, f"/s/{SID}")
+
+
 def test_an_agent_call_links_its_subagent_and_the_subagent_links_back(served):
     nested = "b0b0b0b0b0b0b0b0b"
     main = (user("delegate"), tool_call("Agent", {"description": "Find the cursor"}, tool_use_id="toolu_77"))
@@ -302,7 +322,7 @@ def test_transcript_text_is_text_whatever_it_holds():
         '<span class="esc">\\x1b</span>[31mred <span class="esc">\\u202e</span>gpj.exe</div>'
     ) in shown
     assert "<title>Invoice \\u202egpj.exe &lt;b&gt;</title>" in shown
-    assert "<summary><b>&lt;b&gt;Tool</b> {&quot;x&quot;:&quot;&lt;/pre&gt;&lt;script&gt;&quot;}</summary>" in shown
+    assert "<summary><b>&lt;b&gt;Tool</b> &lt;/pre&gt;&lt;script&gt;</summary>" in shown
     assert 'alt="image, x&quot; onerror=&quot;alert(3), 3 B"' in shown
     assert "<script" not in shown and "<img src=x" not in shown and "‮" not in shown and "\x1b" not in shown
 
