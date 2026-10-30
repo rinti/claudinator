@@ -217,6 +217,8 @@ def test_classify_knows_the_layout(home):
         p / "memory" / "MEMORY.md": None,
         p / "sessions-index.json": None,
         p / "not-a-session.jsonl": None,
+        p / f".{SID}.jsonl.staged-123": None,
+        p / SID / ".custom-title.json.staged-123": None,
         cfg.claude_dir / "settings.json": None,
         desktop / "a" / "local_x.json": None,
     }

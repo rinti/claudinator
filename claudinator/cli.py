@@ -25,7 +25,7 @@ from claudinator.archive import (
     UnknownSession,
     now,
 )
-from claudinator.layout import AGENT_ID, Config
+from claudinator.layout import AGENT_ID, Config, staged
 from claudinator.record import AgentId, Kind, Millis, cleanup_period_days
 
 _NOTE_ARCHIVED_BYTES = 4 << 20
@@ -191,20 +191,17 @@ def _restore(archive: Archive, s: SessionSummary) -> None:
     if final.exists():
         return
     final.parent.mkdir(parents=True, exist_ok=True)
-    staged = final.with_name(f".{final.name}.restore-{os.getpid()}")
-    staged.unlink(missing_ok=True)
-    try:
-        with os.fdopen(os.open(staged, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as f:
-            archive.export(s.id, f)
-            f.flush()
-            os.fsync(f.fileno())
-        os.link(staged, final)
-    except FileExistsError:
-        _emit(f"{_short(str(final))} appeared while restoring it; resuming with that file as it is")
-    else:
-        _emit(f"restored {_short(str(final))} from the archive")
-    finally:
-        staged.unlink(missing_ok=True)
+    with staged(final) as scratch:
+        try:
+            with os.fdopen(os.open(scratch, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb") as f:
+                archive.export(s.id, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.link(scratch, final)
+        except FileExistsError:
+            _emit(f"{_short(str(final))} appeared while restoring it; resuming with that file as it is")
+        else:
+            _emit(f"restored {_short(str(final))} from the archive")
 
 
 def cmd_export(cfg: Config, args: argparse.Namespace) -> int:

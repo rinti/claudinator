@@ -3,7 +3,8 @@ from __future__ import annotations
 import enum
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,6 +79,22 @@ _PROJECTS_LAYOUT: tuple[tuple[re.Pattern[str], Callable[[Path, re.Match[str]], L
     ),
 )
 _DESKTOP_LAYOUT = re.compile(r"[^/]+/[^/]+/local_[^/]+\.json")
+_STAGED = re.compile(r"\..+\.staged-\d+")
+
+
+@contextmanager
+def staged(path: Path) -> Iterator[Path]:
+    """A private name beside path for a file built whole before os.link
+    publishes it there, removed on exit. A file of that name can only be
+    left by a dead process with this pid, so it goes first, with the -wal
+    and -shm files SQLite keeps beside a database. classify ignores it."""
+    scratch = path.with_name(f".{path.name}.staged-{os.getpid()}")
+    for leftover in (scratch, Path(f"{scratch}-wal"), Path(f"{scratch}-shm")):
+        leftover.unlink(missing_ok=True)
+    try:
+        yield scratch
+    finally:
+        scratch.unlink(missing_ok=True)
 
 
 def classify(path: Path, cfg: Config) -> Location | None:
@@ -88,10 +105,13 @@ def classify(path: Path, cfg: Config) -> Location | None:
         <claude>/projects/<slug>/<sid>/tool-results/*                  -> None
         <claude>/projects/<slug>/<sid>/**/<other non-.jsonl file>      -> SideFile(SESSION_FILE)
         <desktop>/claude-code-sessions/<a>/<b>/local_*.json            -> SideFile(DESKTOP)
+        .<name>.staged-<pid> anywhere (staged)                         -> None
         anything else (memory/, sessions-index.json, ...)              -> None
 
     session_id comes from the path, never from record content: forked copies
     carry rewritten sessionIds, and the file is the unit Claude resumes."""
+    if _STAGED.fullmatch(path.name):
+        return None
     projects = cfg.claude_dir / "projects"
     if path.is_relative_to(projects):
         rel = path.relative_to(projects).as_posix()

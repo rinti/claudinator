@@ -15,7 +15,7 @@ from typing import BinaryIO
 
 from compression import zstd
 
-from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, discover
+from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, discover, staged
 from claudinator.lines import line_at, next_segment, pread, record_at, records, segments_end
 from claudinator.record import (
     CONVERSATION,
@@ -343,11 +343,8 @@ def now() -> Millis:
 def _create(path: Path) -> None:
     """The file is made with mode 0600, so its -wal and -shm files are too."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    private = path.with_name(f".{path.name}.new-{os.getpid()}")
-    for leftover in (private, Path(f"{private}-wal"), Path(f"{private}-shm")):
-        leftover.unlink(missing_ok=True)
-    os.close(os.open(private, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
-    try:
+    with staged(path) as private:
+        os.close(os.open(private, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
         db = sqlite3.connect(private, autocommit=True)
         try:
             db.execute("PRAGMA journal_mode = WAL")
@@ -362,8 +359,6 @@ def _create(path: Path) -> None:
             os.link(private, path)
         except FileExistsError:
             pass
-    finally:
-        private.unlink(missing_ok=True)
 
 
 @dataclass

@@ -546,7 +546,7 @@ def test_resume_without_its_directory_writes_nothing(capsys, tmp_path, execs):
 
 def test_resume_replaces_a_staged_file_left_by_a_dead_process_with_its_pid(capsys, tmp_path, execs):
     _, original = deleted_session(capsys, tmp_path)
-    stale = transcript().with_name(f".{transcript().name}.restore-{os.getpid()}")
+    stale = transcript().with_name(f".{transcript().name}.staged-{os.getpid()}")
     stale.write_bytes(b"half of an earlier restore")
     assert run(capsys, "resume", "8f2d")[0] == 0
     assert transcript().read_bytes() == original
