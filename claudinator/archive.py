@@ -319,7 +319,7 @@ def _pending(path: Path, archived: _Archived | None) -> Pending | None:
     return Pending(path, end - rest.cursor, rest.settled) if end > rest.cursor else None
 
 
-def _doc_stat(path: Path, stored: tuple[int, int] | None) -> os.stat_result | None:
+def _changed_stat(path: Path, stored: tuple[int, int] | None) -> os.stat_result | None:
     st = path.stat()
     return st if (st.st_size, st.st_mtime_ns) != stored else None
 
@@ -826,7 +826,7 @@ class Archive:
         seen, changed = _Delta(), []
         for d in docs:
             try:
-                if _doc_stat(d.path, stored.get(str(d.path))):
+                if _changed_stat(d.path, stored.get(str(d.path))):
                     changed.append(d)
             except OSError as e:
                 seen += _failed(str(d.path), e)
@@ -846,7 +846,7 @@ class Archive:
 
     def _store_doc(self, d: SideFile) -> _Delta:
         row = self._db.execute("SELECT size, mtime_ns, sha256 FROM doc WHERE path = ?", (str(d.path),)).fetchone()
-        if (st := _doc_stat(d.path, row[:2] if row else None)) is None:
+        if (st := _changed_stat(d.path, row[:2] if row else None)) is None:
             return _Delta()
         body = d.path.read_bytes()
         digest = hashlib.sha256(body).digest()
