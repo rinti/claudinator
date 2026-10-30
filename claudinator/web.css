@@ -115,7 +115,7 @@ details[open] > summary::before { content: "▾"; }
 .hidden ul { columns: 3; margin: 0.2rem 0; }
 
 /* Opacity, not visibility, so a hidden raw link stays in the tab order and shows once it holds focus. */
-.raw { position: absolute; inset-block-start: 0.15rem; inset-inline-end: 0; inline-size: var(--slot); text-align: end; font: var(--small)/1.45 var(--mono); color: var(--faint); opacity: 0; }
+.raw { position: absolute; inset-block-start: 0.15rem; inset-inline-end: 0; font: var(--small)/1.45 var(--mono); color: var(--faint); opacity: 0; }
 .prompt > .raw { inset-block-start: var(--above); }
 .output:not(.step) > .raw { inset-block-start: 0; inset-inline-end: calc(-1 * var(--slot)); }
 :focus-within > .raw { opacity: 1; }
