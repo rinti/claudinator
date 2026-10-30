@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -513,17 +514,36 @@ class _View:
     numbers: Mapping[Key, int]
 
     def mark(self, key: Key, s: str) -> Html:
-        return self._marked(key, _cut(s))
+        s = _cut(s)
+        return marked(s, marks(s, self.terms)) if key == self.at and self.terms else text(s)
 
     def prose(self, key: Key, s: str) -> tuple[Html, ...]:
-        s, out, at = _cut(s), [], 0
+        s = _cut(s)
+        spans = marks(s, self.terms) if key == self.at and self.terms else ()
+
+        def part(start: int, end: int) -> Html:
+            if not spans:
+                return text(s[start:end])
+            lo, hi = bisect_right(spans, start, key=itemgetter(1)), bisect_left(spans, end, key=itemgetter(0))
+            return marked(s[start:end], [(max(a, start) - start, min(b, end) - start) for a, b in spans[lo:hi]])
+
+        def inline(start: int, end: int) -> Iterator[Html]:
+            for m in INLINE_CODE.finditer(s, start, end):
+                yield part(start, m.start())
+                yield el("code", None, part(*m.span("code")))
+                start = m.end()
+            yield part(start, end)
+
+        out, at = [], 0
         for opener, closer in _fences(s):
-            info, body = opener["info"].strip(), s[opener.end() + 1 : closer.start()].removesuffix("\n")
-            label = el("span", {"class": "info"}, self._marked(key, info)) if info else None
-            out += self._inline(key, s[at : opener.start()])
-            out.append(el("pre", {"class": "code"}, label, self._marked(key, body)))
+            start, end = opener.span("info")
+            info = s[start:end]
+            start, end = start + len(info) - len(info.lstrip()), end - len(info) + len(info.rstrip())
+            label = el("span", {"class": "info"}, part(start, end)) if start < end else None
+            body = part(opener.end() + 1, max(opener.end() + 1, closer.start() - 1))
+            out += (*inline(at, opener.start()), el("pre", {"class": "code"}, label, body))
             at = closer.end() + 1
-        return (*out, *self._inline(key, s[at:]))
+        return (*out, *inline(at, len(s)))
 
     def raw(self, key: Key) -> Html:
         return el("a", {"class": "raw", "href": href_raw(self.sid, self.aid, key.line_off)}, "raw")
@@ -535,16 +555,6 @@ class _View:
     def frame(self, tag: str, key: Key, css: str, *inner: Html | str | None, raw: bool = True) -> Html:
         attrs = {"class": css, "id": f"m{key}", "open": tag == "details" and key == self.at}
         return el(tag, attrs, *inner, self.raw(key) if raw else None)
-
-    def _inline(self, key: Key, s: str) -> list[Html]:
-        out, at = [], 0
-        for m in INLINE_CODE.finditer(s):
-            out += (self._marked(key, s[at : m.start()]), el("code", None, self._marked(key, m["code"])))
-            at = m.end()
-        return [*out, self._marked(key, s[at:])]
-
-    def _marked(self, key: Key, s: str) -> Html:
-        return marked(s, marks(s, self.terms)) if key == self.at and self.terms else text(s)
 
 
 def _step(view: _View, step: Step) -> Html:

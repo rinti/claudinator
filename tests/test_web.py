@@ -448,6 +448,9 @@ def test_prose_sets_code_as_code_under_its_fences_label_and_leaves_a_stray_backt
         'Run <code>uv <mark>sync</mark></code> then:\n<pre class="code"><span class="info"><mark>bash</mark></span>'
         "echo &quot;&lt;b&gt;<mark>quokka</mark>&lt;/b&gt;&quot;</pre>"
     ) in landed
+    across = page(served, f"/s/{SID}?at={at}.0&q=%22run+uv%22+%22quokka+b%22")
+    assert '<div class="text"><mark>Run </mark><code><mark>uv</mark> sync</code> then:' in across
+    assert "echo &quot;&lt;b&gt;<mark>quokka&lt;/b</mark>&gt;&quot;</pre>" in across
 
 
 def test_a_reply_of_unclosed_fences_renders_in_well_under_a_second():
