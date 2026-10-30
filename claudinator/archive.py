@@ -155,7 +155,6 @@ class Status:
     db_path: Path
     db_bytes: int
     uncompressed_bytes: int
-    compressed_bytes: int
     sessions: int
     transcripts: int
     gone: int  # main transcripts no longer on disk (still in the archive)
@@ -572,9 +571,7 @@ class Archive:
 
     def status(self) -> Status:
         with self._snapshot():
-            uncompressed, compressed = self._db.execute(
-                "SELECT COALESCE(SUM(byte_end - byte_start), 0), COALESCE(SUM(length(zstd)), 0) FROM segment"
-            ).fetchone()
+            (uncompressed,) = self._db.execute("SELECT COALESCE(SUM(byte_end - byte_start), 0) FROM segment").fetchone()
             sessions, transcripts, rewritten = self._db.execute(
                 "SELECT COUNT(DISTINCT session_id), COUNT(DISTINCT path),"
                 " COUNT(DISTINCT CASE WHEN generation > 0 THEN path END) FROM source"
@@ -596,7 +593,6 @@ class Archive:
                 db_path=self.cfg.db,
                 db_bytes=sum(p.stat().st_size for p in (self.cfg.db, Path(f"{self.cfg.db}-wal")) if p.exists()),
                 uncompressed_bytes=uncompressed,
-                compressed_bytes=compressed,
                 sessions=sessions,
                 transcripts=transcripts,
                 gone=sum(not p.exists() for p in mains),
