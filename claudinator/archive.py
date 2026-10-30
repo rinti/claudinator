@@ -611,8 +611,8 @@ class Archive:
                 pending=tuple(pending),
                 unreadable=tuple(unreadable),
                 unclassified=found.unclassified,
-                last_sweep=_report(json.loads(last)) if last else None,
-                last_refused=_known(Refusal, json.loads(refused)) if refused else None,
+                last_sweep=_parse_stored_report(last) if last else None,
+                last_refused=_parse_stored_json(Refusal, refused) if refused else None,
             )
 
     @contextmanager
@@ -998,10 +998,11 @@ SELECT k.session_id, k.hits, e.source_id, e.line_off, e.block, e.kind, e.ts, s.a
 """
 
 
-def _report(obj: dict) -> SweepReport:
-    return replace(_known(SweepReport, obj), errors=tuple(obj.get("errors", ())))
+def _parse_stored_report(text: str) -> SweepReport:
+    report = _parse_stored_json(SweepReport, text)
+    return replace(report, errors=tuple(report.errors))
 
 
-def _known[T](cls: type[T], obj: dict) -> T:
+def _parse_stored_json[T](cls: type[T], text: str) -> T:
     names = {f.name for f in fields(cls)}
-    return cls(**{k: v for k, v in obj.items() if k in names})
+    return cls(**{k: v for k, v in json.loads(text).items() if k in names})
