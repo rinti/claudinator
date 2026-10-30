@@ -262,13 +262,6 @@ def plan(head: bytes, tail_sha256: bytes, cursor: int, size: int, settled: bool,
     return Plan.UNCHANGED if size == cursor else Plan.APPEND
 
 
-def _look(fd: int, archived: _Archived, size: int, settled: bool) -> tuple[Plan, bytes]:
-    n = min(TAIL_BYTES, archived.cursor)
-    window = pread(fd, n, archived.cursor - n) if size >= archived.cursor else b""
-    file_head = pread(fd, len(archived.head), 0)
-    return plan(archived.head, archived.tail_sha256, archived.cursor, size, settled, file_head, window), window
-
-
 @dataclass(frozen=True, slots=True)
 class _Unarchived:
     generation: int
@@ -285,12 +278,15 @@ def _unarchived(fd: int, archived: _Archived | None) -> _Unarchived | None:
     settled = _settled(st)
     if archived is None:
         return _Unarchived(0, 0, b"", st.st_size, settled)
-    match _look(fd, archived, st.st_size, settled):
-        case (Plan.UNCHANGED | Plan.COPY_IN_PROGRESS, _):
+    n = min(TAIL_BYTES, archived.cursor)
+    window = pread(fd, n, archived.cursor - n) if st.st_size >= archived.cursor else b""
+    file_head = pread(fd, len(archived.head), 0)
+    match plan(archived.head, archived.tail_sha256, archived.cursor, st.st_size, settled, file_head, window):
+        case Plan.UNCHANGED | Plan.COPY_IN_PROGRESS:
             return None
-        case (Plan.APPEND, window):
+        case Plan.APPEND:
             return _Unarchived(archived.generation, archived.cursor, window, st.st_size, settled)
-        case (Plan.NEW_GENERATION, _):
+        case Plan.NEW_GENERATION:
             return _Unarchived(archived.generation + 1, 0, b"", st.st_size, settled)
 
 
@@ -466,7 +462,7 @@ class Archive:
         projection (WAL snapshot) until commit. Returns how many sources it
         replayed: one per transcript file and generation."""
         with self._write(wait=True):
-            if not force and self._projection_current():
+            if not force and self._meta_int("projection_version") == PROJECTION_VERSION:
                 return 0
             self._db.executescript(_PROJECTION_DDL)
             sources = self._db.execute("SELECT id FROM source ORDER BY id").fetchall()
@@ -896,9 +892,6 @@ class Archive:
         if (schema or 0) > ARCHIVE_SCHEMA or (projection or 0) > PROJECTION_VERSION:
             return NewerArchive("this archive was written by a newer claudinator")
         return None
-
-    def _projection_current(self) -> bool:
-        return self._meta_int("projection_version") == PROJECTION_VERSION
 
     def _meta(self, key: str) -> str | None:
         row = self._db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
