@@ -234,8 +234,8 @@ def test_a_transcript_shows_each_result_inside_the_call_it_answers(served):
     at = offsets(*lines)
     shown = page(served, f"/s/{SID}")
     read, bash = (re.search(rf'<div class="step call[^"]*" id="m{at[n]}\.0">.*?</details></div>', shown, re.S)[0] for n in (1, 2))
-    assert f'<div class="part output" id="m{at[4]}.0"><pre>one</pre>' in read
-    assert f'<div class="part output error" id="m{at[3]}.0"><pre>exit 1</pre>' in bash
+    assert f'<div class="output" id="m{at[4]}.0"><pre>one</pre>' in read
+    assert f'<div class="output error" id="m{at[3]}.0"><pre>exit 1</pre>' in bash
     assert bash.startswith('<div class="step call error"') and '<span class="size error">error</span>' in bash
 
 
@@ -254,13 +254,13 @@ def test_a_call_is_one_closed_row_that_opens_to_its_input_and_then_its_output(se
     def row(n: int, given: str, size: str, opened: str = "") -> str:
         return (
             f'<div class="step call" id="m{at[n]}.0"><details{opened}><summary><b>Bash</b> <span class="gist">{given}</span>'
-            f'<span class="size">{size}</span></summary><div class="panel"><div class="part">'
-            f'<pre class="input">{{\n  &quot;command&quot;: &quot;{given}&quot;\n}}</pre><a class="raw" href="raw/{SID}/{at[n]}">raw</a></div>'
+            f'<span class="size">{size}</span></summary><div class="panel">'
+            f'<pre class="input">{{\n  &quot;command&quot;: &quot;{given}&quot;\n}}</pre><a class="raw" href="raw/{SID}/{at[n]}">raw</a>'
         )
 
     shown = page(served, f"/s/{SID}")
-    assert row(1, "echo hi", "1 line") + f'<div class="part output" id="m{at[2]}.0"><pre>hi</pre>' in shown
-    assert row(3, "seq 4", "4 lines") + f'<div class="part output" id="m{at[4]}.0"><pre>1\n2\n3\nquokka</pre>' in shown
+    assert row(1, "echo hi", "1 line") + f'<div class="output" id="m{at[2]}.0"><pre>hi</pre>' in shown
+    assert row(3, "seq 4", "4 lines") + f'<div class="output" id="m{at[4]}.0"><pre>1\n2\n3\nquokka</pre>' in shown
     assert row(5, "true", "no output") + "</div></details></div>" in shown
     landed = page(served, f"/s/{SID}?at={at[4]}.0&q=quokka")
     assert row(3, "seq 4", "4 lines", " open") in landed and "<pre>1\n2\n3\n<mark>quokka</mark></pre>" in landed
@@ -322,7 +322,7 @@ def test_a_commands_output_shows_without_its_wrapper_tags_and_marks_land_on_the_
     shown = page(served, f"/s/{SID}")
     assert (
         f'<div class="step output" id="m{at}.0"><details><summary><b>Output</b> <span class="gist">Resolved 1 quokka</span>'
-        '<span class="size">2 lines</span></summary><div class="panel"><div class="part"><pre>Resolved 1 quokka</pre>'
+        '<span class="size">2 lines</span></summary><div class="panel"><pre>Resolved 1 quokka</pre>'
         '<div class="stderr"><span class="label">stderr</span><pre>warning: a wombat</pre></div>'
     ) in shown
     assert "bash-std" not in shown

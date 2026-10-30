@@ -748,14 +748,12 @@ def _step(
             return _call(sid, aid, step, at, terms)
         case Output():
             first = (_plain(step).strip().splitlines() or [""])[0]
-            body = el("div", {"class": "part"}, *_output_body(sid, aid, step, at, terms))
-            return _row(
-                step.key, "output error" if step.error else "output", "Output", first, _size(step), (body,), here
-            )
+            body = _output_body(sid, aid, step, at, terms)
+            return _row(step.key, "output error" if step.error else "output", "Output", first, _size(step), body, here)
         case Thought(key, _, text):
             first = (text.strip().splitlines() or [""])[0]
-            body = el("div", {"class": "part"}, el("div", {"class": "text"}, *_prose(text, here, terms)), raw_link)
-            return _row(key, "thought", "Thinking", first, el("span", {"class": "size"}, _lines(text)), (body,), here)
+            body = (el("div", {"class": "text"}, *_prose(text.strip(), here, terms)), raw_link)
+            return _row(key, "thought", "Thinking", first, el("span", {"class": "size"}, _lines(text)), body, here)
         case Image(key, _, shown):
             return el("div", {"class": "step image", "id": f"m{key}"}, _img(sid, aid, key, shown), raw_link)
         case Marker(key, Note(notice, text)):
@@ -806,9 +804,9 @@ def _call(sid: SessionId, aid: AgentId | None, call: Call, at: Key | None, terms
     out = call.result
     given = json.dumps(json.loads(call.input), indent=2, ensure_ascii=False)
     raw_link = el("a", {"class": "raw", "href": href_raw(sid, aid, call.key.line_off)}, "raw")
-    panel = [el("div", {"class": "part"}, el("pre", {"class": "input"}, _text(given, call.key == at, terms)), raw_link)]
+    panel = [el("pre", {"class": "input"}, _text(given, call.key == at, terms)), raw_link]
     if out is not None:
-        css = "part output error" if out.error else "part output"
+        css = "output error" if out.error else "output"
         panel.append(el("div", {"class": css, "id": f"m{out.key}"}, *_output_body(sid, aid, out, at, terms)))
     opened = at is not None and at in (call.key, out and out.key)
     if call.spawned:
