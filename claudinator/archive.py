@@ -887,11 +887,26 @@ class Archive:
         return {Path(row[0]): _Archived(*row[1:]) for row in rows}
 
     def _segments(self, source_id: int) -> Iterator[tuple[int, bytes]]:
-        """(byte_start, payload) of every segment of a source in file order."""
-        for start, blob in self._db.execute(
-            "SELECT byte_start, zstd FROM segment WHERE source_id = ? ORDER BY byte_start", (source_id,)
-        ):
-            yield start, zstd.decompress(blob)
+        """(byte_start, payload) of every segment of a source in file order.
+
+        No statement stays open while the caller works on a segment: the
+        starts are fetched whole and each payload by its key. rebuild
+        projects as it reads, and once its DDL has run, the ROLLBACK TO
+        with which _project drops a refused record aborts every statement
+        open on the connection."""
+        starts = self._db.execute(
+            "SELECT byte_start FROM segment WHERE source_id = ? ORDER BY byte_start", (source_id,)
+        ).fetchall()
+        for (start,) in starts:
+            yield start, self._payload(source_id, start)
+
+    def _payload(self, source_id: int, start: int) -> bytes:
+        """The bytes of one segment. A lookup by primary key, so fetching its
+        one row finishes the statement."""
+        (blob,) = self._db.execute(
+            "SELECT zstd FROM segment WHERE source_id = ? AND byte_start = ?", (source_id, start)
+        ).fetchone()
+        return zstd.decompress(blob)
 
     def _session_rows(
         self, filters: Filters, limit: int | None, prefix: str | None = None, ids: str | None = None
@@ -941,12 +956,12 @@ class Archive:
         """The bytes from offset through the end of its line, as the
         segments hold them: usually one piece of one segment."""
         pieces = []
-        for start, blob in self._db.execute(
-            "SELECT byte_start, zstd FROM segment WHERE source_id = ?1 AND byte_start >="
+        for (start,) in self._db.execute(
+            "SELECT byte_start FROM segment WHERE source_id = ?1 AND byte_start >="
             " (SELECT MAX(byte_start) FROM segment WHERE source_id = ?1 AND byte_start <= ?2) ORDER BY byte_start",
             (source_id, offset),
-        ):
-            chunk = zstd.decompress(blob)
+        ).fetchall():
+            chunk = self._payload(source_id, start)
             at = max(offset - start, 0)
             end = chunk.find(b"\n", at)
             pieces.append((start + at, chunk[at : end if end >= 0 else len(chunk)]))
@@ -958,10 +973,10 @@ class Archive:
         """The bytes after the archive's last newline, as the segments hold
         them: the line a settled tail left open."""
         pieces = []
-        for start, blob in self._db.execute(
-            "SELECT byte_start, zstd FROM segment WHERE source_id = ? ORDER BY byte_start DESC", (source_id,)
-        ):
-            chunk = zstd.decompress(blob)
+        for (start,) in self._db.execute(
+            "SELECT byte_start FROM segment WHERE source_id = ? ORDER BY byte_start DESC", (source_id,)
+        ).fetchall():
+            chunk = self._payload(source_id, start)
             newline = chunk.rfind(b"\n")
             pieces.append((start + newline + 1, chunk[newline + 1 :]))
             if newline >= 0:

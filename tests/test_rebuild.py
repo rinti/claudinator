@@ -6,9 +6,9 @@ import sys
 import pytest
 
 import claudinator.archive as archive_module
+import claudinator.record as record_module
 from claudinator.layout import Config
-
-from claudinator.record import PROJECTION_VERSION, Unparsed
+from claudinator.record import PROJECTION_VERSION, Turn, Unparsed
 from test_concurrency import LOCKER
 from helpers import (
     AID,
@@ -107,6 +107,30 @@ def test_builds_that_share_a_projection_version_do_not_rebuild_each_others_proje
     finally:
         locker.stdin.close()
         locker.wait(timeout=10)
+
+
+def test_a_record_the_projection_refuses_in_an_early_segment_does_not_stop_a_rebuild(monkeypatch):
+    real_project = record_module.project
+
+    def project(facts, record):
+        if isinstance(record, Turn) and "poison" in record.blocks[0][1].text:
+            raise RuntimeError("a projection bug")
+        return real_project(facts, record)
+
+    monkeypatch.setattr("claudinator.archive.project", project)
+    path = transcript()
+    append(path, user("poison pill"), *(user(f"filler {i} quokka " + "x" * 1000) for i in range(3000)))
+    with open_archive() as archive:
+        assert archive.sweep().errors == ()
+        assert archive._db.execute("SELECT COUNT(*) FROM segment").fetchone()[0] >= 3
+        incremental = entry_rows(archive)
+        assert archive.rebuild(force=True) == 1
+        assert entry_rows(archive) == incremental
+    monkeypatch.setattr("claudinator.archive.PROJECTION_VERSION", PROJECTION_VERSION + 1)
+    with open_archive() as archive:
+        assert entry_rows(archive) == incremental
+        assert archive.status().unparsed_lines == 1
+        assert found(archive, "quokka") == 3000
 
 
 def entry_rows(archive) -> list[tuple]:
