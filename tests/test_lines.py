@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from claudinator.lines import SEGMENT_BYTES, next_segment, records
+from claudinator.lines import SEGMENT_BYTES, line_at, next_segment, records
 from claudinator.record import Other, Turn, Unparsed
 from helpers import line, user
 
@@ -83,3 +83,48 @@ def test_a_line_longer_than_a_segment_is_one_segment(file):
         assert next_segment(fd, 0, len(long) + 5, settled=False) == (long, True)
     finally:
         os.close(fd)
+
+
+def segments(*chunks: bytes) -> tuple[list[int], list[bytes]]:
+    starts, at = [], 0
+    for chunk in chunks:
+        starts.append(at)
+        at += len(chunk)
+    return starts, list(chunks)
+
+
+@pytest.mark.parametrize(
+    ("chunks", "offset", "expected", "read"),
+    [
+        ((b"a\nbb\nccc\n", b"dd\n"), 2, [(2, b"bb\n")], [0]),
+        ((b"a\nbb\nccc\n", b"dd\n"), 3, [(2, b"bb\n")], [0]),
+        ((b"a\nbb\n", b"ccc\n"), 5, [(5, b"ccc\n")], [1, 0]),
+        ((b"a\nbb", b"b\nccc\n"), 2, [(2, b"bb"), (4, b"b\n")], [0, 1]),
+        ((b"a\nbb", b"b\nccc\n"), 4, [(2, b"bb"), (4, b"b\n")], [1, 0]),
+        ((b"x\nab", b"cd", b"ef\nz\n"), 5, [(2, b"ab"), (4, b"cd"), (6, b"ef\n")], [1, 0, 2]),
+        ((b"a\nb", b"bb"), 4, [(2, b"b"), (3, b"bb")], [1, 0]),
+        ((b"a\n",), 100, [], [0]),
+        ((), 0, [], []),
+    ],
+    ids=[
+        "a line inside one segment",
+        "from inside a line",
+        "a line that starts a segment",
+        "a settled tail and its continuation",
+        "from the continuation",
+        "a line across three segments",
+        "the line the archive ends inside",
+        "past the archived end",
+        "no segments",
+    ],
+)
+def test_line_at_reads_the_pieces_of_the_line_that_holds_an_offset(chunks, offset, expected, read):
+    starts, payloads = segments(*chunks)
+    calls = []
+
+    def payload(i: int) -> bytes:
+        calls.append(i)
+        return payloads[i]
+
+    assert line_at(starts, payload, offset) == expected
+    assert sorted(calls) == sorted(read)

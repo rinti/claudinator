@@ -8,7 +8,8 @@ archive hands these byte strings in and stores what they return."""
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Iterator
+from bisect import bisect_right
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 
 from claudinator.record import Record, Unparsed, parse
@@ -83,7 +84,7 @@ def records(
     replaces that Unparsed.
 
     before is the line the archive already ends inside, as its segments
-    hold it (_open_line); its records were projected with those segments,
+    hold it (line_at); its records were projected with those segments,
     so only what the new segments add is yielded. Ingest, rebuild,
     conversation, and search read lines through here, so they agree on
     every line."""
@@ -128,3 +129,34 @@ def _chunk_records(
             found.append((start + pos, parse(chunk[pos:end]), False))
         pos = end + 1
     return found, left
+
+
+def line_at(starts: Sequence[int], payload: Callable[[int], bytes], offset: int) -> list[tuple[int, bytes]]:
+    """The pieces of the line that holds byte offset, as consecutive
+    segments hold it: from the byte after the newline before offset through
+    the newline at or after it, else through the last segment's end. starts
+    are the segments' first bytes in file order, and payload(i) the bytes of
+    segment i, called only for the segments the line touches. Usually one
+    piece of one segment; a line a settled tail left open spans more.
+
+    The archive asks for the line at an entry's offset to show its text, and
+    for the line that holds its last byte when it ends mid-line."""
+    i = bisect_right(starts, offset) - 1
+    if i < 0:
+        return []
+    chunks = {i: payload(i)}
+    first, before = i, offset - starts[i]
+    while (begin := chunks[first].rfind(b"\n", 0, before) + 1) == 0 and first > 0:
+        first -= 1
+        chunks[first] = payload(first)
+        before = len(chunks[first])
+    pieces = []
+    for k in range(first, len(starts)):
+        chunk = chunks[k] if k in chunks else payload(k)
+        at = begin if k == first else 0
+        end = chunk.find(b"\n", max(at, offset - starts[k]))
+        if piece := chunk[at : end + 1 if end >= 0 else len(chunk)]:
+            pieces.append((starts[k] + at, piece))
+        if end >= 0:
+            break
+    return pieces

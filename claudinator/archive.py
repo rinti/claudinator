@@ -24,7 +24,7 @@ from typing import BinaryIO
 from compression import zstd
 
 from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, discover
-from claudinator.lines import next_segment, pread, records
+from claudinator.lines import line_at, next_segment, pread, records
 from claudinator.record import (
     CONVERSATION,
     PROJECTION_VERSION,
@@ -757,7 +757,7 @@ class Archive:
             ).fetchone()
         else:
             source_id = a.source_id
-        before = self._open_line(source_id) if n.window and not n.window.endswith(b"\n") else ()
+        before = self._line(source_id, n.cursor - 1) if n.window and not n.window.endswith(b"\n") else ()
         tail = hashlib.sha256((n.window + n.chunk[-TAIL_BYTES:])[-TAIL_BYTES:]).digest()
         self._db.execute(
             "INSERT INTO segment (source_id, byte_start, byte_end, tail, zstd, archived_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -904,35 +904,12 @@ class Archive:
             ) from None
 
     def _line(self, source_id: int, offset: int) -> list[tuple[int, bytes]]:
-        """The bytes from offset through the end of its line, as the
-        segments hold them: usually one piece of one segment."""
-        pieces = []
-        for (start,) in self._db.execute(
-            "SELECT byte_start FROM segment WHERE source_id = ?1 AND byte_start >="
-            " (SELECT MAX(byte_start) FROM segment WHERE source_id = ?1 AND byte_start <= ?2) ORDER BY byte_start",
-            (source_id, offset),
-        ).fetchall():
-            chunk = self._payload(source_id, start)
-            at = max(offset - start, 0)
-            end = chunk.find(b"\n", at)
-            pieces.append((start + at, chunk[at : end if end >= 0 else len(chunk)]))
-            if end >= 0:
-                break
-        return pieces
-
-    def _open_line(self, source_id: int) -> list[tuple[int, bytes]]:
-        """The bytes after the archive's last newline, as the segments hold
-        them: the line a settled tail left open."""
-        pieces = []
-        for (start,) in self._db.execute(
-            "SELECT byte_start FROM segment WHERE source_id = ? ORDER BY byte_start DESC", (source_id,)
-        ).fetchall():
-            chunk = self._payload(source_id, start)
-            newline = chunk.rfind(b"\n")
-            pieces.append((start + newline + 1, chunk[newline + 1 :]))
-            if newline >= 0:
-                break
-        return pieces[::-1]
+        """The pieces of the line that holds byte offset, as the segments
+        hold it (lines.line_at), reading only the segments it touches."""
+        starts = [start for (start,) in self._db.execute(
+            "SELECT byte_start FROM segment WHERE source_id = ? ORDER BY byte_start", (source_id,)
+        ).fetchall()]
+        return line_at(starts, lambda k: self._payload(source_id, starts[k]), offset)
 
     def _docs(self, session_id: SessionId, role: DocRole) -> list[tuple[AgentId | None, bytes]]:
         return self._db.execute(
