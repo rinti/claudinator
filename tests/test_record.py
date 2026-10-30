@@ -438,7 +438,9 @@ def test_image_decodes_the_picture_at_its_address_and_nothing_else():
     assert [image(pasted, 0, None), image(pasted, 1, 0), image(pasted, 2, None), image(result, 0, 0), image(result, 0, None)] == [None] * 5
     assert image(lines.PROMPT_WITH_IMAGE.encode(), 1, None) is None, "its data is cut short, so not base64"
     assert image(b"not json", 0, None) is None
-    assert [p.size for _, p in parse(pasted).extras] == [len(PNG)]
+
+    padded = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(b"x" * 14).decode()}}
+    assert parse(_changed(lines.PROMPT_WITH_IMAGE, message={"content": [padded]}).encode()).extras == ((0, Picture("image/png", None, 14)),)
 
 
 def test_desktop_session_names_the_cli_session_and_title():
