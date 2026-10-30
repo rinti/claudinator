@@ -15,7 +15,7 @@ from helpers import (
     append,
     assistant,
     custom_title,
-    found,
+    hit_count,
     line,
     open_archive,
     projects,
@@ -51,8 +51,8 @@ def test_search_covers_conversation_and_adds_tools_on_request():
     )
     with open_archive() as archive:
         archive.sweep()
-        assert [found(archive, w) for w in ("launchd", "launchagents", "sweeper", "launchctl", "loaded")] == [1, 1, 1, 0, 0]
-        assert [found(archive, w, tools=True) for w in ("launchctl", "loaded")] == [1, 1]
+        assert [hit_count(archive, w) for w in ("launchd", "launchagents", "sweeper", "launchctl", "loaded")] == [1, 1, 1, 0, 0]
+        assert [hit_count(archive, w, tools=True) for w in ("launchctl", "loaded")] == [1, 1]
 
 
 def test_search_matches_every_word_phrases_prefixes_and_folded_accents():
@@ -281,8 +281,8 @@ def test_a_slash_command_titles_a_session_as_typed_and_shell_lines_are_not_promp
             (Kind.PROMPT, "! git status"),
             (Kind.TOOL_OUTPUT, "<bash-stdout>On branch main</bash-stdout><bash-stderr></bash-stderr>"),
         ]
-        assert found(archive, "branch") == 0
-        assert found(archive, "interrupted") == 0
+        assert hit_count(archive, "branch") == 0
+        assert hit_count(archive, "interrupted") == 0
 
 
 def test_a_title_entry_carries_the_title_lines_own_timestamp():

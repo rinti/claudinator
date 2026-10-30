@@ -21,7 +21,7 @@ from helpers import (
     append,
     assistant,
     exported,
-    found,
+    hit_count,
     line,
     open_archive,
     projects,
@@ -65,11 +65,11 @@ def test_partial_last_line_waits_until_completed():
         archive.sweep()
         archive.sweep()
         assert exported(archive) == user("complete")
-        assert found(archive, "zebracorn") == 0
+        assert hit_count(archive, "zebracorn") == 0
         append(path, pending[25:])
         archive.sweep()
         assert exported(archive) == path.read_bytes()
-        assert found(archive, "zebracorn") == 1
+        assert hit_count(archive, "zebracorn") == 1
 
 
 def test_settled_tail_is_archived_and_a_whole_record_glued_onto_it_is_found():
@@ -85,8 +85,8 @@ def test_settled_tail_is_archived_and_a_whole_record_glued_onto_it_is_found():
         archive.sweep()
         assert exported(archive) == path.read_bytes()
         assert archive.status().unparsed_lines == 1
-        assert found(archive, "glued") == 1
-        assert found(archive, "restart") == 1
+        assert hit_count(archive, "glued") == 1
+        assert hit_count(archive, "restart") == 1
 
 
 def test_drift_is_archived_byte_exact_and_non_json_is_counted():
@@ -103,9 +103,9 @@ def test_drift_is_archived_byte_exact_and_non_json_is_counted():
         assert archive.sweep().errors == ()
         assert exported(archive) == path.read_bytes()
         assert archive.status().unparsed_lines == 1
-        assert found(archive, "hello", tools=True) == 1
+        assert hit_count(archive, "hello", tools=True) == 1
         for word in ("zebracorn", "quokka", "quagga"):
-            assert found(archive, word, tools=True) == 0
+            assert hit_count(archive, word, tools=True) == 0
 
 
 def test_rewrite_starts_a_new_generation_and_keeps_the_old_bytes():
@@ -119,7 +119,7 @@ def test_rewrite_starts_a_new_generation_and_keeps_the_old_bytes():
         assert exported(archive, generation=0) == original
         assert exported(archive) == path.read_bytes()
         assert archive.status().multi_generation == 1
-        assert found(archive, "rewritten") == 1
+        assert hit_count(archive, "rewritten") == 1
 
 
 def test_a_copy_still_being_written_in_place_is_not_a_rewrite():
@@ -299,7 +299,7 @@ def test_a_line_with_an_escaped_lone_surrogate_is_archived_and_searchable():
         report = archive.sweep()
         assert (report.errors, report.transcripts_changed) == ((), 2)
         assert exported(archive) == path.read_bytes()
-        assert [found(archive, word) for word in ("zebracorn", "quokka")] == [1, 1]
+        assert [hit_count(archive, word) for word in ("zebracorn", "quokka")] == [1, 1]
 
 
 def test_a_record_the_projection_cannot_handle_is_unparsed_and_its_bytes_still_archived(monkeypatch):
@@ -317,7 +317,7 @@ def test_a_record_the_projection_cannot_handle_is_unparsed_and_its_bytes_still_a
         assert archive.sweep().errors == ()
         assert exported(archive) == path.read_bytes()
         assert archive.status().unparsed_lines == 1
-        assert [found(archive, word) for word in ("before", "poison", "quokka")] == [1, 0, 1]
+        assert [hit_count(archive, word) for word in ("before", "poison", "quokka")] == [1, 0, 1]
 
 
 def test_a_record_sqlite_refuses_to_project_is_unparsed_and_its_neighbours_still_project():
@@ -333,7 +333,7 @@ def test_a_record_sqlite_refuses_to_project_is_unparsed_and_its_neighbours_still
         archive._db.execute("DROP TRIGGER refuse_second_blocks")
         assert exported(archive) == path.read_bytes()
         assert archive.status().unparsed_lines == 1
-        assert [found(archive, word) for word in ("quokka", "zebracorn", "refused", "wombat")] == [1, 0, 0, 1]
+        assert [hit_count(archive, word) for word in ("quokka", "zebracorn", "refused", "wombat")] == [1, 0, 0, 1]
 
 
 def test_an_unexpected_error_in_one_file_is_reported_and_the_sweep_goes_on(monkeypatch):
@@ -354,7 +354,7 @@ def test_an_unexpected_error_in_one_file_is_reported_and_the_sweep_goes_on(monke
         report = archive.sweep()
         assert report.errors == (f"{transcript()}: ValueError('cannot compress this')",)
         assert (report.transcripts_changed, report.docs_changed) == (1, 1)
-        assert found(archive, "quokka") == 1
+        assert hit_count(archive, "quokka") == 1
         assert archive.status().last_sweep.errors == report.errors
 
 
@@ -597,7 +597,7 @@ def test_a_failure_partway_through_a_large_file_keeps_the_segments_before_it(mon
         kept = exported(archive)
         assert len(kept) >= 2 * SEGMENT_BYTES and kept.endswith(b"\n")
         assert path.read_bytes().startswith(kept)
-        assert found(archive, "early") > 0
+        assert hit_count(archive, "early") > 0
         assert archive.sweep().errors == ()
         assert exported(archive) == path.read_bytes()
 

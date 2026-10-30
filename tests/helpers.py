@@ -89,7 +89,7 @@ def exported(archive: Archive, sid: str = SID, agent: str | None = None, generat
     return out.getvalue()
 
 
-def found(archive: Archive, *terms: str, tools: bool = False) -> int:
+def hit_count(archive: Archive, *terms: str, tools: bool = False) -> int:
     return sum(hit.hits for hit in archive.search(Query(terms, tools=tools, limit=1000)))
 
 

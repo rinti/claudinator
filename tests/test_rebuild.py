@@ -18,7 +18,7 @@ from helpers import (
     append,
     custom_title,
     exported,
-    found,
+    hit_count,
     line,
     open_archive,
     projection_dump,
@@ -86,11 +86,11 @@ def test_open_rebuilds_the_projection_after_a_version_bump(monkeypatch):
     append(transcript(), user("one quokka"), user("two"))
     with open_archive() as archive:
         archive.sweep()
-        assert found(archive, "quokka") == 1
+        assert hit_count(archive, "quokka") == 1
     monkeypatch.setattr("claudinator.archive.PROJECTION_VERSION", PROJECTION_VERSION + 1)
     monkeypatch.setattr("claudinator.lines.parse", lambda line: Unparsed())
     with open_archive() as archive:
-        assert found(archive, "quokka") == 0
+        assert hit_count(archive, "quokka") == 0
         assert archive.status().unparsed_lines == 2
 
 
@@ -107,7 +107,7 @@ def test_builds_that_share_a_projection_version_do_not_rebuild_each_others_proje
     try:
         assert locker.stdout.readline() == "locked\n"
         with open_archive() as archive:
-            assert found(archive, "quokka") == 1
+            assert hit_count(archive, "quokka") == 1
     finally:
         locker.stdin.close()
         locker.wait(timeout=10)
@@ -134,7 +134,7 @@ def test_a_record_the_projection_refuses_in_an_early_segment_does_not_stop_a_reb
     with open_archive() as archive:
         assert entry_rows(archive) == incremental
         assert archive.status().unparsed_lines == 1
-        assert found(archive, "quokka") == 3000
+        assert hit_count(archive, "quokka") == 3000
 
 
 def entry_rows(archive) -> list[tuple]:
@@ -171,7 +171,7 @@ def test_a_line_left_open_by_a_settled_tail_projects_once_and_the_same_on_rebuil
         assert archive.sweep().errors == ()
         assert exported(archive) == path.read_bytes()
         assert archive.status().unparsed_lines == unparsed
-        assert {word: found(archive, word) for word in shown + hidden} == {word: 1 for word in shown} | {word: 0 for word in hidden}
+        assert {word: hit_count(archive, word) for word in shown + hidden} == {word: 1 for word in shown} | {word: 0 for word in hidden}
         shown_by_show = [m.text for m in archive.conversation(SID)]
         incremental = entry_rows(archive)
         archive.rebuild(force=True)
