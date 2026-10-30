@@ -59,13 +59,12 @@ pre { margin: 0; font: inherit; }
 
 .agents { margin-block-end: 2.5rem; }
 .agents h2, .day { font-size: inherit; font-style: italic; }
-.agents ul { margin: 0.25rem 0 0; padding: 0 0 0 var(--gutter); list-style: none; max-inline-size: calc(var(--gutter) + var(--measure)); }
+.agents ul { margin-block: 0.25rem 0; padding-block: 0; padding-inline: var(--gutter) 0; list-style: none; max-inline-size: calc(var(--gutter) + var(--measure)); }
 .agents li { padding-inline-start: 2em; text-indent: -2em; }
 .agents .id, .agents .type { color: var(--faint); font-size: var(--small); font-variant-numeric: lining-nums tabular-nums; }
 .agents .id { margin-inline-end: 1ch; }
 .agents .type { margin-inline-start: 1ch; }
 
-/* No content-visibility: its placeholder heights move a search hit's target out of view as the steps above it render. */
 .day { margin-block: 2.25rem 0.5rem; }
 main > .day:first-child { margin-block-start: 0; }
 .minute {
@@ -76,6 +75,7 @@ main > .day:first-child { margin-block-start: 0; }
 .minute > time { color: var(--faint); font-size: var(--small); font-variant-numeric: lining-nums tabular-nums; }
 .minute > .step { grid-column: 2; }
 
+/* No content-visibility: its placeholder heights move a search hit's target out of view as the steps above it render. */
 .step {
   position: relative;
   border-inline-start: 1px solid var(--rule);
@@ -112,7 +112,7 @@ details[open] > summary::before { content: "▾"; }
 .thought > .text { color: var(--ink); }
 .notice .text { color: var(--ink); font-style: normal; }
 .notice pre { color: var(--ink); font: var(--small)/1.45 var(--mono); font-style: normal; }
-.hidden ul { columns: 3; margin: 0.2rem 0; }
+.hidden ul { columns: 3; margin-block: 0.2rem; }
 
 /* Opacity, not visibility, so a hidden raw link stays in the tab order and shows once it holds focus. */
 .raw { position: absolute; inset-block-start: 0.15rem; inset-inline-end: 0; font: var(--small)/1.45 var(--mono); color: var(--faint); opacity: 0; }
@@ -131,7 +131,8 @@ details[open] > summary::before { content: "▾"; }
 .find { flex: 1 1 30rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem 1rem; }
 .find input:not([type="checkbox"]) {
   flex: 1 1 6rem;
-  padding: 0.1rem 0;
+  padding-block: 0.1rem;
+  padding-inline: 0;
   border: 0;
   border-block-end: 1px solid var(--faint);
   border-radius: 0;
@@ -145,7 +146,7 @@ details[open] > summary::before { content: "▾"; }
 .find input::placeholder { color: var(--faint); opacity: 1; }
 .find label { white-space: nowrap; }
 .find input[type="checkbox"] { accent-color: var(--pen); margin: 0; }
-.find button { padding: 0.15rem 1rem; border: 0; background: var(--ink); color: var(--paper); font: inherit; cursor: pointer; touch-action: manipulation; user-select: none; }
+.find button { padding-block: 0.15rem; padding-inline: 1rem; border: 0; background: var(--ink); color: var(--paper); font: inherit; cursor: pointer; touch-action: manipulation; user-select: none; }
 .find button:active { background: var(--pen); }
 @media (hover: hover) and (pointer: fine) {
   .find button:hover { background: var(--pen); }
@@ -171,9 +172,9 @@ p.count { margin-block: 0 1.75rem; color: var(--faint); }
 .sessions .count:last-child { inline-size: 7.5rem; }
 .gone { font-style: italic; }
 
-.hits { max-inline-size: calc(var(--gutter) + var(--measure)); margin: 0; padding: 0 0 0 var(--gutter); list-style: none; }
+.hits { max-inline-size: calc(var(--gutter) + var(--measure)); margin: 0; padding-block: 0; padding-inline: var(--gutter) 0; list-style: none; }
 .hits li { margin-block-end: 1.5rem; }
-.hits li > p { margin: 0 0 0.2rem; color: var(--faint); font-size: 0.9375rem; }
+.hits li > p { margin-block: 0 0.2rem; color: var(--faint); font-size: 0.9375rem; }
 .excerpt { display: block; color: var(--ink); }
 
 @media (width < 40rem) {
