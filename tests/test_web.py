@@ -379,6 +379,21 @@ def test_an_agent_call_links_its_subagent_and_the_subagent_links_back(served):
     assert get(served, f"/s/{SID}/{AID}?call=toolu_88")[1]["location"] == f"{served.root}s/{SID}/{AID}?at={inner}.0#m{inner}.0"
 
 
+def test_a_failed_agent_call_says_error_and_still_links_its_subagent(served):
+    failed = {"type": "tool_result", "tool_use_id": "toolu_77", "is_error": True, "content": "interrupted"}
+    main = (user("delegate"), tool_call("Agent", {"description": "Find the cursor"}, tool_use_id="toolu_77"))
+    append(transcript(), *main, line({"type": "user", "message": {"content": [failed]}}))
+    append(transcript(agent=AID), user("find the cursor"))
+    write_meta(SID, AID, agentType="Explore", description="Find the cursor", toolUseId="toolu_77")
+    call = offsets(*main)[1]
+    shown = page(served, f"/s/{SID}")
+    assert (
+        f'<div class="step call spawns error" id="m{call}.0"><details><summary><b>Agent</b> '
+        '<span class="gist">Find the cursor</span><span class="size error">error</span></summary>'
+    ) in shown
+    assert f'</details><a class="spawned" href="s/{SID}/{AID}">↳ a7c9c203</a></div>' in shown
+
+
 def test_the_back_link_returns_to_the_results_a_page_was_opened_from(served):
     lines = (user("first"), reply("the quokka line"))
     append(transcript(), *lines)

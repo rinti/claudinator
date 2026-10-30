@@ -813,13 +813,14 @@ def _call(
         css = "output error" if out.error else "output"
         panel.append(el("div", {"class": css, "id": f"m{out.key}"}, *_output_body(sid, aid, out, at, terms)))
     opened = at is not None and at in (call.key, out and out.key)
+    failed = out is not None and out.error
     if call.spawned:
         spawned = el(
             "a", {"class": "spawned", "href": href_transcript(sid, call.spawned.id)}, f"↳ {call.spawned.id[:8]}"
         )
-        return _row(call.key, "call spawns", call.tool, _gist(call.input), None, panel, opened, spawned)
-    css = "call error" if out is not None and out.error else "call"
-    return _row(call.key, css, call.tool, _gist(call.input), _size(out), panel, opened)
+        css = "call spawns error" if failed else "call spawns"
+        return _row(call.key, css, call.tool, _gist(call.input), _size(out) if failed else None, panel, opened, spawned)
+    return _row(call.key, "call error" if failed else "call", call.tool, _gist(call.input), _size(out), panel, opened)
 
 
 def _gist(given: str) -> str:
