@@ -865,20 +865,34 @@ def _img(sid: SessionId, aid: AgentId | None, key: Key, shown: Picture) -> Html:
     return el("img", {"loading": "lazy", "alt": about, "src": href_image(sid, aid, key, shown.part)})
 
 
-CODE = re.compile(r"^```[^\n`]*\n(.*?)\n?^```[ \t]*$\n?|`([^`\n]+)`", re.S | re.M)
+FENCE = re.compile(r"^```(?P<info>[^\n`]*)$", re.M)
+INLINE_CODE = re.compile(r"`(?P<code>[^`\n]+)`")
+
+
+def _fences(s: str) -> Iterator[tuple[re.Match[str], re.Match[str]]]:
+    lines = FENCE.finditer(s)
+    for opener in lines:
+        closer = next((m for m in lines if not m["info"].strip(" \t")), None)
+        if closer is None:
+            return
+        yield opener, closer
 
 
 def _prose(s: str, here: bool, terms: tuple[str, ...]) -> tuple[Html, ...]:
     s, out, at = _cut(s), [], 0
-    for m in CODE.finditer(s):
-        if m[1] is not None:
-            code = el("pre", {"class": "code"}, _mark(m[1], here, terms))
-        else:
-            code = el("code", None, _mark(m[2], here, terms))
-        out += (_mark(s[at : m.start()], here, terms), code)
+    for opener, closer in _fences(s):
+        body = s[opener.end() + 1 : closer.start()].removesuffix("\n")
+        out += (*_inline(s[at : opener.start()], here, terms), el("pre", {"class": "code"}, _mark(body, here, terms)))
+        at = closer.end() + 1
+    return (*out, *_inline(s[at:], here, terms))
+
+
+def _inline(s: str, here: bool, terms: tuple[str, ...]) -> list[Html]:
+    out, at = [], 0
+    for m in INLINE_CODE.finditer(s):
+        out += (_mark(s[at : m.start()], here, terms), el("code", None, _mark(m["code"], here, terms)))
         at = m.end()
-    out.append(_mark(s[at:], here, terms))
-    return tuple(out)
+    return [*out, _mark(s[at:], here, terms)]
 
 
 def _text(s: str, here: bool, terms: tuple[str, ...]) -> Html:

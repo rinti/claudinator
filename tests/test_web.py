@@ -3,6 +3,7 @@ import base64
 import http.client
 import json
 import re
+import signal
 import sqlite3
 import subprocess
 import threading
@@ -419,6 +420,26 @@ def test_prose_sets_fenced_and_inline_code_as_code_and_leaves_a_stray_backtick_a
     ) in shown
     landed = page(served, f"/s/{SID}?at={at}.0&q=quokka+sync")
     assert 'Run <code>uv <mark>sync</mark></code> then:\n<pre class="code">echo &quot;&lt;b&gt;<mark>quokka</mark>&lt;/b&gt;&quot;</pre>' in landed
+
+
+def test_a_reply_of_unclosed_fences_renders_in_well_under_a_second():
+    append(transcript(), user("go"), reply("```a\n" * (web.INLINE_CHARS // 5)))
+    with open_archive() as archive:
+        archive.sweep()
+        session = archive.session(SID)
+        steps = build(archive.lines(SID), session.agents, None)
+
+    def late(signum, frame):
+        raise TimeoutError("the page took over a second")
+
+    previous = signal.signal(signal.SIGALRM, late)
+    signal.setitimer(signal.ITIMER_REAL, 1)
+    try:
+        shown = web.transcript_page("/T/", session, None, steps, None, "", False, None)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+    assert '<div class="text">```a\n```a\n```a\n' in shown and '<pre class="code">' not in shown
 
 
 def test_a_transcript_shows_the_time_once_a_minute_and_a_heading_where_the_day_changes(served):
