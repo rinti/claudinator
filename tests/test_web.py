@@ -319,7 +319,7 @@ def test_a_commands_output_shows_without_its_wrapper_tags_and_marks_land_on_the_
     )
     append(transcript(), *lines)
     at = offsets(*lines)[1]
-    assert f'href="s/{SID}?at={at}.0&amp;q=quokka+wombat#m{at}.0"' in page(served, "/?q=quokka+wombat&tools=on")
+    assert f'href="s/{SID}?at={at}.0&amp;q=quokka+wombat&amp;tools=on#m{at}.0"' in page(served, "/?q=quokka+wombat&tools=on")
     shown = page(served, f"/s/{SID}")
     assert (
         f'<div class="step output" id="m{at}.0"><details><summary><b>Output</b> <span class="gist">Resolved 1 quokka</span>'
@@ -392,6 +392,16 @@ def test_the_back_link_returns_to_the_results_a_page_was_opened_from(served):
     ]
     assert re.findall(back, page(served, f"/s/{SID}/{AID}")) == [(f"s/{SID}", "first")]
     assert re.findall(back, page(served, f"/s/{SID}/{AID}?at=0.0&q=quokka")) == [("./?q=quokka", "Results for “quokka”")]
+    called = (user("go"), tool_call("Bash", {"command": "ls"}), tool_result("a wombat burrow"))
+    append(transcript(SID2), *called)
+    search = "?q=wombat&project=demo&since=2026-09-01&until=2026-11-01&tools=on"
+    hit = re.search(r'<a class="open" href="([^"#]*)', page(served, "/" + search))[1].replace("&amp;", "&")
+    landed = page(served, "/" + hit)
+    [(href, label)] = re.findall(back, landed)
+    assert (href.replace("&amp;", "&"), label) == ("./" + search, "Results for “wombat”")
+    assert f'<a class="open" href="s/{SID2}?at={offsets(*called)[2]}.0' in page(served, href.replace("&amp;", "&")[1:])
+    kept = '<input type="hidden" name="project" value="demo"><input type="hidden" name="since" value="2026-09-01">'
+    assert kept + '<input type="hidden" name="until" value="2026-11-01"><input type="hidden" name="tools" value="on">' in landed
 
 
 def test_prompts_are_numbered_from_the_start_of_their_own_transcript(served):
@@ -435,7 +445,7 @@ def test_a_reply_of_unclosed_fences_renders_in_well_under_a_second():
     previous = signal.signal(signal.SIGALRM, late)
     signal.setitimer(signal.ITIMER_REAL, 1)
     try:
-        shown = web.transcript_page("/T/", session, None, steps, None, "", False, None)
+        shown = web.transcript_page("/T/", session, None, steps, None, web.Form(), False, None)
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
@@ -565,7 +575,7 @@ def test_a_search_hit_opens_its_transcript_at_the_matching_step_with_the_words_m
     assert re.findall(r'<a [^>]*href="([^"]*)"', found) == [f"s/{SID}?at={at}.0&amp;q=quokka#m{at}.0"]
     assert f'id="m{at}.0"><div class="text">the <mark>quokka</mark> line</div>' in page(served, f"/s/{SID}?at={at}.0&q=quokka")
     assert f'href="s/{SID}/{AID}?at=0.0&amp;q=wombat#m0.0"' in page(served, "/?q=wombat")
-    assert f'<a class="open" href="s/{SID2}">Zebracorn hunt</a>' in page(served, "/?q=zebracorn")
+    assert f'<a class="open" href="s/{SID2}?q=zebracorn">Zebracorn hunt</a>' in page(served, "/?q=zebracorn")
 
 
 def test_lines_that_show_nothing_fold_into_one_marker_with_a_raw_link_each(served):
@@ -702,7 +712,7 @@ def test_transcript_text_is_text_whatever_it_holds():
     with open_archive() as archive:
         archive.sweep()
         session = archive.session(SID)
-        shown = web.transcript_page("/T/", session, None, build(archive.lines(SID), session.agents, None), None, "", False, None)
+        shown = web.transcript_page("/T/", session, None, build(archive.lines(SID), session.agents, None), None, web.Form(), False, None)
     assert (
         '<div class="text">run &lt;script&gt;alert(1)&lt;/script&gt; and &lt;img src=x onerror=alert(2)&gt; on '
         '<span class="esc">\\x1b</span>[31mred <span class="esc">\\u202e</span>gpj.exe</div>'

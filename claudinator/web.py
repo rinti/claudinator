@@ -9,7 +9,7 @@ import sqlite3
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -201,11 +201,11 @@ TRANSCRIPT = re.compile(rf"/s/({SID})(?:/({AID}))?")
 
 
 def href_transcript(
-    sid: SessionId, aid: AgentId | None = None, at: Key | None = None, q: str = "", hidden: bool = False
+    sid: SessionId, aid: AgentId | None = None, at: Key | None = None, search: Form | None = None, hidden: bool = False
 ) -> str:
     path = f"s/{sid}" + (f"/{aid}" if aid else "")
-    landed = {} if at is None else {"at": str(at)} | ({"q": q} if q else {})
-    query = landed | ({"hidden": "1"} if hidden else {})
+    landed = {} if at is None else {"at": str(at)}
+    query = landed | (search.params() if search else {}) | ({"hidden": "1"} if hidden else {})
     return path + (f"?{urlencode(query)}" if query else "") + ("" if at is None else f"#m{at}")
 
 
@@ -224,7 +224,7 @@ def transcript(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str
                 return Response(303, HTML, b"", headers=(("Location", root + href_transcript(sid, aid, step.key)),))
     at = re.fullmatch(rf"({OFFSET})\.(\d{{1,9}})", query.get("at", ""))
     landed = at and Key(int(at[1]), int(at[2]))
-    body = transcript_page(root, session, aid, steps, landed, query.get("q", ""), query.get("hidden") == "1", swept)
+    body = transcript_page(root, session, aid, steps, landed, Form.read(query), query.get("hidden") == "1", swept)
     return Response(200, HTML, _document(body))
 
 
@@ -317,6 +317,10 @@ class Form:
     def read(cls, query: Mapping[str, str]) -> Form:
         fields = (query.get(name, "") for name in ("q", "project", "since", "until"))
         return cls(*fields, tools="tools" in query)
+
+    def params(self) -> dict[str, str]:
+        given = {"q": self.q, "project": self.project, "since": self.since, "until": self.until}
+        return {name: value for name, value in given.items() if value} | ({"tools": "on"} if self.tools else {})
 
     def terms(self) -> tuple[str, ...]:
         return tuple(phrase or word for phrase, word in re.findall(r'"([^"]*)"|(\S+)', self.q))
@@ -413,7 +417,7 @@ def search_page(root: str, hits: Sequence[SessionHit], form: Form, swept: SweepR
     count = _plural(len(hits), "session") + (", the best of more" if len(hits) == SEARCH_LIMIT else "")
     about = " ".join(part for part in (f"matching “{form.q}”", _scope(form)) if part)
     if hits:
-        found = el("ol", {"class": "hits"}, *(_hit(hit, form.q) for hit in hits))
+        found = el("ol", {"class": "hits"}, *(_hit(hit, form) for hit in hits))
     else:
         tip = "Try fewer words, a prefix like deploy*, or turn on Include tools."
         found = el("div", {"class": "none"}, el("p", {"class": "big"}, "Nothing matches that."), el("p", None, tip))
@@ -434,7 +438,7 @@ KINDS = {
 }
 
 
-def _hit(hit: SessionHit, q: str) -> Html:
+def _hit(hit: SessionHit, form: Form) -> Html:
     s, best = hit.session, hit.best
     at = None if best.kind is Kind.TITLE else Key(best.line_off, best.block)
     when = _local(s.last_ts)
@@ -446,7 +450,7 @@ def _hit(hit: SessionHit, q: str) -> Html:
         el("span", None, *_where(s.cwd)),
         el("span", {"class": "tag"}, found + (f" · subagent {best.agent_id[:8]}" if best.agent_id else "")),
     )
-    title = el("a", {"class": "open", "href": href_transcript(s.id, best.agent_id, at, q)}, s.title or s.id[:8])
+    title = el("a", {"class": "open", "href": href_transcript(s.id, best.agent_id, at, form)}, s.title or s.id[:8])
     return el(
         "li",
         None,
@@ -473,7 +477,7 @@ def _toolbar(form: Form, count: str, about: str, *, clear: bool) -> Html:
         {"class": "said"},
         el("h1", None, count),
         el("span", {"class": "scope"}, about) if about else None,
-        el("a", {"class": "clear", "href": _href_filters(form)}, "Clear") if clear else None,
+        el("a", {"class": "clear", "href": href_list(replace(form, q=""))}, "Clear") if clear else None,
     )
     tools = el("input", {"class": "switch", "type": "checkbox", "name": "tools", "form": "find", "checked": form.tools})
     return el(
@@ -503,9 +507,8 @@ def _scope(form: Form) -> str:
     return " ".join(f"{word} {value}" for word, value in said if value)
 
 
-def _href_filters(form: Form) -> str:
-    kept = {"project": form.project, "since": form.since, "until": form.until, "tools": "on" if form.tools else ""}
-    query = urlencode({name: value for name, value in kept.items() if value})
+def href_list(form: Form) -> str:
+    query = urlencode(form.params())
     return "./" + (f"?{query}" if query else "")
 
 
@@ -515,19 +518,19 @@ def transcript_page(
     aid: AgentId | None,
     steps: Sequence[Step],
     at: Key | None,
-    q: str,
+    search: Form,
     hidden: bool,
     swept: SweepReport | None,
 ) -> Html:
     s = session.summary
-    terms = searchable(Form(q=q).terms())
+    terms = searchable(search.terms())
     agent = None if aid is None else next((a for a in session.agents if a.id == aid), None)
     if aid is None:
         heading = s.title or s.id[:8]
     else:
         heading = (agent and agent.description) or f"Subagent {aid[:8]}"
-    if q:
-        back = _back("./?" + urlencode({"q": q}), f"Results for “{q}”")
+    if search.q:
+        back = _back(href_list(search), f"Results for “{search.q}”")
     elif aid:
         back = _back(href_transcript(s.id), s.title or s.id[:8])
     else:
@@ -541,13 +544,13 @@ def transcript_page(
     prompts = (step.key for step in steps if isinstance(step, Said) and step.kind is Kind.PROMPT)
     numbers = {key: n for n, key in enumerate(prompts, 1)}
     shown = [step for step in steps if hidden or not _folded(step)]
-    toggle = _toggle(href_transcript(s.id, aid, at, q, not hidden), sum(map(_folded, steps)), hidden)
+    toggle = _toggle(href_transcript(s.id, aid, at, search, not hidden), sum(map(_folded, steps)), hidden)
     aside = _aside(session, aid, agent, el("div", {"class": "actions"}, _download(s.id, aid), toggle))
     body = el("div", {"class": "steps"}, *_dated(s.id, aid, shown, at, terms, numbers))
     return page(
         root,
         heading,
-        _top(q),
+        _top(search.q, replace(search, q="").params()),
         el(
             "main",
             {"class": "transcript"},
@@ -925,7 +928,7 @@ def _noun(n: int, noun: str) -> str:
     return noun if n == 1 else noun + "s"
 
 
-def _top(q: str) -> Html:
+def _top(q: str, kept: Mapping[str, str] | None = None) -> Html:
     glass = el(
         "svg",
         {"class": "glass", "viewBox": "0 0 16 16", "aria-hidden": "true"},
@@ -948,6 +951,7 @@ def _top(q: str) -> Html:
         glass,
         field,
         el("button", None, "Search"),
+        *(el("input", {"type": "hidden", "name": name, "value": value}) for name, value in (kept or {}).items()),
     )
     return el(
         "header", {"class": "top"}, el("div", None, el("a", {"class": "wordmark", "href": "./"}, "claudinator"), find)
