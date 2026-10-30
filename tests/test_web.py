@@ -218,10 +218,37 @@ def test_a_transcript_shows_each_result_inside_the_call_it_answers(served):
     append(transcript(), *lines)
     at = offsets(*lines)
     shown = page(served, f"/s/{SID}")
-    read = re.search(rf'<section class="step call" id="m{at[1]}\.0">.*?</section>', shown, re.S)[0]
-    bash = re.search(rf'<section class="step call" id="m{at[2]}\.0">.*?</section>', shown, re.S)[0]
+    read, bash = (re.search(rf'<div class="step call[^"]*" id="m{at[n]}\.0">.*?<a class="raw" href="raw/{SID}/{at[n]}">', shown, re.S)[0] for n in (1, 2))
     assert f'<div class="output" id="m{at[4]}.0"><pre>one</pre>' in read
-    assert f'<div class="output error" id="m{at[3]}.0"><span class="label">error</span><pre>exit 1</pre>' in bash
+    assert f'<div class="output error" id="m{at[3]}.0"><pre>exit 1</pre>' in bash
+    assert bash.startswith('<div class="step call error"') and '<span class="size">error</span>' in bash
+
+
+def test_a_call_is_one_row_with_a_short_output_below_it_and_a_long_one_inside(served):
+    lines = (
+        user("go"),
+        tool_call("Bash", {"command": "echo hi"}, tool_use_id="toolu_1"),
+        tool_result("hi", tool_use_id="toolu_1"),
+        tool_call("Bash", {"command": "seq 4"}, tool_use_id="toolu_2"),
+        tool_result("1\n2\n3\nquokka", tool_use_id="toolu_2"),
+        tool_call("Bash", {"command": "true"}, tool_use_id="toolu_3"),
+    )
+    append(transcript(), *lines)
+    at = offsets(*lines)
+    given = "<pre>{\n  &quot;command&quot;: &quot;%s&quot;\n}</pre>"
+    shown = page(served, f"/s/{SID}")
+    assert (
+        f'<div class="step call" id="m{at[1]}.0"><details><summary><b>Bash</b> <span class="gist">echo hi</span> <span class="size">1 line</span></summary>'
+        f'{given % "echo hi"}</details><div class="output" id="m{at[2]}.0"><pre>hi</pre>'
+    ) in shown
+    assert (
+        f'<div class="step call" id="m{at[3]}.0"><details><summary><b>Bash</b> <span class="gist">seq 4</span> <span class="size">4 lines</span></summary>'
+        f'{given % "seq 4"}<div class="output" id="m{at[4]}.0"><pre>1\n2\n3\nquokka</pre>'
+    ) in shown
+    assert f'<div class="step call" id="m{at[5]}.0"><details><summary><b>Bash</b> <span class="gist">true</span> <span class="size">no output</span></summary>' in shown
+    landed = page(served, f"/s/{SID}?at={at[4]}.0&q=quokka")
+    assert f'<div class="step call" id="m{at[3]}.0"><details open>' in landed and "<pre>1\n2\n3\n<mark>quokka</mark></pre>" in landed
+    assert f'<div class="step call" id="m{at[1]}.0"><details>' in landed
 
 
 def test_a_call_sums_up_its_input_by_its_first_string_field(served):
@@ -233,13 +260,13 @@ def test_a_call_sums_up_its_input_by_its_first_string_field(served):
         ("TodoWrite", {"todos": [{"content": "ship"}], "merge": True}),
     )
     append(transcript(), user("go"), *(tool_call(name, given, tool_use_id=f"toolu_{i}") for i, (name, given) in enumerate(calls)))
-    summaries = re.findall(r'<details class="input"><summary>(.*?)</summary>', page(served, f"/s/{SID}"))
+    summaries = re.findall(r'<summary><b>(.*?)</b> <span class="gist">(.*?)</span>', page(served, f"/s/{SID}"))
     assert summaries == [
-        "<b>Bash</b> ls -la /tmp",
-        "<b>Read</b> /a/b.py",
-        "<b>Agent</b> Find the cursor",
-        "<b>Grep</b> " + "x" * 159 + "…",
-        "<b>TodoWrite</b> {&quot;todos&quot;:[{&quot;content&quot;:&quot;ship&quot;}],&quot;merge&quot;:true}",
+        ("Bash", "ls -la /tmp"),
+        ("Read", "/a/b.py"),
+        ("Agent", "Find the cursor"),
+        ("Grep", "x" * 159 + "…"),
+        ("TodoWrite", "{&quot;todos&quot;:[{&quot;content&quot;:&quot;ship&quot;}],&quot;merge&quot;:true}"),
     ]
     assert '<pre>{\n  &quot;command&quot;: &quot;ls -la\\n   /tmp&quot;,\n  &quot;description&quot;: &quot;List tmp&quot;\n}</pre>' in page(served, f"/s/{SID}")
 
@@ -266,7 +293,23 @@ def test_a_commands_output_shows_without_its_wrapper_tags_and_marks_land_on_the_
 def test_a_task_notification_is_summed_up_by_its_summary(served):
     note = "<task-notification><task-id>b1</task-id><summary>Build finished</summary></task-notification>"
     append(transcript(), user("go"), user(note, origin={"kind": "task-notification"}))
-    assert '<summary><span class="label">notification</span> Build finished</summary>' in page(served, f"/s/{SID}")
+    assert "<summary>A notification came in: Build finished</summary>" in page(served, f"/s/{SID}")
+
+
+def test_a_notice_is_a_sentence_that_quotes_its_text_where_the_text_adds_to_it(served):
+    queued = {"type": "queued_command", "prompt": "also the quokka", "origin": {"kind": "human"}}
+    lines = (
+        user("go"),
+        line({"type": "attachment", "attachment": queued}),
+        user("[Request interrupted by user]"),
+        line({"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted"}),
+    )
+    append(transcript(), *lines)
+    at = offsets(*lines)
+    shown = page(served, f"/s/{SID}")
+    assert f'<div class="step notice queued" id="m{at[1]}.0">You queued a prompt while Claude worked: <span class="text">also the quokka</span><a ' in shown
+    assert f'<div class="step notice interrupted" id="m{at[2]}.0">You interrupted Claude.<a ' in shown
+    assert f'<div class="step notice compacted" id="m{at[3]}.0">The conversation was compacted.<a ' in shown
 
 
 def test_an_agent_call_links_its_subagent_and_the_subagent_links_back(served):
@@ -280,12 +323,45 @@ def test_an_agent_call_links_its_subagent_and_the_subagent_links_back(served):
     write_meta(SID, nested, agentType="Explore", description="Look deeper", toolUseId="toolu_88", parentAgentId=AID)
     call, inner = offsets(*main)[1], offsets(*child)[1]
     shown = page(served, f"/s/{SID}")
-    assert f'<section class="step call" id="m{call}.0">' in shown
-    assert f'<a class="spawned" href="s/{SID}/{AID}">subagent a7c9c203 · Explore · Find the cursor</a>' in shown
-    assert f'<a href="s/{SID}?call=toolu_77">the call that started it</a>' in page(served, f"/s/{SID}/{AID}")
+    assert f'<li><span class="id">a7c9c203</span><a href="s/{SID}/{AID}">Find the cursor</a><span class="type">Explore</span></li>' in shown
+    assert f'<div class="step call" id="m{call}.0"><details><summary><b>Agent</b> <span class="gist">Find the cursor</span></summary>' in shown
+    assert f'</details><a class="spawned" href="s/{SID}/{AID}">subagent a7c9c203</a>' in shown
+    started = f'<a href="s/{SID}">delegate</a>. <a href="s/{SID}?call=toolu_77">See the call that started it</a>.'
+    assert f"<h1>Find the cursor</h1><p>Subagent a7c9c203, type Explore, in {started}</p>" in page(served, f"/s/{SID}/{AID}")
     assert get(served, f"/s/{SID}?call=toolu_77")[1]["location"] == f"{served.root}s/{SID}?at={call}.0#m{call}.0"
-    assert f'<a href="s/{SID}/{AID}?call=toolu_88">the call that started it</a>' in page(served, f"/s/{SID}/{nested}")
+    assert f'<a href="s/{SID}/{AID}?call=toolu_88">See the call that started it</a>' in page(served, f"/s/{SID}/{nested}")
     assert get(served, f"/s/{SID}/{AID}?call=toolu_88")[1]["location"] == f"{served.root}s/{SID}/{AID}?at={inner}.0#m{inner}.0"
+
+
+def test_a_transcript_shows_the_time_once_a_minute_and_a_heading_where_the_day_changes(served):
+    lines = (
+        user("first", ts="2026-10-29T22:38:05Z"),
+        reply("same minute", ts="2026-10-29T22:38:50Z"),
+        line({"type": "system", "subtype": "api_error", "error": {"message": "overloaded"}}),
+        reply("next minute", ts="2026-10-29T22:39:01Z"),
+        user("after midnight", ts="2026-10-30T00:01:00Z"),
+        user("new year", ts="2027-01-01T09:30:00Z"),
+    )
+    append(transcript(), *lines)
+    at = offsets(*lines)
+    main = page(served, f"/s/{SID}").partition("<main>")[2]
+    found = re.findall(r'<h2 class="day">(.*?)</h2>|<time>(.*?)</time>|<div class="step [^"]*" id="m(\d+)\.0"', main)
+    assert [day or time or int(step) for day, time, step in found] == [
+        "Thursday 29 October 2026", "22:38", at[0], at[1], at[2], "22:39", at[3],
+        "Friday 30 October", "00:01", at[4],
+        "Friday 1 January 2027", "09:30", at[5],
+    ]
+
+
+def test_a_transcript_header_says_where_and_when_how_much_and_how_to_resume(served):
+    append(transcript(), user("hello", ts="2026-10-29T22:38:00Z"), reply("hi", ts="2026-10-30T10:59:00Z"))
+    append(transcript(agent=AID), user("subagent", ts="2026-10-29T23:00:00Z"))
+    append(transcript(SID2), user("short", ts="2026-10-29T08:00:00Z"), reply("done", ts="2026-10-29T08:20:00Z"))
+    shown = page(served, f"/s/{SID}")
+    assert "<p>In /Users/me/dev/demo, 29 Oct 22:38 to 30 Oct 10:59.</p><p>1 prompt and 1 subagent. Resume it with <code>claudinator resume 8f2d43fe</code></p>" in shown
+    transcript(SID2).unlink()
+    gone = page(served, f"/s/{SID2}")
+    assert "<p>In /Users/me/dev/demo, 29 Oct 08:00 to 08:20.</p><p>1 prompt. Claude Code has deleted its copy, and resuming puts it back. Resume it with " in gone
 
 
 def test_the_list_counts_its_sessions_and_reads_date_title_project_prompts_agents(served):
@@ -333,16 +409,17 @@ def test_hidden_lines_stay_out_of_the_way_until_asked_for_and_notices_always_sho
     at = offsets(*lines)[4]
     shown = page(served, f"/s/{SID}")
     assert 'class="step hidden"' not in shown
-    assert '<span class="label">api error</span>' in shown
-    assert f'<span> · 3 hidden lines · <a href="s/{SID}?hidden=1">show</a></span>' in shown
+    error = 'The API answered with an error: <span class="text">overloaded</span>'
+    assert error in shown
+    assert f'<a href="s/{SID}?hidden=1">Show 3 hidden lines</a></p>' in shown
     revealed = page(served, f"/s/{SID}?hidden=1")
     assert revealed.count('class="step hidden"') == 3
-    assert '<span class="label">api error</span>' in revealed
-    assert f'<span> · 3 hidden lines · <a href="s/{SID}">hide</a></span>' in revealed
+    assert error in revealed
+    assert f'<a href="s/{SID}">Hide hidden lines</a></p>' in revealed
     landed = page(served, f"/s/{SID}?at={at}.0&q=quokka")
-    assert f'<a href="s/{SID}?at={at}.0&amp;q=quokka&amp;hidden=1#m{at}.0">show</a>' in landed
+    assert f'<a href="s/{SID}?at={at}.0&amp;q=quokka&amp;hidden=1#m{at}.0">Show 3 hidden lines</a>' in landed
     revealed = page(served, f"/s/{SID}?at={at}.0&q=quokka&hidden=1")
-    assert f'<a href="s/{SID}?at={at}.0&amp;q=quokka#m{at}.0">hide</a>' in revealed
+    assert f'<a href="s/{SID}?at={at}.0&amp;q=quokka#m{at}.0">Hide hidden lines</a>' in revealed
     assert "the <mark>quokka</mark> line" in revealed
 
 
@@ -450,7 +527,7 @@ def test_transcript_text_is_text_whatever_it_holds():
         '<span class="esc">\\x1b</span>[31mred <span class="esc">\\u202e</span>gpj.exe</div>'
     ) in shown
     assert "<title>Invoice \\u202egpj.exe &lt;b&gt;</title>" in shown
-    assert "<summary><b>&lt;b&gt;Tool</b> &lt;/pre&gt;&lt;script&gt;</summary>" in shown
+    assert '<summary><b>&lt;b&gt;Tool</b> <span class="gist">&lt;/pre&gt;&lt;script&gt;</span> <span class="size">no output</span></summary>' in shown
     assert 'alt="image, x&quot; onerror=&quot;alert(3), 3 B"' in shown
     assert "<script" not in shown and "<img src=x" not in shown and "‮" not in shown and "\x1b" not in shown
 

@@ -7,13 +7,16 @@ import re
 import secrets
 import sqlite3
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from io import BytesIO
+from itertools import groupby
+from operator import itemgetter
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit
 
 from claudinator import human
@@ -33,7 +36,7 @@ from claudinator.archive import (
 )
 from claudinator.conversation import Call, Hidden, Image, Key, Marker, Output, Said, Step, Thought, build
 from claudinator.layout import AGENT_ID, Config
-from claudinator.record import AgentId, Kind, Millis, Note, Picture, SessionId, image, printed, task_summary
+from claudinator.record import AgentId, Kind, Millis, Note, Notice, Picture, SessionId, image, printed, task_summary
 from claudinator.search_text import marks, searchable
 
 PAGE_POLICY = (
@@ -340,61 +343,115 @@ def transcript_page(
     s = session.summary
     terms = searchable(Form(q=q).terms())
     title = s.title or s.id[:8]
-    agent = next((a for a in session.agents if a.id == aid), None)
-    where = "on disk" if s.on_disk else "deleted by Claude Code, kept in the archive"
-    facts = (
-        f"{human.short(s.cwd)} · {human.when(s.first_ts)} to {human.when(s.last_ts)}"
-        f" · {_plural(s.prompts, 'prompt')} · {where} · "
+    folded = sum(map(_folded, steps))
+    toggle = el(
+        "a",
+        {"href": href_transcript(s.id, aid, at, q, not hidden)},
+        "Hide hidden lines" if hidden else f"Show {_plural(folded, 'hidden line')}",
     )
-    if agent is None:
-        about = el("ul", {"class": "agents"}, *(_agent(s.id, a) for a in session.agents)) if session.agents else None
-    else:
-        about = el(
-            "p",
-            {"class": "agent"},
-            f"subagent {agent.id[:8]} · {agent.agent_type or '?'} · {agent.description or ''} · ",
-            el("a", {"href": href_call(s.id, agent.parent, agent.tool_use_id)}, "the call that started it")
-            if agent.tool_use_id
-            else el("a", {"href": href_transcript(s.id)}, "main transcript"),
+    links = el(
+        "p",
+        {"class": "links"},
+        el("a", {"href": href_export(s.id, aid)}, "Download the transcript"),
+        *((" ", toggle) if folded else ()),
+    )
+    span = el("p", None, _span(s))
+    if aid is None:
+        heading, facts = title, (span, _resume(s))
+        agents = el(
+            "section",
+            {"class": "agents"},
+            el("h2", None, "Subagents"),
+            el("ul", None, *(_agent(s.id, a) for a in session.agents)),
         )
+    else:
+        agent = next((a for a in session.agents if a.id == aid), None)
+        heading, facts = (agent and agent.description) or f"Subagent {aid[:8]}", (_subagent(s, aid, agent), span)
+        agents = None
     header = el(
-        "header",
-        {"class": "session"},
-        el("a", {"href": "./"}, "all sessions"),
-        el("h1", None, title + (f" · subagent {aid[:8]}" if aid else "")),
-        el(
-            "p",
-            {"class": "muted"},
-            facts,
-            el("code", None, f"claudinator resume {s.id[:8]}"),
-            " · ",
-            el("a", {"href": href_export(s.id, aid)}, "download .jsonl"),
-            el(
-                "span",
-                None,
-                f" · {_plural(folded, 'hidden line')} · ",
-                el("a", {"href": href_transcript(s.id, aid, at, q, not hidden)}, "hide" if hidden else "show"),
-            )
-            if (folded := sum(map(_folded, steps)))
-            else None,
-        ),
-        about,
+        "header", {"class": "session"}, el("a", {"href": "./"}, "All sessions"), el("h1", None, heading), *facts, links
     )
-    body, speaker = [], None
-    for step in steps:
-        if _folded(step) and not hidden:
-            continue
-        who = _speaker(step)
-        if who and who != speaker:
-            body.append(el("h2", {"class": f"speaker {who}"}, f"{human.when(step.ts)}  {who}"))
-            speaker = who
-        body.append(_step(s.id, aid, step, at, terms))
-    return page(root, title, header, _banner(swept, ""), el("main", None, *body))
+    shown = [step for step in steps if hidden or not _folded(step)]
+    minutes = (
+        (
+            minute,
+            el(
+                "div",
+                {"class": "minute"},
+                el("time", None, f"{minute:%H:%M}") if minute else None,
+                *(_step(s.id, aid, step, at, terms) for step in run),
+            ),
+        )
+        for minute, run in _minutes(shown)
+    )
+    body = el("main", None, *_days(minutes))
+    return page(root, heading, header, _banner(swept, ""), agents if session.agents else None, body)
+
+
+def _span(s: SessionSummary) -> str:
+    where = f"In {human.short(s.cwd)}" if s.cwd else "In an unknown directory"
+    first, last = _local(s.first_ts), _local(s.last_ts)
+    if first is None or last is None:
+        return where + "."
+    end = f"{last:%H:%M}" if last.date() == first.date() else _short_date(last)
+    return f"{where}, {_short_date(first)} to {end}."
+
+
+def _resume(s: SessionSummary) -> Html:
+    counts = _plural(s.prompts, "prompt") + (f" and {_plural(s.subagents, 'subagent')}" if s.subagents else "")
+    deleted = "" if s.on_disk else " Claude Code has deleted its copy, and resuming puts it back."
+    return el("p", None, f"{counts}.{deleted} Resume it with ", el("code", None, f"claudinator resume {s.id[:8]}"))
+
+
+def _subagent(s: SessionSummary, aid: AgentId, agent: Subagent | None) -> Html:
+    kind = f", type {agent.agent_type}," if agent and agent.agent_type else ""
+    said = (f"Subagent {aid[:8]}{kind} in ", el("a", {"href": href_transcript(s.id)}, s.title or s.id[:8]), ".")
+    if agent and agent.tool_use_id:
+        call = el("a", {"href": href_call(s.id, agent.parent, agent.tool_use_id)}, "See the call that started it")
+        said += (" ", call, ".")
+    return el("p", None, *said)
 
 
 def _agent(sid: SessionId, a: Subagent) -> Html:
-    link = el("a", {"href": href_transcript(sid, a.id)}, a.id[:8])
-    return el("li", None, link, f" {a.agent_type or ''} ", a.description or "")
+    link = el("a", {"href": href_transcript(sid, a.id)}, a.description or f"Subagent {a.id[:8]}")
+    return el(
+        "li", None, el("span", {"class": "id"}, a.id[:8]), link, el("span", {"class": "type"}, a.agent_type or "")
+    )
+
+
+def _local(ms: int | None) -> datetime | None:
+    return None if ms is None else datetime.fromtimestamp(ms / 1000)
+
+
+def _short_date(when: datetime) -> str:
+    return f"{when.day} {when:%b %H:%M}"
+
+
+def _minutes(steps: Sequence[Step]) -> Iterator[tuple[datetime | None, list[Step]]]:
+    """Runs of steps by the local minute they happened in. A marker has no
+    time, so it joins the run before it."""
+
+    def stamped() -> Iterator[tuple[datetime | None, Step]]:
+        minute = None
+        for step in steps:
+            if not isinstance(step, Marker) and (when := _local(step.ts)) is not None:
+                minute = when.replace(second=0, microsecond=0)
+            yield minute, step
+
+    for minute, run in groupby(stamped(), key=itemgetter(0)):
+        yield minute, [step for _, step in run]
+
+
+def _days(dated: Iterable[tuple[datetime | None, Html]]) -> Iterator[Html]:
+    """Each item, after a heading wherever the local day changes. The first
+    heading names the year, and so does one where the year turns."""
+    seen = None
+    for when, item in dated:
+        if when is not None and when.date() != seen:
+            year = f" {when.year}" if seen is None or when.year != seen.year else ""
+            yield el("h2", {"class": "day"}, f"{when:%A} {when.day} {when:%B}{year}")
+            seen = when.date()
+        yield item
 
 
 def _folded(step: Step) -> int:
@@ -404,14 +461,15 @@ def _folded(step: Step) -> int:
     return 0
 
 
-def _speaker(step: Step) -> str | None:
-    match step:
-        case Said(kind=Kind.PROMPT) | Image():
-            return "you"
-        case Said() | Call() | Output() | Thought():
-            return "claude"
-        case Marker():
-            return None
+NOTICES = {
+    Notice.QUEUED: "You queued a prompt while Claude worked",
+    Notice.COMPACTED: "The conversation was compacted",
+    Notice.INTERRUPTED: "You interrupted Claude",
+    Notice.API_ERROR: "The API answered with an error",
+    Notice.NOTIFICATION: "A notification came in",
+}
+STOCK = frozenset({Notice.COMPACTED, Notice.INTERRUPTED})
+"""Notices whose short text is Claude Code's wording of what the sentence says."""
 
 
 def _step(sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms: tuple[str, ...]) -> Html:
@@ -419,53 +477,51 @@ def _step(sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms
     here = step.key == at
     match step:
         case Said(key, _, kind, text):
-            who = "you" if kind is Kind.PROMPT else "claude"
             said = el("div", {"class": "text"}, _text(text, here, terms))
-            return el("div", {"class": f"step said {who}", "id": f"m{key}"}, said, raw_link)
-        case Call(key, _, tool, _, given, _, spawned, result):
-            subagent = None
-            if spawned is not None:
-                about = f"subagent {spawned.id[:8]} · {spawned.agent_type or '?'} · {spawned.description or ''}"
-                subagent = el("a", {"class": "spawned", "href": href_transcript(sid, spawned.id)}, about)
-            return el(
-                "section",
-                {"class": "step call", "id": f"m{key}"},
-                el(
-                    "details",
-                    {"class": "input", "open": here},
-                    el("summary", None, el("b", None, tool), " ", _gist(given)),
-                    el("pre", None, _text(json.dumps(json.loads(given), indent=2, ensure_ascii=False), here, terms)),
-                ),
-                subagent,
-                _output(sid, aid, result, at, terms) if result else el("p", {"class": "label"}, "no output"),
-                raw_link,
-            )
+            return el("div", {"class": f"step {kind.value}", "id": f"m{key}"}, said, raw_link)
+        case Call():
+            return _call(sid, aid, step, at, terms, raw_link)
         case Output():
-            return _output(sid, aid, step, at, terms, "step ")
+            css = "step output error" if step.error else "step output"
+            body = _output_body(sid, aid, step, at, terms)
+            if not _folds(step):
+                return el("div", {"class": css, "id": f"m{step.key}"}, *body)
+            first = (_plain(step).splitlines() or [""])[0]
+            summary = el(
+                "summary",
+                None,
+                el("span", {"class": "gist"}, human.clip(first, 120)),
+                " ",
+                el("span", {"class": "size"}, _size(step)),
+            )
+            return el("details", {"class": css, "id": f"m{step.key}", "open": here}, summary, *body)
         case Thought(key, _, text):
             return el(
                 "details",
                 {"class": "step thought", "id": f"m{key}", "open": here},
-                el("summary", None, f"thinking · {_count(text)}"),
-                el("pre", None, _text(text, here, terms)),
+                el("summary", None, f"Thinking, {_count(text)}"),
+                el("div", {"class": "text"}, _text(text, here, terms)),
                 raw_link,
             )
         case Image(key, _, shown):
             return el("div", {"class": "step image", "id": f"m{key}"}, _img(sid, aid, key, shown), raw_link)
         case Marker(key, Note(notice, text)):
-            label = el("span", {"class": "label"}, notice.value)
-            css = f"step marker {notice.name.lower()}"
+            css = f"step notice {notice.name.lower()}"
             gist = task_summary(text)
-            if not _long(text) and gist is None:
-                shown = el("span", {"class": "text"}, text)
-                return el("div", {"class": css, "id": f"m{key}"}, label, " ", shown, raw_link)
-            first = gist or (text.strip().splitlines() or [""])[0]
+            quoted = notice not in STOCK and text.strip()
+            if _long(text) or gist is not None:
+                first = gist or (text.strip().splitlines() or [""])[0]
+                said = NOTICES[notice] + (f": {human.clip(first, 120)}" if quoted else "")
+                return el(
+                    "details",
+                    {"class": css, "id": f"m{key}", "open": here},
+                    el("summary", None, said),
+                    el("pre", None, text),
+                    raw_link,
+                )
+            shown = el("span", {"class": "text"}, text) if quoted else None
             return el(
-                "details",
-                {"class": css, "id": f"m{key}", "open": here},
-                el("summary", None, label, " ", human.clip(first, 120)),
-                el("pre", None, text),
-                raw_link,
+                "div", {"class": css, "id": f"m{key}"}, NOTICES[notice] + (": " if shown else "."), shown, raw_link
             )
         case Marker(key, Hidden(lines)):
             counts = ", ".join(f"{n} {name}" for name, n in Counter(name for _, name in lines).most_common())
@@ -477,6 +533,36 @@ def _step(sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms
             )
 
 
+def _call(
+    sid: SessionId, aid: AgentId | None, call: Call, at: Key | None, terms: tuple[str, ...], raw_link: Html
+) -> Html:
+    """One row: the tool, the gist of its input, and the size of its output.
+    A short output shows below the row; opening the row shows the input and
+    any other output."""
+    out = call.result
+    below = out is not None and not _folds(out) and bool(_plain(out).strip())
+    output = None
+    if out is not None:
+        css = "output error" if out.error else "output"
+        output = el("div", {"class": css, "id": f"m{out.key}"}, *_output_body(sid, aid, out, at, terms))
+    size = () if call.spawned else (" ", el("span", {"class": "size"}, _size(out)))
+    summary = el(
+        "summary", None, el("b", None, call.tool), " ", el("span", {"class": "gist"}, _gist(call.input)), *size
+    )
+    given = el(
+        "pre", None, _text(json.dumps(json.loads(call.input), indent=2, ensure_ascii=False), call.key == at, terms)
+    )
+    opened = call.key == at or (out is not None and not below and out.key == at)
+    details = el("details", {"open": opened}, summary, given, None if below else output)
+    spawned = (
+        el("a", {"class": "spawned", "href": href_transcript(sid, call.spawned.id)}, f"subagent {call.spawned.id[:8]}")
+        if call.spawned
+        else None
+    )
+    css = "step call error" if out is not None and out.error else "step call"
+    return el("div", {"class": css, "id": f"m{call.key}"}, details, spawned, output if below else None, raw_link)
+
+
 def _gist(given: str) -> str:
     value = json.loads(given)
     fields = value.values() if isinstance(value, dict) else ()
@@ -484,27 +570,37 @@ def _gist(given: str) -> str:
     return human.clip(" ".join(first.split()) if first else given, 160)
 
 
-def _output(
-    sid: SessionId, aid: AgentId | None, out: Output, at: Key | None, terms: tuple[str, ...], css: str = ""
-) -> Html:
-    here = out.key == at
-    css += "output error" if out.error else "output"
+def _streams(out: Output) -> tuple[tuple[str, bool], ...]:
     streams = printed(out.text)
-    if streams is None:
-        streams = ((out.text, False),)
-    body = (
-        *(_stream(text, stderr, here, terms) for text, stderr in streams),
+    return ((out.text, False),) if streams is None else streams
+
+
+def _plain(out: Output) -> str:
+    return "\n".join(text for text, _ in _streams(out))
+
+
+def _folds(out: Output) -> bool:
+    return bool(out.pictures) or _long(_plain(out))
+
+
+def _size(out: Output | None) -> str:
+    if out is not None and out.error:
+        return "error"
+    shown = "" if out is None else _plain(out)
+    lines = [_count(shown)] if shown.strip() else []
+    images = [_plural(len(out.pictures), "image")] if out is not None and out.pictures else []
+    return " and ".join(lines + images) or "no output"
+
+
+def _output_body(
+    sid: SessionId, aid: AgentId | None, out: Output, at: Key | None, terms: tuple[str, ...]
+) -> tuple[Html, ...]:
+    here = out.key == at
+    return (
+        *(_stream(text, stderr, here, terms) for text, stderr in _streams(out)),
         *(_img(sid, aid, out.key, p) for p in out.pictures),
         el("a", {"class": "raw", "href": href_raw(sid, aid, out.key.line_off)}, "raw"),
     )
-    shown = "\n".join(text for text, _ in streams)
-    if not _long(shown) and not out.pictures:
-        label = el("span", {"class": "label"}, "error") if out.error else None
-        return el("div", {"class": css, "id": f"m{out.key}"}, label, *body)
-    first = (shown.splitlines() or [""])[0]
-    flags = (" · error" if out.error else "") + (" · stderr" if any(stderr for _, stderr in streams) else "")
-    summary = human.clip(first, 120) + f" · {_count(shown)}" + flags
-    return el("details", {"class": css, "id": f"m{out.key}", "open": here}, el("summary", None, summary), *body)
 
 
 def _stream(text: str, stderr: bool, here: bool, terms: tuple[str, ...]) -> Html:
