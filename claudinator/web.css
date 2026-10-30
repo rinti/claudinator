@@ -326,7 +326,8 @@ a.project:active .leaf { color: var(--acc); }
 .columns > aside { flex: 1 1 19.125rem; display: flex; flex-direction: column; gap: 1.875rem; }
 .columns > .steps { flex: 999 1 32.5rem; max-inline-size: 51.25rem; }
 @container (inline-size >= 54.5rem) {
-  .columns > aside { position: sticky; inset-block-start: 6rem; max-inline-size: 21.25rem; }
+  .columns > aside { position: sticky; inset-block-start: 6rem; max-inline-size: 21.25rem; max-block-size: calc(100dvh - 6rem - 1.5rem); }
+  aside section:has(> .agents) { min-block-size: 0; }
 }
 
 aside section { display: flex; flex-direction: column; gap: 0.625rem; }

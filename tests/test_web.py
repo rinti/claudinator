@@ -789,3 +789,28 @@ def test_a_real_browser_renders_a_hostile_transcript_as_text_and_refuses_nothing
     assert (found.tags.count("main"), found.tags.count("script"), found.handlers) == (1, 0, [])
     assert "run &lt;script&gt;alert(1)&lt;/script&gt; and &lt;img src=x onerror=alert(2)&gt;" in dom
     assert '<span class="esc">\\u202e</span>gpj.exe' in dom
+
+
+MEASURE = """<script>
+scrollTo(0, 2500);
+const list = document.querySelector(".agents");
+list.scrollTop = list.scrollHeight;
+const aside = document.querySelector("aside").getBoundingClientRect();
+document.body.dataset.at = [aside.top, list.lastElementChild.getBoundingClientRect().bottom, innerHeight].map(Math.round);
+</script>"""
+
+
+@pytest.mark.skipif(not CHROME.exists(), reason="needs Google Chrome in /Applications")
+def test_a_long_subagent_list_can_be_scrolled_to_its_end_while_the_aside_sticks(served, tmp_path):
+    append(transcript(), user("delegate"), *(reply(f"part {n}\n" * 8) for n in range(60)))
+    for n in range(40):
+        append(transcript(agent=f"a{n:016x}"), user("go"))
+        write_meta(SID, f"a{n:016x}", agentType="Explore", description=f"Survey part {n}")
+    shown = page(served, f"/s/{SID}").replace(f'<base href="{served.root}">', "").replace("</body>", MEASURE + "</body>")
+    (tmp_path / "page.html").write_text(shown)
+    (tmp_path / "web.css").write_bytes(web.STYLE)
+    flags = ["--headless=new", "--disable-gpu", "--no-first-run", "--use-mock-keychain", f"--user-data-dir={tmp_path / 'profile'}"]
+    browser = [CHROME, *flags, "--window-size=1400,700", "--dump-dom", (tmp_path / "page.html").as_uri()]
+    dom = subprocess.run(browser, capture_output=True, text=True, timeout=60).stdout
+    top, last, height = map(int, re.search(r'data-at="([^"]*)"', dom)[1].split(","))
+    assert 0 < top and last <= height, (top, last, height)
