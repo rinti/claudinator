@@ -319,7 +319,7 @@ def test_search_prefers_an_excerpt_with_every_word_over_a_stronger_match_of_one(
 
 
 @pytest.mark.parametrize("read", ["sessions", "search"])
-def test_a_read_sees_one_snapshot_while_a_rebuild_commits_partway(monkeypatch, read):
+def test_titles_stay_right_while_a_rebuild_renumbers_entries_partway_through_a_read(monkeypatch, read):
     newer, older = transcript(SID2), transcript()
     with open_archive() as archive:
         append(newer, user("the newer quokka session", ts="2026-10-02T10:00:00.000Z"))
@@ -347,3 +347,26 @@ def test_a_read_sees_one_snapshot_while_a_rebuild_commits_partway(monkeypatch, r
         other.close()
     assert not armed[0]
     assert titles == {SID2: "the newer quokka session", SID: "the older quokka session"}
+
+
+def test_status_reads_one_snapshot_while_a_sweep_commits_partway(monkeypatch):
+    append(transcript(), user("archived before status"))
+    with open_archive() as archive:
+        before = archive.sweep()
+    other, real_walk, armed = open_archive(), os.walk, [True]
+
+    def walk(*args, **kwargs):
+        if armed[0]:
+            armed[0] = False
+            append(transcript(SID2), user("archived while status reads"))
+            other.sweep()
+        return real_walk(*args, **kwargs)
+
+    monkeypatch.setattr(os, "walk", walk)
+    try:
+        with open_archive() as archive:
+            status = archive.status()
+    finally:
+        other.close()
+    assert not armed[0]
+    assert (status.transcripts, status.last_sweep) == (1, before)
