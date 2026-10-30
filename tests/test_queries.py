@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import UTC, datetime
 
 import pytest
 
@@ -25,8 +26,8 @@ from helpers import (
     user,
 )
 
-OCT_1 = 1790812800000
-SEP_4 = 1788480000000
+OCT_1 = int(datetime(2026, 10, 1, tzinfo=UTC).timestamp()) * 1000
+SEP_4 = int(datetime(2026, 9, 4, tzinfo=UTC).timestamp()) * 1000
 
 
 def matching(archive, *terms, **query) -> list[str]:

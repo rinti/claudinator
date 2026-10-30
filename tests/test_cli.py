@@ -7,6 +7,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,7 @@ from helpers import (
 )
 
 REAL_EXECUTABLE = cli._executable
-NOW = 1790848800000 + 60_000
+NOW = int(datetime(2026, 10, 1, 10, 1, tzinfo=UTC).timestamp()) * 1000
 
 
 def run(capsys, *argv: str) -> tuple[int, str, str]:
