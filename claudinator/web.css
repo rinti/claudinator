@@ -386,14 +386,18 @@ label.button { cursor: pointer; user-select: none; -webkit-user-select: none; }
 .agents .id, .agents .type { color: var(--ink3); font-family: var(--mono); font-size: 0.71875rem; }
 .agents .type { grid-column: 1 / -1; }
 
-.steps { display: flex; flex-direction: column; gap: 0.875rem; }
-.steps > .date { display: flex; align-items: center; gap: 1rem; margin-block-end: 0.625rem; color: var(--ink2); font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.02em; }
-.steps > .date::after { content: ""; flex: 1; block-size: 1px; background: var(--line); }
-.steps > .date:not(:first-child) { margin-block-start: 2rem; }
+.steps { display: flex; flex-direction: column; gap: 2.875rem; }
+.date { display: flex; flex-direction: column; gap: 0.875rem; }
+.date > h2 { display: flex; align-items: center; gap: 1rem; margin-block-end: 0.625rem; color: var(--ink2); font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.02em; }
+.date > h2::after { content: ""; flex: 1; block-size: 1px; background: var(--line); }
 .minute { display: grid; grid-template-columns: var(--gutter) 1.25rem minmax(0, 1fr); align-items: baseline; gap: 0.875rem var(--gap); }
 .minute > time { color: var(--ink3); font: 0.75rem/1.125rem var(--mono); font-variant-numeric: tabular-nums; }
 .minute > :not(time) { grid-column: 3; }
-.transcript:has(.switch.calls:not(:checked)) :is(.box:not(:has(:target)), .minute:not(:has(> :not(time, .box), :target))) { display: none; }
+.transcript:has(.switch.calls:not(:checked)) :is(
+  .box:not(:has(:target)),
+  .minute:not(:has(> :not(time, .box), :target)),
+  .date:not(:has(> .minute > :not(time, .box), :target))
+) { display: none; }
 
 /* No content-visibility: its placeholder heights move a search hit's target out of view as the steps above it render. */
 .step { position: relative; }

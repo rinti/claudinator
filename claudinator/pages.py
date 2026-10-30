@@ -486,16 +486,17 @@ def _minutes(steps: Sequence[Step]) -> Iterator[tuple[datetime | None, list[Step
 
 
 def _dated(view: _View, steps: Sequence[Step]) -> Iterator[Html]:
-    seen = None
-    for minute, run in _minutes(steps):
-        if minute is not None and minute.date() != seen:
-            seen = minute.date()
-            yield el("h2", {"class": "date"}, _day(seen, year=True))
-        parts: list[Html] = []
-        for machine, group in groupby(run, key=lambda step: isinstance(step, BOXED)):
-            made = [_step(view, step) for step in group]
-            parts += [el("div", {"class": "box"}, *made)] if machine else made
-        yield el("div", {"class": "minute"}, el("time", None, f"{minute:%H:%M}") if minute else None, *parts)
+    for day, minutes in groupby(_minutes(steps), key=lambda timed: timed[0].date() if timed[0] else None):
+        heading = el("h2", None, _day(day, year=True)) if day else None
+        yield el("section", {"class": "date"}, heading, *(_minute(view, minute, run) for minute, run in minutes))
+
+
+def _minute(view: _View, minute: datetime | None, run: list[Step]) -> Html:
+    parts: list[Html] = []
+    for machine, group in groupby(run, key=lambda step: isinstance(step, BOXED)):
+        made = [_step(view, step) for step in group]
+        parts += [el("div", {"class": "box"}, *made)] if machine else made
+    return el("div", {"class": "minute"}, el("time", None, f"{minute:%H:%M}") if minute else None, *parts)
 
 
 def _folded(step: Step) -> int:

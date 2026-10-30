@@ -498,7 +498,7 @@ def test_a_transcript_shows_the_time_once_a_minute_and_a_heading_where_the_day_c
     append(transcript(), *lines)
     at = offsets(*lines)
     steps = page(served, f"/s/{SID}").partition('<div class="steps">')[2]
-    found = re.findall(r'<h2 class="date">(.*?)</h2>|<time>(.*?)</time>|<div class="step [^"]*" id="m(\d+)\.0"', steps)
+    found = re.findall(r'<section class="date"><h2>(.*?)</h2>|<time>(.*?)</time>|<div class="step [^"]*" id="m(\d+)\.0"', steps)
     assert [day or time or int(step) for day, time, step in found] == [
         "Thursday 29 October 2026", "22:38", at[0], at[1], at[2], "22:39", at[3],
         "Friday 30 October 2026", "00:01", at[4],
@@ -866,7 +866,7 @@ def test_a_long_subagent_list_can_be_scrolled_to_its_end_while_the_aside_sticks(
 
 
 FLIP = """<script>
-const seen = () => Object.fromEntries([".prompt", ".reply", ".box", ".minute"].map(css => [css, [...document.querySelectorAll(css)].map(found => found.checkVisibility())]));
+const seen = () => Object.fromEntries([".prompt", ".reply", ".box", ".minute", ".date"].map(css => [css, [...document.querySelectorAll(css)].map(found => found.checkVisibility())]));
 const drawn = step => {
   step.scrollIntoView({block: "center"});
   const box = step.getBoundingClientRect(), time = step.parentElement.querySelector(":scope > time").getBoundingClientRect();
@@ -893,15 +893,17 @@ def test_icons_say_who_wrote_each_message_and_the_switch_hides_tool_rows_but_not
         tool_call("Read", {"file_path": "a"}, tool_use_id="toolu_2", ts="2026-10-01T10:01:10Z"),
         tool_call("Grep", {"pattern": "b"}, tool_use_id="toolu_3", ts="2026-10-01T10:01:20Z"),
         reply("on it", ts="2026-10-01T10:02:00Z"),
+        tool_call("Bash", {"command": "make"}, tool_use_id="toolu_4", ts="2026-10-02T09:00:00Z"),
     )
     append(transcript(), *lines)
     append(transcript(agent=AID), user("find the cursor"), reply("found it"))
     keyboard, robot = '"\u2328\ufe0f" / ""', '"\U0001f916" / ""'
     shown = json.loads(measured(served, tmp_path, f"/s/{SID}", FLIP))
     assert shown["icons"] == [[keyboard, True], [robot, True]]
-    assert shown["before"] == {".prompt": [True], ".reply": [True], ".box": [True, True], ".minute": [True, True, True]}
-    assert shown["after"] == {".prompt": [True], ".reply": [True], ".box": [False, False], ".minute": [True, False, True]}
-    at = f"{offsets(*lines)[4]}.0"
+    every = {".prompt": [True], ".reply": [True], ".box": [True] * 3, ".minute": [True] * 4, ".date": [True] * 2}
+    assert shown["before"] == every
+    assert shown["after"] == every | {".box": [False] * 3, ".minute": [True, False, True, False], ".date": [True, False]}
+    at = f"{offsets(*lines)[7]}.0"
     landed = json.loads(measured(served, tmp_path, f"/s/{SID}?at={at}", FLIP, f"#m{at}"))
-    assert landed["after"] == {".prompt": [True], ".reply": [True], ".box": [False, True], ".minute": [True, True, True]}
+    assert landed["after"] == every | {".box": [False, False, True], ".minute": [True, False, True, True]}
     assert json.loads(measured(served, tmp_path, f"/s/{SID}/{AID}", FLIP))["icons"] == [[robot, True], [robot, True]]
