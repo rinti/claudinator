@@ -262,10 +262,11 @@ def test_a_slash_command_titles_a_session_as_typed_and_shell_lines_are_not_promp
 
 
 def test_a_first_prompt_title_keeps_the_heading_its_one_line_form_runs_on_from():
-    sid3 = "3c0ffee0-0000-4000-8000-000000000003"
+    sid3, sid4 = "3c0ffee0-0000-4000-8000-000000000003", "4c0ffee0-0000-4000-8000-000000000004"
     append(transcript(), user("\n# Sync  and update\nYou are running\n  unattended."))
     append(transcript(SID2), user("# Named elsewhere\nbody"), custom_title("Named"))
     append(transcript(sid3), user("#hashtag, not a heading\nmore"))
+    append(transcript(sid4), user("# " + "long " * 40 + "\nbody"))
     with open_archive() as archive:
         archive.sweep()
         found = {s.id: (s.title, s.heading) for s in archive.sessions()}
@@ -273,6 +274,7 @@ def test_a_first_prompt_title_keeps_the_heading_its_one_line_form_runs_on_from()
         SID: ("# Sync and update You are running unattended.", "Sync and update"),
         SID2: ("Named", None),
         sid3: ("#hashtag, not a heading more", None),
+        sid4: (("# " + "long " * 40)[:200], None),
     }
 
 

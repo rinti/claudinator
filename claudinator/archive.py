@@ -74,7 +74,7 @@ class SessionSummary:
     subagents: int
     transcript: Path  # main transcript path; may no longer exist
     on_disk: bool
-    heading: str | None = None
+    heading: str | None  # the first prompt's "# " line, set only when title starts with "# " and all of it
 
 
 @dataclass(frozen=True, slots=True)
@@ -787,7 +787,8 @@ class Archive:
             text = self._entry_text(row["prompt_source"], row["prompt_off"], row["prompt_block"])
             title = " ".join(text.split())[:200]
             first = text.lstrip().partition("\n")[0]
-            heading = " ".join(first[2:].split()) if first.startswith("# ") else None
+            named = " ".join(first[2:].split()) if first.startswith("# ") else ""
+            heading = named if named and title.startswith(f"# {named}") else None
         return SessionSummary(
             id=row["session_id"],
             cwd=row["cwd"],

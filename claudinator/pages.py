@@ -165,7 +165,7 @@ def _title(s: SessionSummary) -> tuple[Html | str | None, ...]:
     command, gap, rest = _split_command(title)
     if command:
         return el("span", {"class": "cmd"}, command), gap, _rest(rest)
-    if s.heading and title.startswith(f"# {s.heading}"):
+    if s.heading:
         _, gap, rest = _split(title, f"# {s.heading}")
         return el("span", {"class": "hash"}, "#"), el("span", {"class": "head"}, s.heading), gap, _rest(rest)
     return (title,)
