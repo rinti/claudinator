@@ -26,6 +26,7 @@ from helpers import (
     line,
     open_archive,
     reply,
+    settle,
     tool_call,
     tool_result,
     transcript,
@@ -347,6 +348,26 @@ def test_a_raw_line_is_its_json_in_ascii(served):
     assert body.isascii() and json.loads(body) == json.loads(said)
     assert get(served, f"/raw/{SID}/{len(said)}")[2] == b"torn \\x1b[2J \\u202e line"
     assert get(served, f"/raw/{SID}/1")[0] == 404
+
+
+def test_a_record_glued_onto_a_settled_torn_tail_has_its_raw_line_and_image(served):
+    before, torn = user("before the crash"), user("torn by a crash")[:30]
+    pasted = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(PNG).decode()}}
+    glued = line({"type": "user", "message": {"content": [{"type": "text", "text": "see"}, pasted]}})
+    append(transcript(), before, torn)
+    settle(transcript())
+    open_archive().sweep()
+    append(transcript(), glued)
+    open_archive().sweep()
+    at = len(before) + len(torn)
+    shown = page(served, f"/s/{SID}?hidden=1")
+    assert f'href="raw/{SID}/{at}"' in shown and f'src="image/{SID}/{at}.1"' in shown
+    status, _, body = get(served, f"/raw/{SID}/{at}")
+    assert status == 200
+    assert json.loads(body) == json.loads(glued)
+    assert get(served, f"/image/{SID}/{at}.1")[::2] == (200, PNG)
+    assert get(served, f"/raw/{SID}/{len(before)}")[::2] == (200, torn)
+    assert get(served, f"/raw/{SID}/{at + 1}")[0] == 404
 
 
 def test_images_are_served_only_as_raster_types(served):

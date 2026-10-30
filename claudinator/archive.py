@@ -16,7 +16,7 @@ from typing import BinaryIO
 from compression import zstd
 
 from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, discover, staged
-from claudinator.lines import line_at, next_segment, pread, record_at, records, segments_end
+from claudinator.lines import line_at, next_segment, pread, record_at, record_bytes, records, segments_end
 from claudinator.queries import SEARCH_SQL, SESSIONS_SQL
 from claudinator.record import (
     CONVERSATION,
@@ -553,9 +553,7 @@ class Archive:
     def line(self, session_id: SessionId, agent_id: AgentId | None, offset: int) -> bytes | None:
         with self._snapshot():
             pieces = self._line(self._source(session_id, agent_id), offset)
-        if not pieces or pieces[0][0] != offset:
-            return None
-        return b"".join(data for _, data in pieces).removesuffix(b"\n")
+        return record_bytes(pieces, offset)
 
     def export(
         self,

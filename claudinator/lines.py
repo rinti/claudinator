@@ -107,6 +107,18 @@ def record_at(line: Iterable[tuple[int, bytes]], offset: int) -> Record:
     return found
 
 
+def record_bytes(line: Sequence[tuple[int, bytes]], offset: int) -> bytes | None:
+    """The bytes of the record records yields at offset from the pieces of
+    a line (line_at), without its newline: up to the next offset it yields
+    there, else to the line's end. None when it yields none at offset."""
+    starts = sorted({off for off, _, _ in records(line)})
+    if offset not in starts:
+        return None
+    end = next((start for start in starts if start > offset), None)
+    first, data = line[0][0], b"".join(piece for _, piece in line)
+    return data[offset - first : None if end is None else end - first].removesuffix(b"\n")
+
+
 def _chunk_records(
     start: int, chunk: bytes, left: _Open | None
 ) -> tuple[list[tuple[int, Record, bool]], _Open | None]:

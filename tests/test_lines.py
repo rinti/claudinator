@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from claudinator.lines import SEGMENT_BYTES, line_at, next_segment, record_at, records, segments_end
+from claudinator.lines import SEGMENT_BYTES, line_at, next_segment, record_at, record_bytes, records, segments_end
 from claudinator.record import Other, Turn, Unparsed
 from helpers import line, user
 
@@ -49,6 +49,26 @@ def test_the_record_at_an_offset_is_the_line_a_paused_writer_finished():
     assert isinstance(record_at([(0, PAUSED[:40]), (40, PAUSED[40:])], 0), Turn)
     assert isinstance(record_at([(0, PAUSED[:40]), (40, WHOLE)], 0), Unparsed)
     assert isinstance(record_at([(0, PAUSED)], 1), Unparsed)
+
+
+@pytest.mark.parametrize(
+    ("tail", "then", "expected"),
+    [
+        (PAUSED[:40], PAUSED[40:], {0: PAUSED[:-1], 40: None}),
+        (PAUSED[:40], WHOLE, {0: PAUSED[:40], 40: WHOLE[:-1], 41: None}),
+        (PAUSED[:40], b"zebracorn torn again\n", {0: PAUSED[:40] + b"zebracorn torn again", 40: None}),
+        (PAUSED[:-1], WHOLE, {0: PAUSED[:-1], len(PAUSED) - 1: WHOLE[:-1]}),
+    ],
+    ids=[
+        "the paused writer finishes the line",
+        "a restarted writer glues a whole record on",
+        "a restarted writer glues more torn bytes on",
+        "a record that lacked only its newline gets one glued on",
+    ],
+)
+def test_the_bytes_of_a_record_are_the_ones_records_read_it_from(tail, then, expected):
+    pieces = [(0, tail), (len(tail), then)]
+    assert {offset: record_bytes(pieces, offset) for offset in expected} == expected
 
 
 @pytest.fixture
