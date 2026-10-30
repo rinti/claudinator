@@ -407,6 +407,23 @@ def test_status_lists_transcripts_whose_path_matches_no_known_layout():
         assert archive.status().unclassified == (stray,)
 
 
+def test_status_counts_as_pending_what_a_sweep_would_archive_now():
+    unfinished, rewritten, copied = transcript(), transcript(SID2), transcript(agent=AID)
+    append(unfinished, user("archived"))
+    append(rewritten, user("original words"))
+    append(copied, user("first"), user("second"))
+    with open_archive() as archive:
+        archive.sweep()
+        append(unfinished, user("Claude Code is still writing this")[:25])
+        rewritten.write_bytes(user("replaced words"))
+        copied.write_bytes(user("first"))
+        assert {(p.path, p.unarchived_bytes, p.settled) for p in archive.status().pending} == {
+            (rewritten, len(user("replaced words")), False)
+        }
+        settle(unfinished)
+        assert (unfinished, 25, True) in {(p.path, p.unarchived_bytes, p.settled) for p in archive.status().pending}
+
+
 def test_a_rewrite_to_the_same_size_starts_a_new_generation():
     path = transcript()
     append(path, user("first words"), user("last words"))

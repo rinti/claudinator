@@ -268,9 +268,11 @@ class Refusal:
 
 @dataclass(frozen=True, slots=True)
 class Pending:
+    """A file a sweep would archive bytes of now."""
+
     path: Path
-    unarchived_bytes: int
-    mtime: Millis
+    unarchived_bytes: int  # its next segment: at most about SEGMENT_BYTES, the rest follows segment by segment
+    settled: bool  # unchanged for SETTLE_SECONDS, so no writer is about to finish it
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,7 +287,7 @@ class Status:
     gone: int  # main transcripts no longer on disk (still in the archive)
     multi_generation: int  # files that were rewritten at least once
     unparsed_lines: int
-    pending: tuple[Pending, ...]  # on-disk bytes not yet archived
+    pending: tuple[Pending, ...]  # files with bytes a sweep would archive now
     unclassified: tuple[Path, ...]  # *.jsonl under projects/ in no known layout, so never archived
     last_sweep: SweepReport | None  # the last sweep that waited for the lock and was not refused
     last_refused: Refusal | None  # the last sweep that waited for the lock and was refused
@@ -411,6 +413,7 @@ class _Next:
     cursor: int  # its first byte in the file; 0 starts a new source
     window: bytes  # file bytes [cursor - TAIL_BYTES, cursor), matched against the archive's tail
     chunk: bytes  # its bytes, never empty
+    settled: bool  # the file has not changed for SETTLE_SECONDS
 
 
 def _next(path: Path, a: _Archived | None) -> _Next | None:
@@ -439,7 +442,7 @@ def _next(path: Path, a: _Archived | None) -> _Next | None:
         chunk = _next_segment(fd, cursor, st.st_size, settled)
     finally:
         os.close(fd)
-    return _Next(generation, cursor, window, chunk) if chunk else None
+    return _Next(generation, cursor, window, chunk, settled) if chunk else None
 
 
 def _settled(st: os.stat_result) -> bool:
@@ -729,11 +732,11 @@ class Archive:
         pending = []
         for loc in found.transcripts:
             try:
-                st = loc.path.stat()
-            except FileNotFoundError:
-                continue
-            if (unarchived := st.st_size - (a.cursor if (a := known.get(loc.path)) else 0)) > 0:
-                pending.append(Pending(loc.path, unarchived, Millis(st.st_mtime_ns // 1_000_000)))
+                n = _next(loc.path, known.get(loc.path))
+            except OSError:
+                continue  # the sweep that reads it reports why it cannot
+            if n is not None:
+                pending.append(Pending(loc.path, len(n.chunk), n.settled))
         last, refused = self._meta("last_sweep"), self._meta("last_refused")
         return Status(
             checked_at=now(),

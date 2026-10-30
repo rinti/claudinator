@@ -16,7 +16,6 @@ from typing import TextIO
 
 from claudinator import launchd
 from claudinator.archive import (
-    SETTLE_SECONDS,
     AmbiguousSession,
     Archive,
     ArchiveError,
@@ -281,8 +280,8 @@ def _print_status(st: Status, swept: SweepReport, cleanup_days: int | None) -> i
     if st.gone:
         _emit(f"gone      {st.gone} transcripts deleted by Claude Code live on in the archive")
     for p in st.pending:
-        if at - p.mtime > SETTLE_SECONDS * 1000:
-            _emit(f"warning   {_short(str(p.path))} has {p.unarchived_bytes} bytes the sweeper has not archived")
+        if p.settled:
+            _emit(f"warning   {_short(str(p.path))} has bytes the sweeper has not archived for an hour")
     if n := len(st.unclassified):
         files = "file under projects/ matches" if n == 1 else "files under projects/ match"
         _emit(f"unknown   {n} .jsonl {files} no known layout and {'is' if n == 1 else 'are'} not archived: {st.unclassified[0]}")
