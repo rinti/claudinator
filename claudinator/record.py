@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import enum
 import json
 import re
@@ -35,21 +36,41 @@ class Block:
     kind: Kind
     text: str
     tool: str | None = None
-    tool_use_id: str | None = None
+    tool_use_id: str | None = None  # a call's own id, or on a result the id of the call it answers
+    error: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Thinking:
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class Picture:
+    """A base64 image: a content item of its own (part None), or part `part`
+    of a tool result's content. image() decodes it from the raw line."""
+
+    media_type: str
+    part: int | None
+    size: int
+
+
+Extra = Thinking | Picture
 
 
 @dataclass(frozen=True, slots=True)
 class Turn:
     """A `user` or `assistant` line that carries content worth showing.
 
-    blocks pairs each kept block with its index in message.content (0 when
-    content is a string), so entry.block can find it again in the raw line.
-    Thinking, images, and unknown block types are dropped here; the raw line
-    still has them."""
+    blocks and extras pair each item with its index in message.content (0
+    when content is a string), so entry.block can find it again in the raw
+    line. blocks are indexed; extras, thinking with text and images, are
+    only shown. Blank text, and unknown block types, are dropped here."""
 
     ts: Millis | None
     cwd: str | None
     blocks: tuple[tuple[int, Block], ...]
+    extras: tuple[tuple[int, Extra], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,15 +80,35 @@ class Title:
     ts: Millis | None = None
 
 
+class Notice(enum.StrEnum):
+    """A line the index leaves out that changes how a conversation reads."""
+
+    QUEUED = "queued"  # a prompt typed while Claude was busy
+    COMPACTED = "compacted"
+    INTERRUPTED = "interrupted"
+    API_ERROR = "api error"
+    NOTIFICATION = "notification"  # an agent or a background task reporting back
+
+
+@dataclass(frozen=True, slots=True)
+class Note:
+    notice: Notice
+    text: str
+
+
 @dataclass(frozen=True, slots=True)
 class Other:
     """Any other JSON object: system, attachment, api-request*, mode,
     file-history-*, isMeta user lines, non-human user origins, compaction
     summaries, and every type Claude Code adds later. Archived, never
-    indexed. Contributes ts/cwd to Facts so first/last activity stays right."""
+    indexed. Contributes ts/cwd to Facts so first/last activity stays right.
+    type is the line's own; note, which project() never reads, is set for
+    the few a reader should see."""
 
     ts: Millis | None
     cwd: str | None
+    type: str
+    note: Note | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,15 +153,16 @@ def parse(line: bytes) -> Record:
     cwd = _str(obj.get("cwd"))
     match obj.get("type"):
         case "ai-title":
-            return _title(obj.get("aiTitle"), False, ts) or Other(ts, cwd)
+            record = _title(obj.get("aiTitle"), False, ts)
         case "custom-title":
-            return _title(obj.get("customTitle"), True, ts) or Other(ts, cwd)
+            record = _title(obj.get("customTitle"), True, ts)
         case "assistant":
-            return _turn(obj.get("message"), Kind.REPLY, ts, cwd)
+            record = _turn(obj.get("message"), Kind.REPLY, ts, cwd)
         case "user" if _typed_by_a_person(obj):
-            return _turn(obj.get("message"), Kind.PROMPT, ts, cwd)
+            record = _turn(obj.get("message"), Kind.PROMPT, ts, cwd)
         case _:
-            return Other(ts, cwd)
+            record = None
+    return record or Other(ts, cwd, _str(obj.get("type")) or "untyped", _note(obj))
 
 
 def project(facts: Facts, record: Record) -> tuple[Facts, list[EntryDraft]]:
@@ -157,16 +199,54 @@ def text_of(record: Record, block: int) -> str:
     raise LookupError(f"{type(record).__name__} has no block {block}")
 
 
+def line_type(record: Other | Title | Unparsed) -> str:
+    """The type a line that shows nothing is counted under."""
+    match record:
+        case Other(type=name):
+            return name
+        case Title(custom=custom):
+            return "custom-title" if custom else "ai-title"
+        case Unparsed():
+            return "unparsed"
+
+
+def tool_input(block: Block) -> str:
+    """The compact JSON input of a TOOL_CALL block, as _block wrote it after the tool's name."""
+    return block.text[len(block.tool) + 1 :]
+
+
+def image(line: bytes, block: int, part: int | None) -> tuple[str, bytes] | None:
+    """The declared media type and decoded bytes of the Picture at (block,
+    part) of a raw line, or None when there is none or it is not base64."""
+    message = _json_object(line).get("message")
+    raw = _item(message.get("content") if isinstance(message, dict) else None, block)
+    if part is not None:
+        raw = _item(raw.get("content"), part) if isinstance(raw, dict) and raw.get("type") == "tool_result" else None
+    if (picture := _picture(raw, part)) is None:
+        return None
+    try:
+        return picture.media_type, base64.b64decode(raw["source"]["data"], validate=True)
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class SubagentMeta:
     description: str | None
     agent_type: str | None
     tool_use_id: str | None
+    parent: AgentId | None  # the subagent that started this one; None for the main transcript
 
 
 def subagent_meta(body: bytes) -> SubagentMeta:
     obj = _json_object(body)
-    return SubagentMeta(_str(obj.get("description")), _str(obj.get("agentType")), _str(obj.get("toolUseId")))
+    parent = _str(obj.get("parentAgentId"))
+    return SubagentMeta(
+        _str(obj.get("description")),
+        _str(obj.get("agentType")),
+        _str(obj.get("toolUseId")),
+        AgentId(parent) if parent else None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,22 +272,28 @@ def cleanup_period_days(settings: bytes) -> int | None:
 
 
 def _typed_by_a_person(obj: dict) -> bool:
+    return not obj.get("isMeta") and not obj.get("isCompactSummary") and _origin(obj) in (None, "human")
+
+
+def _origin(obj: dict) -> object:
     origin = obj.get("origin")
-    kind = origin.get("kind") if isinstance(origin, dict) else None
-    return not obj.get("isMeta") and not obj.get("isCompactSummary") and kind in (None, "human")
+    return origin.get("kind") if isinstance(origin, dict) else None
 
 
-def _turn(message: object, text_kind: Kind, ts: Millis | None, cwd: str | None) -> Turn | Other:
+def _turn(message: object, text_kind: Kind, ts: Millis | None, cwd: str | None) -> Turn | None:
     content = message.get("content") if isinstance(message, dict) else None
+    extras = ()
     if isinstance(content, str):
         blocks = ((0, Block(text_kind, _text(content))),)
     elif isinstance(content, list):
         blocks = tuple((i, b) for i, raw in enumerate(content) if (b := _block(raw, text_kind)) is not None)
+        extras = tuple((i, x) for i, raw in enumerate(content) for x in _extras(raw))
     else:
         blocks = ()
     if text_kind is Kind.PROMPT:
         blocks = _from_a_person(blocks)
-    return Turn(ts, cwd, blocks) if blocks else Other(ts, cwd)
+    blocks = tuple((i, b) for i, b in blocks if b.text.strip() or b.kind is Kind.TOOL_OUTPUT)
+    return Turn(ts, cwd, blocks, extras) if blocks or extras else None
 
 
 def _from_a_person(blocks: tuple[tuple[int, Block], ...]) -> tuple[tuple[int, Block], ...]:
@@ -251,9 +337,56 @@ def _block(raw: object, text_kind: Kind) -> Block | None:
             args = _text(json.dumps(raw.get("input"), ensure_ascii=False, separators=(",", ":")))
             return Block(Kind.TOOL_CALL, f"{name} {args}", tool=name, tool_use_id=_str(raw.get("id")))
         case "tool_result":
-            return Block(Kind.TOOL_OUTPUT, _text(_result_text(raw.get("content"))))
+            text = _text(_result_text(raw.get("content")))
+            return Block(Kind.TOOL_OUTPUT, text, tool_use_id=_str(raw.get("tool_use_id")), error=raw.get("is_error") is True)
         case _:
             return None
+
+
+def _extras(raw: object) -> tuple[Extra, ...]:
+    if not isinstance(raw, dict):
+        return ()
+    match raw.get("type"):
+        case "thinking" if isinstance(raw.get("thinking"), str) and raw["thinking"].strip():
+            return (Thinking(_text(raw["thinking"])),)
+        case "image" if picture := _picture(raw, None):
+            return (picture,)
+        case "tool_result" if isinstance(raw.get("content"), list):
+            return tuple(picture for k, item in enumerate(raw["content"]) if (picture := _picture(item, k)))
+    return ()
+
+
+def _picture(raw: object, part: int | None) -> Picture | None:
+    source = raw.get("source") if isinstance(raw, dict) and raw.get("type") == "image" else None
+    if isinstance(source, dict) and source.get("type") == "base64" and isinstance(data := source.get("data"), str):
+        return Picture(_str(source.get("media_type")) or "", part, len(data) * 3 // 4)
+    return None
+
+
+def _item(items: object, i: int) -> object:
+    return items[i] if isinstance(items, list) and 0 <= i < len(items) else None
+
+
+def _note(obj: dict) -> Note | None:
+    match obj.get("type"), obj.get("subtype"):
+        case "attachment", _ if isinstance(queued := obj.get("attachment"), dict) and queued.get("type") == "queued_command":
+            notice = Notice.QUEUED if _origin(queued) == "human" else Notice.NOTIFICATION
+            return Note(notice, _text(_result_text(queued.get("prompt"))))
+        case "system", "api_error":
+            error = obj.get("error")
+            return Note(Notice.API_ERROR, (isinstance(error, dict) and _str(error.get("message"))) or "")
+        case "system", "compact_boundary":
+            return Note(Notice.COMPACTED, _str(obj.get("content")) or "")
+        case "user", _:
+            message = obj.get("message")
+            text = _text(_result_text(message.get("content") if isinstance(message, dict) else None))
+            if obj.get("isCompactSummary"):
+                return Note(Notice.COMPACTED, text)
+            if _origin(obj) in ("task-notification", "peer"):
+                return Note(Notice.NOTIFICATION, text)
+            if _typed_by_a_person(obj) and text.lstrip().startswith(_INTERRUPTED):
+                return Note(Notice.INTERRUPTED, text)
+    return None
 
 
 def _title(value: object, custom: bool, ts: Millis | None) -> Title | None:

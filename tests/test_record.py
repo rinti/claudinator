@@ -1,3 +1,4 @@
+import base64
 import json
 from dataclasses import replace
 
@@ -9,15 +10,21 @@ from claudinator.record import (
     EntryDraft,
     Facts,
     Kind,
+    Note,
+    Notice,
     Other,
+    Picture,
+    Thinking,
     Title,
     Turn,
     Unparsed,
     desktop_session,
+    image,
     parse,
     project,
     subagent_meta,
     text_of,
+    tool_input,
 )
 
 DOTFILES = "/Users/andreas/dotfiles"
@@ -45,6 +52,30 @@ def _with_unknown_block(line: str, *, keep_text: bool) -> str:
         content.append({"type": "text", "text": "the widget rendered"})
     obj["message"]["content"] = content
     return json.dumps(obj)
+
+
+def _changed(line: str, **fields) -> str:
+    return json.dumps(json.loads(line) | fields)
+
+
+QUEUED_PROMPT = _changed(
+    lines.ATTACHMENT,
+    attachment={"type": "queued_command", "prompt": "also check the tail hash", "commandMode": "prompt", "origin": {"kind": "human"}},
+)
+QUEUED_NOTIFICATION = _changed(
+    lines.ATTACHMENT,
+    attachment={"type": "queued_command", "prompt": "<task-notification>done</task-notification>", "origin": {"kind": "task-notification"}},
+)
+API_ERROR = _changed(lines.SYSTEM, subtype="api_error", error={"message": "Connection error.", "formatted": "Retrying"})
+COMPACT_BOUNDARY = _changed(lines.SYSTEM, subtype="compact_boundary", content="Conversation compacted")
+THINKING_WITH_TEXT = _changed(
+    lines.THINKING, message={"role": "assistant", "content": [{"type": "thinking", "thinking": "the zebracorn", "signature": "x"}]}
+)
+BLANK_TEXT_THEN_CALL = _changed(
+    lines.ASSISTANT_TEXT,
+    message={"content": [{"type": "text", "text": " \n"}, {"type": "tool_use", "id": "toolu_9", "name": "Read", "input": {}}]},
+)
+BLANK_REPLY = _changed(lines.ASSISTANT_TEXT, message={"content": [{"type": "text", "text": "\n\n"}]})
 
 
 PARSE_CASES = [
@@ -79,21 +110,34 @@ PARSE_CASES = [
         lines.LOCAL_COMMAND_STDOUT.replace("local-command-stdout", "local-command-stderr"),
         Turn(1793029986612, AMEX_POC, ((0, Block(Kind.TOOL_OUTPUT, "<local-command-stderr>(no content)</local-command-stderr>")),)),
     ),
-    ("interrupt marker", lines.INTERRUPTED, Other(1792586093562, "/Users/andreas/dev/SBR-stockholmbusinessregion.se/.audit/baseline-a.json.bodies")),
-    ("interrupt marker for tool use", lines.INTERRUPTED_FOR_TOOL_USE, Other(1790928821424, "/Users/andreas/dev/amex/frontend")),
+    (
+        "interrupt marker",
+        lines.INTERRUPTED,
+        Other(
+            1792586093562,
+            "/Users/andreas/dev/SBR-stockholmbusinessregion.se/.audit/baseline-a.json.bodies",
+            "user",
+            Note(Notice.INTERRUPTED, "[Request interrupted by user]"),
+        ),
+    ),
+    (
+        "interrupt marker for tool use",
+        lines.INTERRUPTED_FOR_TOOL_USE,
+        Other(1790928821424, "/Users/andreas/dev/amex/frontend", "user", Note(Notice.INTERRUPTED, "[Request interrupted by user for tool use]")),
+    ),
     (
         "text next to a tool result is tool output",
         lines.TOOL_RESULT_WITH_TEXT,
         Turn(
             1792062596335,
             "/Users/andreas/dev/amex",
-            ((0, Block(Kind.TOOL_OUTPUT, "")), (1, Block(Kind.TOOL_OUTPUT, "Tool loaded."))),
+            ((0, Block(Kind.TOOL_OUTPUT, "", tool_use_id="toolu_01WLHaWF6qLYNdcvF1Xojueq")), (1, Block(Kind.TOOL_OUTPUT, "Tool loaded."))),
         ),
     ),
     (
-        "pasted image is dropped, its text placeholder kept",
+        "pasted image is shown, never indexed, beside its text placeholder",
         lines.PROMPT_WITH_IMAGE,
-        Turn(1791821874491, DOTFILES, ((0, prompt("[Image #1]")),)),
+        Turn(1791821874491, DOTFILES, ((0, prompt("[Image #1]")),), ((1, Picture("image/png", None, 75)),)),
     ),
     (
         "tool result string, not the toolUseResult copy",
@@ -107,6 +151,8 @@ PARSE_CASES = [
                     Block(
                         Kind.TOOL_OUTPUT,
                         "File does not exist. Note: your current working directory is /Users/andreas/dev/ai-roundup.",
+                        tool_use_id="toolu_015HFpZvnAeoQt94UbeQb8Nb",
+                        error=True,
                     ),
                 ),
             ),
@@ -125,15 +171,17 @@ PARSE_CASES = [
                         Kind.TOOL_OUTPUT,
                         "[image]\n[Image: source: /Users/andreas/.claude/projects/"
                         "-Users-andreas-dev-delight/13a39598-a74e-48ba-9c46-8…",
+                        tool_use_id="toolu_01JBnVj4XwFPzmh9VhtQWT5G",
                     ),
                 ),
             ),
+            ((0, Picture("image/png", 0, 75)),),
         ),
     ),
     (
         "tool result with only a tool reference has empty text",
         lines.TOOL_RESULT_REFERENCE,
-        Turn(1791442850850, DOTFILES, ((0, Block(Kind.TOOL_OUTPUT, "")),)),
+        Turn(1791442850850, DOTFILES, ((0, Block(Kind.TOOL_OUTPUT, "", tool_use_id="toolu_01Q53ULdZKNatFceb1W8RLY5")),)),
     ),
     (
         "subagent prompt written by the parent",
@@ -189,27 +237,83 @@ PARSE_CASES = [
             ),
         ),
     ),
-    ("thinking only", lines.THINKING, Other(1790751608199, ROUNDUP)),
+    ("thinking without text", lines.THINKING, Other(1790751608199, ROUNDUP, "assistant")),
+    ("thinking with text is shown, never indexed", THINKING_WITH_TEXT, Turn(1790751608199, ROUNDUP, (), ((0, Thinking("the zebracorn")),))),
+    ("blank reply", BLANK_REPLY, Other(1792071923037, PSTACK, "assistant")),
+    (
+        "blank text next to a call",
+        BLANK_TEXT_THEN_CALL,
+        Turn(1792071923037, PSTACK, ((1, Block(Kind.TOOL_CALL, "Read {}", tool="Read", tool_use_id="toolu_9")),)),
+    ),
     ("ai title", lines.AI_TITLE, Title("Commit changes to repo", custom=False)),
     ("custom title", lines.CUSTOM_TITLE, Title("Available skills", custom=True)),
-    ("isMeta user line", lines.META_USER, Other(1791442803660, DOTFILES)),
-    ("peer message", lines.PEER_MESSAGE, Other(1792075403126, PSTACK)),
-    ("task notification origin", lines.TASK_NOTIFICATION, Other(1793301587383, CLAUDINATOR)),
-    ("compaction summary", lines.COMPACT_SUMMARY, Other(1791270716245, ROUNDUP)),
-    ("attachment", lines.ATTACHMENT, Other(1793300849954, CLAUDINATOR)),
-    ("system", lines.SYSTEM, Other(1791821880719, DOTFILES)),
-    ("api request", lines.API_REQUEST, Other(1792916111525, None)),
-    ("queue operation", lines.QUEUE_OPERATION, Other(1793301245134, None)),
-    ("mode", lines.MODE, Other(None, None)),
-    ("permission mode", lines.PERMISSION_MODE, Other(None, None)),
-    ("last prompt", lines.LAST_PROMPT, Other(None, None)),
-    ("atis latch", lines.ATIS_LATCH, Other(None, None)),
-    ("cost state", lines.COST_STATE, Other(None, None)),
-    ("file history snapshot", lines.FILE_HISTORY_SNAPSHOT, Other(None, None)),
-    ("api request blob", lines.API_REQUEST_BLOB, Other(None, None)),
-    ("agent name", lines.AGENT_NAME, Other(None, None)),
-    ("tools used", lines.TOOLS_USED, Other(None, None)),
-    ("unknown record type", _unknown_type(lines.ASSISTANT_TEXT), Other(1792071923037, PSTACK)),
+    ("isMeta user line", lines.META_USER, Other(1791442803660, DOTFILES, "user")),
+    (
+        "peer message",
+        lines.PEER_MESSAGE,
+        Other(
+            1792075403126,
+            PSTACK,
+            "user",
+            Note(
+                Notice.NOTIFICATION,
+                'Another Claude session sent a message:\n<agent-message from="aab1118fac9a8643a">\n[Subagent hand-back]…',
+            ),
+        ),
+    ),
+    (
+        "task notification origin",
+        lines.TASK_NOTIFICATION,
+        Other(
+            1793301587383,
+            CLAUDINATOR,
+            "user",
+            Note(
+                Notice.NOTIFICATION,
+                "<task-notification>\n<task-id>bdy1ing94</task-id>\n<tool-use-id>toolu_01SD5maN4eYVbxChZm43Xmdm</tool-u…",
+            ),
+        ),
+    ),
+    (
+        "compaction summary",
+        lines.COMPACT_SUMMARY,
+        Other(
+            1791270716245,
+            ROUNDUP,
+            "user",
+            Note(
+                Notice.COMPACTED,
+                "This session is being continued from a previous conversation that ran out of context. The summary be…",
+            ),
+        ),
+    ),
+    ("compaction boundary", COMPACT_BOUNDARY, Other(1791821880719, DOTFILES, "system", Note(Notice.COMPACTED, "Conversation compacted"))),
+    ("api error", API_ERROR, Other(1791821880719, DOTFILES, "system", Note(Notice.API_ERROR, "Connection error."))),
+    ("attachment", lines.ATTACHMENT, Other(1793300849954, CLAUDINATOR, "attachment")),
+    (
+        "prompt queued while Claude was busy",
+        QUEUED_PROMPT,
+        Other(1793300849954, CLAUDINATOR, "attachment", Note(Notice.QUEUED, "also check the tail hash")),
+    ),
+    (
+        "task notification queued for Claude",
+        QUEUED_NOTIFICATION,
+        Other(1793300849954, CLAUDINATOR, "attachment", Note(Notice.NOTIFICATION, "<task-notification>done</task-notification>")),
+    ),
+    ("system", lines.SYSTEM, Other(1791821880719, DOTFILES, "system")),
+    ("api request", lines.API_REQUEST, Other(1792916111525, None, "api-request")),
+    ("queue operation", lines.QUEUE_OPERATION, Other(1793301245134, None, "queue-operation")),
+    ("mode", lines.MODE, Other(None, None, "mode")),
+    ("permission mode", lines.PERMISSION_MODE, Other(None, None, "permission-mode")),
+    ("last prompt", lines.LAST_PROMPT, Other(None, None, "last-prompt")),
+    ("atis latch", lines.ATIS_LATCH, Other(None, None, "atis-latch")),
+    ("cost state", lines.COST_STATE, Other(None, None, "cost-state")),
+    ("file history snapshot", lines.FILE_HISTORY_SNAPSHOT, Other(None, None, "file-history-snapshot")),
+    ("api request blob", lines.API_REQUEST_BLOB, Other(None, None, "api-request-blob")),
+    ("agent name", lines.AGENT_NAME, Other(None, None, "agent-name")),
+    ("tools used", lines.TOOLS_USED, Other(None, None, "tools-used")),
+    ("unknown record type", _unknown_type(lines.ASSISTANT_TEXT), Other(1792071923037, PSTACK, "hologram-transcript")),
+    ("a line with no type", '{"cwd":"/d"}', Other(None, "/d", "untyped")),
     (
         "unknown block type next to text",
         _with_unknown_block(lines.ASSISTANT_TEXT, keep_text=True),
@@ -218,9 +322,9 @@ PARSE_CASES = [
     (
         "only unknown block types",
         _with_unknown_block(lines.ASSISTANT_TEXT, keep_text=False),
-        Other(1792071923037, PSTACK),
+        Other(1792071923037, PSTACK, "assistant"),
     ),
-    ("empty ai title", '{"type":"ai-title","aiTitle":"  "}', Other(None, None)),
+    ("empty ai title", '{"type":"ai-title","aiTitle":"  "}', Other(None, None, "ai-title")),
     ("torn line", lines.HUMAN_PROMPT[:57], Unparsed()),
     ("json array", "[1, 2, 3]", Unparsed()),
     ("plain text", "not json at all", Unparsed()),
@@ -241,12 +345,12 @@ def test_project_folds_facts_in_file_order():
     records = [
         Unparsed(),
         Title("Draft title", custom=False),
-        Other(2000, "/first/cwd"),
+        Other(2000, "/first/cwd", "system"),
         Turn(1000, "/second/cwd", ((0, prompt("hello")), (1, Block(Kind.TOOL_OUTPUT, "  \n")))),
         Title("Draft title", custom=False),
         Title("Better title", custom=False),
         Title("Mine", custom=True),
-        Other(None, None),
+        Other(None, None, "mode"),
         Turn(3000, None, ((2, Block(Kind.REPLY, "hi")),)),
         Title("Mine", custom=True),
     ]
@@ -292,12 +396,48 @@ def test_subagent_meta_reads_description_type_and_tool_use_id():
         b'"toolUseId":"toolu_011xTaVKv5kz48q9dzvr8Twy","spawnDepth":1,"model":"opus","finished":true}'
     )
     meta = subagent_meta(body)
-    assert (meta.description, meta.agent_type, meta.tool_use_id) == (
+    assert (meta.description, meta.agent_type, meta.tool_use_id, meta.parent) == (
         "Implement admin-side query fixes",
         "pstack:poteto-agent",
         "toolu_011xTaVKv5kz48q9dzvr8Twy",
+        None,
     )
     assert subagent_meta(b"{not json") == subagent_meta(b"{}")
+
+
+def test_a_nested_subagent_names_the_subagent_that_started_it():
+    body = b'{"agentType":"Explore","toolUseId":"toolu_0nested","spawnDepth":2,"parentAgentId":"a1b93ff37e3389ee7"}'
+    assert subagent_meta(body).parent == "a1b93ff37e3389ee7"
+
+
+def test_thinking_and_pictures_are_shown_but_never_indexed():
+    drafts = [project(Facts(), parse(line.encode()))[1] for line in (THINKING_WITH_TEXT, lines.PROMPT_WITH_IMAGE, lines.TOOL_RESULT_IMAGE)]
+    assert drafts == [[], [EntryDraft(0, Kind.PROMPT, 1791821874491)], [EntryDraft(0, Kind.TOOL_OUTPUT, 1791888231184)]]
+
+
+def test_a_tool_call_gives_back_its_input_as_json():
+    (_, call), = parse(lines.BASH_CALL.encode()).blocks
+    assert tool_input(call) == '{"command":"cat tools/forks.json","description":"Read forks.json"}'
+
+
+PNG = b"\x89PNG\r\n\x1a\n zebracorn"
+
+
+def test_image_decodes_the_picture_at_its_address_and_nothing_else():
+    data = base64.b64encode(PNG).decode()
+    pasted = _changed(
+        lines.PROMPT_WITH_IMAGE,
+        message={"content": [{"type": "text", "text": "[Image #1]"}, {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}]},
+    ).encode()
+    result = _changed(
+        lines.TOOL_RESULT_IMAGE,
+        message={"content": [{"type": "tool_result", "content": [{"type": "text", "text": "x"}, {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}}]}]},
+    ).encode()
+    assert image(pasted, 1, None) == ("image/png", PNG)
+    assert image(result, 0, 1) == ("image/jpeg", PNG)
+    assert [image(pasted, 0, None), image(pasted, 1, 0), image(pasted, 2, None), image(result, 0, 0), image(result, 0, None)] == [None] * 5
+    assert image(lines.PROMPT_WITH_IMAGE.encode(), 1, None) is None, "its data is cut short, so not base64"
+    assert image(b"not json", 0, None) is None
 
 
 def test_desktop_session_names_the_cli_session_and_title():

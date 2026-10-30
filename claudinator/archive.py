@@ -546,7 +546,7 @@ class Archive:
                     spawned[tool_use_id] = aid
             segments = self._segments(source_id)
         return (
-            Message(rec.ts, b.kind, b.text, b.tool, spawned.get(b.tool_use_id))
+            Message(rec.ts, b.kind, b.text, b.tool, spawned.get(b.tool_use_id) if b.kind is Kind.TOOL_CALL else None)
             for _, rec, _ in records(segments)
             if isinstance(rec, Turn)
             for _, b in rec.blocks
