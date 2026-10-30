@@ -74,6 +74,7 @@ class SessionSummary:
     subagents: int
     transcript: Path  # main transcript path; may no longer exist
     on_disk: bool
+    heading: str | None = None  # the "# " line a first-prompt title starts with; the one-line title loses its end
 
 
 @dataclass(frozen=True, slots=True)
@@ -781,9 +782,12 @@ class Archive:
     def _summary(self, row: sqlite3.Row) -> SessionSummary:
         desktop = desktop_session(row["desktop"]) if row["desktop"] else None
         title = row["custom_title"] or (desktop and desktop.title) or row["ai_title"]
+        heading = None
         if title is None and row["prompt_source"] is not None:
             text = self._entry_text(row["prompt_source"], row["prompt_off"], row["prompt_block"])
             title = " ".join(text.split())[:200]
+            first = text.lstrip().partition("\n")[0]
+            heading = " ".join(first[2:].split()) if first.startswith("# ") else None
         return SessionSummary(
             id=row["session_id"],
             cwd=row["cwd"],
@@ -794,6 +798,7 @@ class Archive:
             subagents=row["subagents"],
             transcript=Path(row["path"]),
             on_disk=os.path.exists(row["path"]),
+            heading=heading,
         )
 
     def _entry_text(self, source_id: int, line_off: int, block: int) -> str:
