@@ -2,18 +2,21 @@ import ast
 import json
 import os
 import plistlib
+import re
 import shutil
+import signal
 import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 import claudinator.archive as archive_module
-from claudinator import cli, human, launchd
+from claudinator import cli, human, launchd, web
 from claudinator.layout import Config
 from claudinator.record import PROJECTION_VERSION
 from test_concurrency import LOCKER
@@ -169,6 +172,8 @@ def test_unknown_or_ambiguous_ids_exit_1(capsys):
         ["sessions", "--limit", "0"],
         ["show", "zz"],
         ["show", "8f2d43fe!"],
+        ["serve", "--port", "65536"],
+        ["serve", "--port", "-1"],
         ["frobnicate"],
     ],
 )
@@ -876,3 +881,38 @@ def test_rebuild_says_how_many_transcript_generations_it_replayed(capsys):
     path.write_bytes(user("rewritten words"))
     run(capsys, "sweep")
     assert run(capsys, "rebuild")[1] == "rebuilt the search index from 2 archived transcript generations\n"
+
+
+def test_serve_prints_the_url_that_signs_in_and_opens_it_in_a_browser(capsys, monkeypatch):
+    run(capsys, "sweep")
+    browsed = []
+    monkeypatch.setattr(cli, "_browse", browsed.append)
+    monkeypatch.setattr(web.Server, "serve_forever", lambda server, poll_interval=0.5: None)
+    code, out, err = run(capsys, "serve")
+    printed = re.fullmatch(r"claudinator: serving the archive at (http://127\.0\.0\.1:\d+/\?k=[\w-]{43}) until Ctrl-C\n", out)
+    assert (code, err, browsed) == (0, "", [printed[1]])
+    assert run(capsys, "serve", "--no-browser")[0] == 0
+    assert len(browsed) == 1
+
+
+def test_serve_without_an_archive_exits_1_and_creates_none(capsys, monkeypatch):
+    monkeypatch.setattr(web.Server, "serve_forever", lambda server, poll_interval=0.5: None)
+    db = Config.from_env().db
+    assert run(capsys, "serve", "--no-browser") == (1, "", f"claudinator: no archive at {db}; run claudinator install\n")
+    assert not db.parent.exists()
+
+
+def test_serve_stops_at_ctrl_c_with_exit_0_and_no_traceback(capsys):
+    run(capsys, "sweep")
+    server = subprocess.Popen(
+        [sys.executable, "-m", "claudinator", "serve", "--no-browser"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    deadline = threading.Timer(10, server.kill)
+    deadline.start()
+    try:
+        assert server.stdout.readline().startswith(b"claudinator: serving the archive at http://127.0.0.1:")
+        server.send_signal(signal.SIGINT)
+        assert (server.wait(timeout=10), server.stderr.read()) == (0, b"")
+    finally:
+        deadline.cancel()
+        server.kill()

@@ -5,13 +5,14 @@ import shlex
 import shutil
 import sqlite3
 import sys
+import webbrowser
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
-from claudinator import human, launchd
+from claudinator import human, launchd, web
 from claudinator.archive import (
     AmbiguousSession,
     Archive,
@@ -149,6 +150,20 @@ def _output(text: str, full: bool) -> str:
         return "  < " + "\n    ".join(lines)
     more = f"  ({len(lines)} lines)" if len(lines) > 1 else ""
     return f"  < {human.clip(lines[0], 160)}{more}"
+
+
+def cmd_serve(cfg: Config, args: argparse.Namespace) -> int:
+    server = web.bind(cfg, args.port)
+    _emit(f"claudinator: serving the archive at {server.url} until Ctrl-C", flush=True)
+    if not args.no_browser:
+        _browse(server.url)
+    return web.serve(server)
+
+
+def _browse(url: str) -> None:
+    """On macOS, webbrowser hands the URL to osascript on stdin, so the token
+    is in no process's argv."""
+    webbrowser.open(url)
 
 
 def cmd_resume(cfg: Config, args: argparse.Namespace) -> int:
@@ -320,6 +335,11 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
 
         return checked(parse)
 
+    def port(text: str) -> int:
+        if not text.isdigit() or int(text) > 65535:
+            raise ValueError(f"expected a port from 0 to 65535, not {text!r}")
+        return int(text)
+
     when = checked(lambda text: human.parse_when(text, now))
     ref = checked(parse_ref)
     agent = checked(parse_agent)
@@ -348,6 +368,9 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
     p.add_argument("id", type=ref, metavar="ID")
     p.add_argument("--agent", type=agent, metavar="AID", help="print one subagent's transcript")
     p.add_argument("--full", action="store_true", help="print tool output in full")
+    p = command("serve", cmd_serve, "browse and search the archive in a web browser until Ctrl-C")
+    p.add_argument("--port", type=checked(port), default=0, metavar="N", help="default: any free port")
+    p.add_argument("--no-browser", action="store_true", help="print the URL without opening a browser")
     p = command("resume", cmd_resume, "run claude --resume, restoring a deleted transcript first")
     p.add_argument("id", type=ref, metavar="ID")
     p = command("export", cmd_export, "write the archived transcript byte for byte")
