@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields, replace
 from importlib import resources
@@ -507,7 +507,7 @@ class Archive:
                     "limit": q.limit,
                 },
             ).fetchall()
-            ids = json.dumps([row["session_id"] for row in rows])
+            ids = [row["session_id"] for row in rows]
             sessions = {row["session_id"]: self._summary(row) for row in self._session_rows(Filters(), None, ids=ids)}
             for row in rows:
                 text, marks = excerpt(self._entry_text(row["source_id"], row["line_off"], row["block"]), terms)
@@ -769,7 +769,7 @@ class Archive:
             ) from e
 
     def _session_rows(
-        self, filters: Filters, limit: int | None, prefix: str | None = None, ids: str | None = None
+        self, filters: Filters, limit: int | None, prefix: str | None = None, ids: Sequence[SessionId] | None = None
     ) -> list[sqlite3.Row]:
         cursor = self._db.cursor()
         cursor.row_factory = sqlite3.Row
@@ -782,7 +782,7 @@ class Archive:
                 "since": filters.since,
                 "until": filters.until,
                 "prefix": prefix,
-                "ids": ids,
+                "ids": None if ids is None else json.dumps(list(ids)),
                 "limit": -1 if limit is None else limit,
             },
         ).fetchall()
