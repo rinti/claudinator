@@ -310,6 +310,16 @@ Measured after the first fix round (2026-10-29, same method, the code before and
 - Projection. 84,793 entries (38,559 tool calls, 38,463 tool outputs, 5,307 replies, 2,276 prompts, 188 titles). No prompt entry starts with a Claude Code wrapper.
 - A separate check, which exports each file's latest generation and compares it with the file on disk, found all 697 byte-exact.
 
+Measured after the second fix round (2026-10-30, same method, against the first round's code where a comparison is given, at a load average of 3 to 5 on 10 cores):
+
+- First sweep. 707 transcripts in 290 sessions, 1,612 MB archived as 353 MB of zstd segments, a 417 MB database file, 432 side files, 0 unparsed lines, 0 errors, 18.9 s. Three runs each, alternated, took 18.6 to 19.2 s against 19.0 to 20.1 s.
+- Peak resident memory of that sweep. Median 182 MB (178 to 186) against 161 MB (159 to 166). The rise comes from `_next` reading the next segment outside the lock as well as under it, which for the file with the 15 MB line reads that line one more time. Archiving that file alone peaks at 154 MB against 134 MB, while the peak of live Python memory is 67.8 MB with either code (`tracemalloc`). macOS keeps a freed block that large resident until it is reused or memory runs short (a separate check: RSS stayed 15 MB higher after a 15 MB read was freed), so the extra read shows in the peak and not in what the process holds. Avoiding it would mean returning the segment's bounds from `_next` and reading the bytes in a second step, which splits the one decision again.
+- A second `claudinator sweep` with nothing new took 0.21 s end to end.
+- Sweep-on-read, `open()` plus `sweep(wait=False)` with nothing new. Median of 15, 57 ms against 54 ms. `status`'s archive work, that sweep plus `status()`, took 97 ms against 61 ms, because it now walks the tree twice and one walk (`discover`) takes 30 ms.
+- Projection. 85,702 entries (38,988 tool calls, 38,886 tool outputs, 5,348 replies, 2,291 prompts, 189 titles). `rebuild(force=True)` took 16.3 s, and its `transcript` and `entry` rows equal the incremental ones.
+- Every archived file's latest generation is a byte-exact prefix of the file on disk (707 of 707).
+- Six `claudinator sweep` processes started at once on a missing database all exited 0. Two of them archived everything between them, 186 and 523 files (two files partly by each), and four found nothing left. All 707 files were byte-exact afterwards.
+
 ## Open questions and risks
 
 - Should claudinator offer to raise `cleanupPeriodDays`? `status` only warns today. The archive does not depend on it.
