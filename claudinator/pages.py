@@ -299,7 +299,7 @@ def transcript_page(
     shown = [step for step in steps if hidden or not _folded(step)]
     toggle = _toggle(href_transcript(s.id, aid, at, search, not hidden), sum(map(_folded, steps)), hidden)
     aside = _aside(session, aid, agent, el("div", {"class": "actions"}, _download(s.id, aid), toggle))
-    body = el("div", {"class": "steps"}, *_dated(s.id, aid, shown, at, terms, numbers))
+    body = el("div", {"class": "steps"}, *_dated(_View(s.id, aid, at, terms, numbers), shown))
     return page(
         root,
         heading,
@@ -441,14 +441,7 @@ def _minutes(steps: Sequence[Step]) -> Iterator[tuple[datetime | None, list[Step
         yield minute, [step for _, step in run]
 
 
-def _dated(
-    sid: SessionId,
-    aid: AgentId | None,
-    steps: Sequence[Step],
-    at: Key | None,
-    terms: tuple[str, ...],
-    numbers: Mapping[Key, int],
-) -> Iterator[Html]:
+def _dated(view: _View, steps: Sequence[Step]) -> Iterator[Html]:
     seen = None
     for minute, run in _minutes(steps):
         if minute is not None and minute.date() != seen:
@@ -456,7 +449,7 @@ def _dated(
             yield el("h2", {"class": "day"}, _day(seen, year=True))
         parts: list[Html] = []
         for machine, group in groupby(run, key=lambda step: isinstance(step, Call | Output | Thought)):
-            made = [_step(sid, aid, step, at, terms, numbers) for step in group]
+            made = [_step(view, step) for step in group]
             parts += [el("div", {"class": "box"}, *made)] if machine else made
         yield el("div", {"class": "minute"}, el("time", None, f"{minute:%H:%M}") if minute else None, *parts)
 
@@ -481,101 +474,143 @@ STOCK = frozenset({Notice.COMPACTED, Notice.INTERRUPTED})
 """Notices whose short text is Claude Code's wording of what the sentence says."""
 
 
-def _step(
-    sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms: tuple[str, ...], numbers: Mapping[Key, int]
-) -> Html:
-    raw_link = el("a", {"class": "raw", "href": href_raw(sid, aid, step.key.line_off)}, "raw")
-    here = step.key == at
+@dataclass(frozen=True, slots=True)
+class _View:
+    sid: SessionId
+    aid: AgentId | None
+    at: Key | None
+    terms: tuple[str, ...]
+    numbers: Mapping[Key, int]
+
+    def mark(self, key: Key, s: str) -> Html:
+        return self._marked(key, _cut(s))
+
+    def prose(self, key: Key, s: str) -> tuple[Html, ...]:
+        s, out, at = _cut(s), [], 0
+        for opener, closer in _fences(s):
+            info, body = opener["info"].strip(), s[opener.end() + 1 : closer.start()].removesuffix("\n")
+            label = el("span", {"class": "info"}, self._marked(key, info)) if info else None
+            out += self._inline(key, s[at : opener.start()])
+            out.append(el("pre", {"class": "code"}, label, self._marked(key, body)))
+            at = closer.end() + 1
+        return (*out, *self._inline(key, s[at:]))
+
+    def raw(self, key: Key) -> Html:
+        return el("a", {"class": "raw", "href": href_raw(self.sid, self.aid, key.line_off)}, "raw")
+
+    def img(self, key: Key, shown: Picture) -> Html:
+        about = f"image, {shown.media_type or 'no type'}, {human.size(shown.size)}"
+        return el("img", {"loading": "lazy", "alt": about, "src": href_image(self.sid, self.aid, key, shown.part)})
+
+    def frame(self, tag: str, key: Key, css: str, *inner: Html | str | None, raw: bool = True) -> Html:
+        attrs = {"class": css, "id": f"m{key}", "open": tag == "details" and key == self.at}
+        return el(tag, attrs, *inner, self.raw(key) if raw else None)
+
+    def _inline(self, key: Key, s: str) -> list[Html]:
+        out, at = [], 0
+        for m in INLINE_CODE.finditer(s):
+            out += (self._marked(key, s[at : m.start()]), el("code", None, self._marked(key, m["code"])))
+            at = m.end()
+        return [*out, self._marked(key, s[at:])]
+
+    def _marked(self, key: Key, s: str) -> Html:
+        return marked(s, marks(s, self.terms)) if key == self.at and self.terms else text(s)
+
+
+def _step(view: _View, step: Step) -> Html:
     match step:
-        case Said(key, _, Kind.PROMPT, text):
-            text = text.strip()
-            command = COMMAND.match(text)
-            rest = text[command.end() :].lstrip() if command else text
-            said = el(
-                "div",
-                {"class": "text"},
-                el("span", {"class": "cmd"}, _text(command[0], here, terms)) if command else None,
-                " " if command and rest else None,
-                *_prose(rest, here, terms),
-            )
-            label = el("p", {"class": "label"}, f"Prompt {numbers[key]}")
-            css = "step prompt long" if _long(text) else "step prompt"
-            return el("div", {"class": css, "id": f"m{key}"}, label, said, raw_link)
-        case Said(key, _, _, text):
-            said = el("div", {"class": "text"}, *_prose(text.strip(), here, terms))
-            return el("div", {"class": "step reply", "id": f"m{key}"}, said, raw_link)
+        case Said(key, _, Kind.PROMPT, said):
+            return _prompt(view, key, said.strip())
+        case Said(key, _, _, said):
+            return view.frame("div", key, "step reply", el("div", {"class": "text"}, *view.prose(key, said.strip())))
         case Call():
-            return _call(sid, aid, step, at, terms, raw_link)
-        case Output():
+            return _call(view, step)
+        case Output(key):
             first = (_plain(step).strip().splitlines() or [""])[0]
-            body = _output_body(sid, aid, step, at, terms)
-            return _row(step.key, "output error" if step.error else "output", "Output", first, _size(step), body, here)
-        case Thought(key, _, text):
-            first = (text.strip().splitlines() or [""])[0]
-            body = (el("div", {"class": "text"}, *_prose(text.strip(), here, terms)), raw_link)
-            return _row(key, "thought", "Thinking", first, el("span", {"class": "size"}, _lines(text)), body, here)
+            panel = (*_output_body(view, step), view.raw(key))
+            css = "output error" if step.error else "output"
+            return _row(view, key, css, "Output", first, panel, end=_size(step), opened=key == view.at)
+        case Thought(key, _, said):
+            first = (said.strip().splitlines() or [""])[0]
+            panel = (el("div", {"class": "text"}, *view.prose(key, said.strip())), view.raw(key))
+            size = el("span", {"class": "size"}, _lines(said))
+            return _row(view, key, "thought", "Thinking", first, panel, end=size, opened=key == view.at)
         case Image(key, _, shown):
-            return el("div", {"class": "step image", "id": f"m{key}"}, _img(sid, aid, key, shown), raw_link)
-        case Marker(key, Note(notice, text)):
-            css = f"step note {notice.name.lower()}"
-            gist = task_summary(text)
-            quoted = notice not in STOCK and text.strip()
-            if _long(text) or gist is not None:
-                first = gist or (text.strip().splitlines() or [""])[0]
-                said = NOTICES[notice] + (f": {human.clip(first, 120)}" if quoted else "")
-                return el(
-                    "details",
-                    {"class": css, "id": f"m{key}", "open": here},
-                    el("summary", None, said),
-                    el("pre", None, text),
-                    raw_link,
-                )
-            shown = el("span", {"class": "text"}, text) if quoted else None
-            return el(
-                "div", {"class": css, "id": f"m{key}"}, NOTICES[notice] + (": " if shown else "."), shown, raw_link
-            )
+            return view.frame("div", key, "step image", view.img(key, shown))
+        case Marker(key, Note() as note):
+            return _note(view, key, note)
         case Marker(key, Hidden(lines)):
             counts = ", ".join(f"{n} {name}" for name, n in Counter(name for _, name in lines).most_common())
-            return el(
-                "details",
-                {"class": "step note hidden", "id": f"m{key}"},
-                el(
-                    "summary",
-                    None,
-                    _plural(len(lines), "hidden line"),
-                    el("span", {"class": "badge"}, "hidden"),
-                    el("span", {"class": "kinds"}, counts),
-                ),
-                el("ul", None, *(el("li", None, el("a", {"href": href_raw(sid, aid, o)}, name)) for o, name in lines)),
+            summary = el(
+                "summary",
+                None,
+                _plural(len(lines), "hidden line"),
+                el("span", {"class": "badge"}, "hidden"),
+                el("span", {"class": "kinds"}, counts),
             )
+            listed = (el("li", None, el("a", {"href": href_raw(view.sid, view.aid, o)}, name)) for o, name in lines)
+            return view.frame("details", key, "step note hidden", summary, el("ul", None, *listed), raw=False)
+
+
+def _prompt(view: _View, key: Key, said: str) -> Html:
+    command = COMMAND.match(said)
+    rest = said[command.end() :].lstrip() if command else said
+    shown = el(
+        "div",
+        {"class": "text"},
+        el("span", {"class": "cmd"}, view.mark(key, command[0])) if command else None,
+        " " if command and rest else None,
+        *view.prose(key, rest),
+    )
+    label = el("p", {"class": "label"}, f"Prompt {view.numbers[key]}")
+    return view.frame("div", key, "step prompt long" if _long(said) else "step prompt", label, shown)
+
+
+def _note(view: _View, key: Key, note: Note) -> Html:
+    css = f"step note {note.notice.name.lower()}"
+    gist = task_summary(note.text)
+    quoted = note.notice not in STOCK and note.text.strip()
+    if _long(note.text) or gist is not None:
+        first = gist or (note.text.strip().splitlines() or [""])[0]
+        said = NOTICES[note.notice] + (f": {human.clip(first, 120)}" if quoted else "")
+        return view.frame("details", key, css, el("summary", None, said), el("pre", None, note.text))
+    shown = el("span", {"class": "text"}, note.text) if quoted else None
+    return view.frame("div", key, css, NOTICES[note.notice] + (": " if shown else "."), shown)
 
 
 def _row(
-    key: Key, css: str, name: str, gist: str, end: Html | None, panel: Sequence[Html | None], opened: bool, *after: Html
+    view: _View,
+    key: Key,
+    css: str,
+    name: str,
+    gist: str,
+    panel: Sequence[Html | None],
+    *,
+    end: Html | None = None,
+    opened: bool = False,
+    spawned: Html | None = None,
 ) -> Html:
     summary = el("summary", None, el("b", None, name), " ", el("span", {"class": "gist"}, human.clip(gist, 160)), end)
     details = el("details", {"open": opened}, summary, el("div", {"class": "panel"}, *panel))
-    return el("div", {"class": f"step {css}", "id": f"m{key}"}, details, *after)
+    return view.frame("div", key, f"step {css}", details, spawned, raw=False)
 
 
-def _call(
-    sid: SessionId, aid: AgentId | None, call: Call, at: Key | None, terms: tuple[str, ...], raw_link: Html
-) -> Html:
+def _call(view: _View, call: Call) -> Html:
     out = call.result
     given = json.dumps(json.loads(call.input), indent=2, ensure_ascii=False)
-    panel = [el("pre", {"class": "input"}, _text(given, call.key == at, terms)), raw_link]
+    panel = [el("pre", {"class": "input"}, view.mark(call.key, given)), view.raw(call.key)]
     if out is not None:
-        css = "output error" if out.error else "output"
-        panel.append(el("div", {"class": css, "id": f"m{out.key}"}, *_output_body(sid, aid, out, at, terms)))
-    opened = at is not None and at in (call.key, out and out.key)
+        panel.append(view.frame("div", out.key, "output error" if out.error else "output", *_output_body(view, out)))
+    opened = view.at is not None and view.at in (call.key, out and out.key)
     failed = out is not None and out.error
     if call.spawned:
-        spawned = el(
-            "a", {"class": "spawned", "href": href_transcript(sid, call.spawned.id)}, f"↳ {call.spawned.id[:8]}"
-        )
+        href = href_transcript(view.sid, call.spawned.id)
+        spawned = el("a", {"class": "spawned", "href": href}, f"↳ {call.spawned.id[:8]}")
         css = "call spawns error" if failed else "call spawns"
-        return _row(call.key, css, call.tool, _gist(call.input), _size(out) if failed else None, panel, opened, spawned)
-    return _row(call.key, "call error" if failed else "call", call.tool, _gist(call.input), _size(out), panel, opened)
+        end = _size(out) if failed else None
+        return _row(view, call.key, css, call.tool, _gist(call.input), panel, end=end, opened=opened, spawned=spawned)
+    css = "call error" if failed else "call"
+    return _row(view, call.key, css, call.tool, _gist(call.input), panel, end=_size(out), opened=opened)
 
 
 def _gist(given: str) -> str:
@@ -603,25 +638,14 @@ def _size(out: Output | None) -> Html:
     return el("span", {"class": "size"}, " and ".join(lines + images) or "no output")
 
 
-def _output_body(
-    sid: SessionId, aid: AgentId | None, out: Output, at: Key | None, terms: tuple[str, ...]
-) -> tuple[Html, ...]:
-    here = out.key == at
-    return (
-        *(_stream(text, stderr, here, terms) for text, stderr in _streams(out)),
-        *(_img(sid, aid, out.key, p) for p in out.pictures),
-        el("a", {"class": "raw", "href": href_raw(sid, aid, out.key.line_off)}, "raw"),
-    )
+def _output_body(view: _View, out: Output) -> tuple[Html, ...]:
+    streams = (_stream(view, out.key, said, stderr) for said, stderr in _streams(out))
+    return (*streams, *(view.img(out.key, p) for p in out.pictures))
 
 
-def _stream(text: str, stderr: bool, here: bool, terms: tuple[str, ...]) -> Html:
-    shown = el("pre", None, _text(text, here, terms))
+def _stream(view: _View, key: Key, said: str, stderr: bool) -> Html:
+    shown = el("pre", None, view.mark(key, said))
     return el("div", {"class": "stderr"}, el("span", {"class": "label"}, "stderr"), shown) if stderr else shown
-
-
-def _img(sid: SessionId, aid: AgentId | None, key: Key, shown: Picture) -> Html:
-    about = f"image, {shown.media_type or 'no type'}, {human.size(shown.size)}"
-    return el("img", {"loading": "lazy", "alt": about, "src": href_image(sid, aid, key, shown.part)})
 
 
 FENCE = re.compile(r"^```(?P<info>[^\n`]*)$", re.M)
@@ -637,37 +661,10 @@ def _fences(s: str) -> Iterator[tuple[re.Match[str], re.Match[str]]]:
         yield opener, closer
 
 
-def _prose(s: str, here: bool, terms: tuple[str, ...]) -> tuple[Html, ...]:
-    s, out, at = _cut(s), [], 0
-    for opener, closer in _fences(s):
-        info, body = opener["info"].strip(), s[opener.end() + 1 : closer.start()].removesuffix("\n")
-        label = el("span", {"class": "info"}, _mark(info, here, terms)) if info else None
-        out += _inline(s[at : opener.start()], here, terms)
-        out.append(el("pre", {"class": "code"}, label, _mark(body, here, terms)))
-        at = closer.end() + 1
-    return (*out, *_inline(s[at:], here, terms))
-
-
-def _inline(s: str, here: bool, terms: tuple[str, ...]) -> list[Html]:
-    out, at = [], 0
-    for m in INLINE_CODE.finditer(s):
-        out += (_mark(s[at : m.start()], here, terms), el("code", None, _mark(m["code"], here, terms)))
-        at = m.end()
-    return [*out, _mark(s[at:], here, terms)]
-
-
-def _text(s: str, here: bool, terms: tuple[str, ...]) -> Html:
-    return _mark(_cut(s), here, terms)
-
-
 def _cut(s: str) -> str:
     if len(s) > INLINE_CHARS:
         return s[:INLINE_CHARS] + f"\n… cut at {human.size(INLINE_CHARS)}; the raw line has all of it"
     return s
-
-
-def _mark(s: str, here: bool, terms: tuple[str, ...]) -> Html:
-    return marked(s, marks(s, terms)) if here and terms else text(s)
 
 
 def _long(s: str) -> bool:
