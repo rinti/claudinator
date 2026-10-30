@@ -12,7 +12,7 @@ from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, classi
 from claudinator.lines import SEGMENT_BYTES
 import claudinator.archive as archive_module
 import claudinator.record as record_module
-from claudinator.record import PROJECTION_VERSION, Block, Kind, Turn
+from claudinator.record import PROJECTION_VERSION, Turn
 from helpers import (
     AID,
     SID,
