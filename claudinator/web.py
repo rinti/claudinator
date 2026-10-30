@@ -40,7 +40,7 @@ PAGE_POLICY = (
     "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'self'; frame-ancestors 'none'"
 )
 FILE_POLICY = "default-src 'none'; sandbox"
-IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+RASTER_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 SEARCH_LIMIT = 50
 FOLD_LINES, FOLD_CHARS = 3, 300
 INLINE_CHARS = 1 << 20
@@ -241,7 +241,7 @@ def picture(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) 
     with _reading(cfg, sweep=False) as (archive, _):
         line = archive.line(SessionId(m[1]), m[2] and AgentId(m[2]), int(m[3]))
     found = line and image(line, int(m[4]), m[5] and int(m[5]))
-    if not found or found[0] not in IMAGE_TYPES:
+    if not found or found[0] not in RASTER_TYPES:
         return _message(404, "No image of a type this server shows is there.", root)
     return Response(200, found[0], found[1], FILE_POLICY)
 
