@@ -242,10 +242,10 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> int:
     instead of noting it, so its errors and refusal are reported once."""
     with _opened(cfg, fresh=False) as archive:
         swept = archive.sweep(wait=False)
-        return _print_status(archive, archive.status(), swept)
+        return _print_status(archive.status(), swept, _cleanup_period(cfg))
 
 
-def _print_status(archive: Archive, st: Status, swept: SweepReport) -> int:
+def _print_status(st: Status, swept: SweepReport, cleanup_days: int | None) -> int:
     """Exit 1 when the sweeper is not loaded, the last sweep failed, an
     older claudinator's sweep was refused after it, the last sweep is older
     than two intervals, the sweep this command just ran failed or was
@@ -286,9 +286,7 @@ def _print_status(archive: Archive, st: Status, swept: SweepReport) -> int:
     if n := len(st.unclassified):
         files = "file under projects/ matches" if n == 1 else "files under projects/ match"
         _emit(f"unknown   {n} .jsonl {files} no known layout and {'is' if n == 1 else 'are'} not archived: {st.unclassified[0]}")
-    settings = archive.cfg.claude_dir / "settings.json"
-    days = cleanup_period_days(settings.read_bytes()) if settings.exists() else None
-    setting, days = (f"is {days}", days) if days is not None else ("is unset", 30)
+    setting, days = (f"is {cleanup_days}", cleanup_days) if cleanup_days is not None else ("is unset", 30)
     _emit(f"note      cleanupPeriodDays {setting}, so Claude Code deletes transcripts after {days} days.")
     _emit("          The archive keeps them, and `claudinator resume` restores one before resuming it.")
     return 1 if not loaded or failed or failed_now or refused or stale or st.unclassified else 0
@@ -306,7 +304,17 @@ def cmd_install(cfg: Config, args: argparse.Namespace) -> int:
         report = archive.sweep(wait=True, progress=progress)
         if progress:
             _emit(file=sys.stderr)
-        return _print_status(archive, archive.status(), report)
+        return _print_status(archive.status(), report, _cleanup_period(cfg))
+
+
+def _cleanup_period(cfg: Config) -> int | None:
+    """cleanupPeriodDays from Claude Code's settings.json, None when it is
+    unset or the file cannot be read: missing, a directory, unreadable, or
+    deleted meanwhile."""
+    try:
+        return cleanup_period_days((cfg.claude_dir / "settings.json").read_bytes())
+    except OSError:
+        return None
 
 
 def cmd_uninstall(cfg: Config, args: argparse.Namespace) -> int:

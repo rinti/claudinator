@@ -744,6 +744,24 @@ def test_install_and_status_read_a_settings_file_that_is_not_utf8(capsys, home):
         assert (code, "cleanupPeriodDays is 90, so Claude Code deletes transcripts after 90 days." in out) == (0, True)
 
 
+@pytest.mark.parametrize("unreadable", ["a directory", "without read permission"])
+def test_a_settings_file_that_cannot_be_read_counts_as_unset(capsys, home, unreadable):
+    settings = home / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    if unreadable == "a directory":
+        settings.mkdir()
+    else:
+        settings.write_text('{"cleanupPeriodDays": 90}')
+        settings.chmod(0)
+    try:
+        outputs = [run(capsys, command) for command in ("install", "status")]
+    finally:
+        settings.chmod(0o700)
+    for code, out, err in outputs:
+        assert (code, err) == (0, "")
+        assert "cleanupPeriodDays is unset, so Claude Code deletes transcripts after 30 days." in out
+
+
 def test_an_agent_file_name_with_a_control_character_is_unknown_and_shown_escaped(capsys):
     run(capsys, "install")
     append(transcript(), user("delegate the quokka"))
