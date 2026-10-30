@@ -14,7 +14,7 @@ from urllib.parse import urljoin, urlsplit
 
 import pytest
 
-from claudinator import web
+from claudinator import markup, pages, web
 from claudinator.conversation import build
 from claudinator.layout import Config
 from claudinator.record import PROJECTION_VERSION
@@ -451,7 +451,7 @@ def test_prose_sets_code_as_code_under_its_fences_label_and_leaves_a_stray_backt
 
 
 def test_a_reply_of_unclosed_fences_renders_in_well_under_a_second():
-    append(transcript(), user("go"), reply("```a\n" * (web.INLINE_CHARS // 5)))
+    append(transcript(), user("go"), reply("```a\n" * (pages.INLINE_CHARS // 5)))
     with open_archive() as archive:
         archive.sweep()
         session = archive.session(SID)
@@ -463,7 +463,7 @@ def test_a_reply_of_unclosed_fences_renders_in_well_under_a_second():
     previous = signal.signal(signal.SIGALRM, late)
     signal.setitimer(signal.ITIMER_REAL, 1)
     try:
-        shown = web.transcript_page("/T/", session, None, steps, None, web.Form(), False, None)
+        shown = pages.transcript_page("/T/", session, None, steps, None, pages.Form(), False, None)
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
@@ -730,7 +730,7 @@ def test_transcript_text_is_text_whatever_it_holds():
     with open_archive() as archive:
         archive.sweep()
         session = archive.session(SID)
-        shown = web.transcript_page("/T/", session, None, build(archive.lines(SID), session.agents, None), None, web.Form(), False, None)
+        shown = pages.transcript_page("/T/", session, None, build(archive.lines(SID), session.agents, None), None, pages.Form(), False, None)
     assert (
         '<div class="text">run &lt;script&gt;alert(1)&lt;/script&gt; and &lt;img src=x onerror=alert(2)&gt; on '
         '<span class="esc">\\x1b</span>[31mred <span class="esc">\\u202e</span>gpj.exe</div>'
@@ -742,20 +742,24 @@ def test_transcript_text_is_text_whatever_it_holds():
 
 
 def test_only_text_el_and_marked_make_markup():
-    tree = ast.parse(Path(web.__file__).read_text())
-    builders = [fn for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef) and fn.name in ("text", "el", "marked")]
-    allowed = {id(node) for fn in builders for node in ast.walk(fn)}
-    makers = [
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Html" and id(node) not in allowed
-    ]
-    assert (len(builders), makers) == (3, []), "build markup with el() and text(), which escape what they are given"
+    builders, makers = 0, []
+    for module in (markup, pages, web):
+        tree = ast.parse(Path(module.__file__).read_text())
+        found = [fn for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef) and fn.name in ("text", "el", "marked")]
+        allowed = {id(node) for fn in found for node in ast.walk(fn)}
+        builders += len(found)
+        makers += [
+            f"{module.__name__}:{node.lineno}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and "Html" in (getattr(node.func, "id", None), getattr(node.func, "attr", None))
+            and id(node) not in allowed
+        ]
+    assert (builders, makers) == (3, []), "build markup with el() and text(), which escape what they are given"
 
 
 def test_what_was_typed_into_the_form_comes_back_as_text():
-    typed = web.Form(q='"><script>alert(4)</script>', project="‮x")
-    shown = web.sessions_page("/T/", (), typed, None, date(2026, 10, 30), "since: <b>")
+    typed = pages.Form(q='"><script>alert(4)</script>', project="‮x")
+    shown = pages.sessions_page("/T/", (), typed, None, date(2026, 10, 30), "since: <b>")
     assert 'value="&quot;&gt;&lt;script&gt;alert(4)&lt;/script&gt;"' in shown
     assert 'name="project" form="find" value="\\u202ex"' in shown
     assert '<p class="banner">since: &lt;b&gt;</p>' in shown
