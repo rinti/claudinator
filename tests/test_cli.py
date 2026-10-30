@@ -359,6 +359,24 @@ def test_rebuild_while_another_process_holds_the_lock_names_it(capsys, monkeypat
     assert err.startswith("claudinator: another claudinator process is writing to the archive")
 
 
+def test_install_whose_sweep_gives_up_on_the_lock_exits_1_after_an_earlier_healthy_sweep(capsys, monkeypatch):
+    append(transcript(), user("archived by a healthy install"))
+    assert run(capsys, "install")[0] == 0
+    append(transcript(), user("new bytes behind a held lock"))
+    monkeypatch.setattr(archive_module, "LOCK_WAIT_MS", 200)
+    locker = subprocess.Popen(
+        [sys.executable, "-c", LOCKER, str(Config.from_env().db)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert locker.stdout.readline() == "locked\n"
+        code, out, _ = run(capsys, "install")
+    finally:
+        locker.stdin.close()
+        locker.wait(timeout=10)
+    assert code == 1
+    assert "\n          another claudinator process is writing to the archive and held its lock for 0.2 s" in out
+
+
 def test_status_exits_1_when_a_transcript_matches_no_known_layout(capsys):
     run(capsys, "install")
     stray = projects() / SLUG / "notes.jsonl"

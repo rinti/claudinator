@@ -234,17 +234,18 @@ def cmd_status(archive: Archive, args: argparse.Namespace, swept: SweepReport | 
     return _print_status(archive, archive.status(), swept)
 
 
-def _print_status(archive: Archive, st: Status, swept: SweepReport | None) -> int:
+def _print_status(archive: Archive, st: Status, swept: SweepReport) -> int:
     """Exit 1 when the sweeper is not loaded, the last sweep failed or was
     refused, the last sweep is older than two intervals, the sweep this
     command just ran failed or was refused, or a transcript sits in a
-    layout claudinator does not know (so it is not being archived)."""
+    layout claudinator does not know (so it is not being archived). That
+    sweep is shown when it archived something or failed."""
     loaded = launchd.loaded()
     last = st.last_sweep
     at = st.checked_at
     stale = last is None or at - last.finished > 2 * launchd.SWEEP_INTERVAL_SECONDS * 1000
     failed = last is not None and bool(last.errors or last.refused)
-    failed_now = swept is not None and bool(swept.errors or swept.refused)
+    failed_now = bool(swept.errors or swept.refused)
     unarchived = sum(p.unarchived_bytes for p in st.pending)
     _emit(f"archive   {_short(str(st.db_path))}  {_size(st.db_bytes)} ({_size(st.archived_bytes)} of transcripts)")
     _emit(
@@ -255,7 +256,7 @@ def _print_status(archive: Archive, st: Status, swept: SweepReport | None) -> in
     _emit(f"sweeper   {'loaded' if loaded else 'not loaded (run: claudinator install)'}, {sweep}")
     for error in last.errors[:5] if last else ():
         _emit(f"          {error}")
-    if failed_now:
+    if failed_now or swept.transcripts_changed:
         _emit(f"swept     {_report(swept)}")
         for error in swept.errors[:5]:
             _emit(f"          {error}")
@@ -287,8 +288,7 @@ def cmd_install(archive: Archive, args: argparse.Namespace, swept: SweepReport |
     report = archive.sweep(wait=True, progress=progress)
     if progress:
         _emit(file=sys.stderr)
-    _emit(f"swept     {_report(report)}")
-    return _print_status(archive, archive.status(), None)
+    return _print_status(archive, archive.status(), report)
 
 
 def cmd_uninstall(cfg: Config, args: argparse.Namespace) -> int:
