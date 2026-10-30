@@ -15,7 +15,7 @@
 -- foreign_keys=ON, and busy_timeout.
 
 CREATE TABLE meta (
-  key   TEXT PRIMARY KEY,   -- 'archive_schema' | 'projection_version' | 'last_sweep'
+  key   TEXT PRIMARY KEY,   -- 'archive_schema' | 'projection_version' | 'last_sweep' | 'last_refused'
   value TEXT NOT NULL
 ) STRICT;
 

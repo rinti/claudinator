@@ -14,6 +14,7 @@ import pytest
 import claudinator.archive as archive_module
 from claudinator import cli, launchd
 from claudinator.layout import Config
+from claudinator.record import PROJECTION_VERSION
 from test_concurrency import LOCKER
 from helpers import (
     AID,
@@ -584,8 +585,41 @@ def test_status_names_the_reason_the_last_sweep_was_refused(capsys):
     assert run(capsys, "sweep")[0] == 1
     code, out, err = run(capsys, "status")
     assert code == 1
-    assert "transcripts changed, 0 B, refused: this archive was written by a newer claudinator)\n" in out
+    assert "\nswept     0 of 1 transcripts changed, 0 B, refused: this archive was written by a newer claudinator\n" in out
+    assert " and was refused: this archive was written by a newer claudinator (reinstall: claudinator install)\n" in out
     assert err == ""
+
+
+def test_a_sweep_an_older_claudinator_was_refused_is_reported_apart_from_the_last_sweep(capsys, monkeypatch):
+    clock = [NOW]
+    monkeypatch.setattr(archive_module, "now", lambda: clock[0])
+    append(transcript(), user("archived by the newer claudinator"))
+    assert run(capsys, "install")[0] == 0
+    db = sqlite3.connect(Config.from_env().db)
+    db.execute("UPDATE meta SET value = ? WHERE key = 'projection_version'", (str(PROJECTION_VERSION + 1),))
+    db.commit()
+    db.close()
+    refusal = (
+        "refused   an older claudinator tried to sweep at 2026-10-01 10:03 and was refused:"
+        " this archive was written by a newer claudinator (reinstall: claudinator install)\n"
+    )
+
+    clock[0] = NOW + 2 * 60_000
+    assert run(capsys, "sweep")[0] == 1
+    code, out, _ = run(capsys, "status")
+    assert (code, refusal in out) == (1, True), "the older claudinator's view"
+
+    monkeypatch.setattr(archive_module, "PROJECTION_VERSION", PROJECTION_VERSION + 1)
+    code, out, _ = run(capsys, "status")
+    assert (code, refusal in out) == (1, True), "the newer claudinator's view"
+    (sweeper,) = [line for line in out.splitlines() if line.startswith("sweeper ")]
+    assert sweeper.startswith("sweeper   loaded, last sweep 2 min ago (1 of 1 transcripts changed, ")
+    assert "refused" not in sweeper
+
+    clock[0] += 60_000
+    assert run(capsys, "sweep")[0] == 0
+    code, out, _ = run(capsys, "status")
+    assert (code, "refused" in out) == (0, False), "a refusal older than the last sweep"
 
 
 def test_status_reports_a_directory_its_own_sweep_cannot_list_and_exits_1(capsys):

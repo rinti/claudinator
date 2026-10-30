@@ -255,6 +255,18 @@ class SweepReport:
 
 
 @dataclass(frozen=True, slots=True)
+class Refusal:
+    """A sweep that waited for the lock and was refused because a newer
+    claudinator had stamped the archive: the hourly sweeper of an older
+    install, usually."""
+
+    at: Millis
+    reason: str
+    archive_schema: int  # of the claudinator that was refused
+    projection_version: int
+
+
+@dataclass(frozen=True, slots=True)
 class Pending:
     path: Path
     unarchived_bytes: int
@@ -275,7 +287,8 @@ class Status:
     unparsed_lines: int
     pending: tuple[Pending, ...]  # on-disk bytes not yet archived
     unclassified: tuple[Path, ...]  # *.jsonl under projects/ in no known layout, so never archived
-    last_sweep: SweepReport | None  # the last sweep that waited for the lock
+    last_sweep: SweepReport | None  # the last sweep that waited for the lock and was not refused
+    last_refused: Refusal | None  # the last sweep that waited for the lock and was refused
 
 
 class ArchiveError(Exception):
@@ -562,7 +575,8 @@ class Archive:
 
         A file that fails for any reason becomes one entry in errors and the
         sweep moves on, so one bad file never keeps the rest unarchived. A
-        refused sweep is recorded too, so status can say why."""
+        refused sweep is recorded apart from the last sweep, so status can
+        say why without hiding the sweep that last wrote."""
         started = now()
         found = discover(self.cfg)
         total, changed = _Delta(errors=found.errors, stop=self._newer()), 0
@@ -720,7 +734,7 @@ class Archive:
                 continue
             if (unarchived := st.st_size - (a.cursor if (a := known.get(loc.path)) else 0)) > 0:
                 pending.append(Pending(loc.path, unarchived, Millis(st.st_mtime_ns // 1_000_000)))
-        last = self._meta("last_sweep")
+        last, refused = self._meta("last_sweep"), self._meta("last_refused")
         return Status(
             checked_at=now(),
             db_path=self.cfg.db,
@@ -735,6 +749,7 @@ class Archive:
             pending=tuple(pending),
             unclassified=found.unclassified,
             last_sweep=_report(json.loads(last)) if last else None,
+            last_refused=_known(Refusal, json.loads(refused)) if refused else None,
         )
 
     # -- private -----------------------------------------------------------
@@ -747,7 +762,7 @@ class Archive:
         Raises NewerArchive when a newer claudinator has stamped the file,
         checked under the lock because one may upgrade it while this
         process has it open. newer_ok skips that check, for the one write
-        an older claudinator may make: its last-sweep report."""
+        an older claudinator may make: the record of its refusal."""
         self._db.execute(f"PRAGMA busy_timeout = {LOCK_WAIT_MS if wait else 0}")
         try:
             self._db.execute("BEGIN IMMEDIATE")
@@ -1064,11 +1079,17 @@ class Archive:
         return _Delta(docs=stored, errors=tuple(errors))
 
     def _record(self, report: SweepReport) -> SweepReport:
-        """Store report as the last sweep, a refused one included, so status
-        can tell a sweeper that cannot write from one that stopped running."""
+        """Store report as the last sweep, or a refused one as the last
+        refusal, so status can tell a sweeper that cannot write from one
+        that stopped running, and a refusal never replaces the report of
+        the newer claudinator's own last sweep."""
         try:
-            with self._write(wait=True, newer_ok=True):
-                self._set_meta("last_sweep", json.dumps(asdict(report)))
+            with self._write(wait=True, newer_ok=report.refused is not None):
+                if report.refused is None:
+                    self._set_meta("last_sweep", json.dumps(asdict(report)))
+                else:
+                    refusal = Refusal(report.finished, report.refused, ARCHIVE_SCHEMA, PROJECTION_VERSION)
+                    self._set_meta("last_refused", json.dumps(asdict(refusal)))
         except Exception as e:
             return replace(report, errors=report.errors + _failed("recording this sweep", e).errors)
         return report
@@ -1183,7 +1204,12 @@ SELECT k.session_id, k.hits, e.source_id, e.line_off, e.block, e.kind, e.ts, s.a
 
 
 def _report(obj: dict) -> SweepReport:
-    """The stored last-sweep JSON as a SweepReport. Keys this version does
-    not know come from a newer claudinator and are dropped."""
-    known = {f.name for f in fields(SweepReport)}
-    return SweepReport(**{k: v for k, v in obj.items() if k in known} | {"errors": tuple(obj.get("errors", ()))})
+    """The stored last-sweep JSON as a SweepReport."""
+    return replace(_known(SweepReport, obj), errors=tuple(obj.get("errors", ())))
+
+
+def _known[T](cls: type[T], obj: dict) -> T:
+    """A dataclass from its stored JSON. Keys this version does not know
+    come from a newer claudinator and are dropped."""
+    names = {f.name for f in fields(cls)}
+    return cls(**{k: v for k, v in obj.items() if k in names})
