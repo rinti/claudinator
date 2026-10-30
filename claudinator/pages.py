@@ -160,18 +160,29 @@ def _session_row(s: SessionSummary) -> Html:
 COMMAND = re.compile(r"/[^\W\d][\w:.-]*(?=\s|$)")
 
 
-def _title(s: SessionSummary) -> tuple[Html | str, ...]:
+def _title(s: SessionSummary) -> tuple[Html | str | None, ...]:
     title = s.title or s.id[:8]
-    if m := COMMAND.match(title):
-        return el("span", {"class": "cmd"}, m[0]), *_rest(title[m.end() :])
+    command, gap, rest = _split_command(title)
+    if command:
+        return el("span", {"class": "cmd"}, command), gap, _rest(rest)
     if s.heading and title.startswith(f"# {s.heading}"):
-        head = el("span", {"class": "head"}, s.heading)
-        return el("span", {"class": "hash"}, "#"), head, *_rest(title[2 + len(s.heading) :])
+        _, gap, rest = _split(title, f"# {s.heading}")
+        return el("span", {"class": "hash"}, "#"), el("span", {"class": "head"}, s.heading), gap, _rest(rest)
     return (title,)
 
 
-def _rest(s: str) -> tuple[Html | str, ...]:
-    return (" ", el("span", {"class": "rest"}, s.strip())) if s.strip() else ()
+def _rest(rest: str) -> Html | None:
+    return el("span", {"class": "rest"}, rest) if rest else None
+
+
+def _split_command(text: str) -> tuple[str, str, str]:
+    m = COMMAND.match(text)
+    return _split(text, m[0]) if m else ("", "", text)
+
+
+def _split(text: str, lead: str) -> tuple[str, str, str]:
+    rest = text.removeprefix(lead).strip()
+    return lead, " " if rest else "", rest
 
 
 def _where(cwd: str | None) -> tuple[Html | None, Html]:
@@ -564,13 +575,12 @@ def _step(view: _View, step: Step) -> Html:
 
 
 def _prompt(view: _View, key: Key, said: str) -> Html:
-    command = COMMAND.match(said)
-    rest = said[command.end() :].lstrip() if command else said
+    command, gap, rest = _split_command(said)
     shown = el(
         "div",
         {"class": "text"},
-        el("span", {"class": "cmd"}, view.mark(key, command[0])) if command else None,
-        " " if command and rest else None,
+        el("span", {"class": "cmd"}, view.mark(key, command)) if command else None,
+        gap,
         *view.prose(key, rest),
     )
     label = el("p", {"class": "label"}, f"Prompt {view.numbers[key]}")
