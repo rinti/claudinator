@@ -599,6 +599,15 @@ def test_a_timestamp_outside_1970_to_9999_reads_as_missing(capsys, zone, ts):
     assert "\n? to ?, 1 prompt, on disk" in out and "\n\n?  you\n  dated quokka\n" in out
 
 
+def test_a_timestamp_late_on_9999_12_31_is_kept_while_every_time_zone_can_show_it(capsys, zone):
+    zone("Pacific/Kiritimati")  # UTC+14, the zone furthest ahead
+    append(transcript(), user("the last quokka", ts="9999-12-31T09:59:59.999Z"), reply("too late", ts="9999-12-31T10:00:00.000Z"))
+    code, out, err = run(capsys, "show", "8f2d")
+    assert (code, err) == (0, "")
+    assert "\n9999-12-31 23:59 to 9999-12-31 23:59, 1 prompt" in out
+    assert out.endswith("\n\n9999-12-31 23:59  you\n  the last quokka\n\n?  claude\n  too late\n")
+
+
 def test_install_and_status_read_a_settings_file_that_is_not_utf8(capsys, home):
     (home / ".claude").mkdir()
     (home / ".claude" / "settings.json").write_bytes(b'{"cleanupPeriodDays": 90, "statusLine": "caf\xe9"}')

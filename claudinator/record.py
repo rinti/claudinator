@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import NewType
 
-PROJECTION_VERSION = 7
+PROJECTION_VERSION = 8
 """Bump when parse() or project() would produce different rows for the same
 bytes, or when the projection section of schema.sql changes. open() compares
 this number only, so two builds that share it never rebuild over each other.
@@ -307,13 +307,16 @@ def _observe(facts: Facts, ts: Millis | None, cwd: str | None) -> Facts:
 
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-_LAST = datetime(9999, 12, 31, tzinfo=UTC)
+_END = datetime(9999, 12, 31, 10, tzinfo=UTC)
+"""Year 10000 begins at UTC+14, the zone furthest ahead, 14 hours before
+10000-01-01T00:00Z. A time before this has a local date in years 1969 to
+9999 in every zone, so the CLI can print it."""
 
 
 def _millis(value: object) -> Millis | None:
     """ISO 8601 ('2026-10-13T14:48:22.241Z') -> epoch ms. None on anything
-    else, and outside 1970-01-01 to 9999-12-31 UTC, where the local date the
-    CLI prints may not exist in every time zone."""
+    else, and outside [1970-01-01T00:00Z, 9999-12-31T10:00Z), where the
+    local date the CLI prints may not exist in every time zone."""
     if not isinstance(value, str):
         return None
     try:
@@ -322,7 +325,7 @@ def _millis(value: object) -> Millis | None:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
-    if not _EPOCH <= dt <= _LAST:
+    if not _EPOCH <= dt < _END:
         return None
     return Millis((dt - _EPOCH) // timedelta(milliseconds=1))
 
