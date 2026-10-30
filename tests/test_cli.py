@@ -149,6 +149,27 @@ def test_usage_errors_exit_2(capsys, argv):
     assert run(capsys, *argv)[0] == 2
 
 
+HUGE = "9" * 30
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["search", "quokka", "--since", f"{HUGE}d"],
+        ["sessions", "--until", "999999999999999999h"],
+        ["search", "quokka", "--limit", HUGE],
+        ["sessions", "--limit", str(2**63)],
+        ["export", "8f2d", "--generation", HUGE],
+    ],
+)
+def test_a_number_too_large_for_the_archive_is_a_usage_error(capsys, argv):
+    append(transcript(), user("one quokka"))
+    code, out, err = run(capsys, *argv)
+    assert (code, out) == (2, "")
+    (option,) = [arg for arg in argv if arg.startswith("--")]
+    assert f"error: argument {option}: " in err
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [

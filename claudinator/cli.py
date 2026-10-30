@@ -33,6 +33,9 @@ from claudinator.layout import AGENT_ID, Config
 from claudinator.record import AgentId, Kind, Millis, cleanup_period_days
 
 _NOTE_ARCHIVED_BYTES = 4 << 20
+_LARGEST = 2**62
+"""The largest number argv may give. SQLite stores integers in 64 bits, and
+a time that far back can still be subtracted from now."""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,7 +84,9 @@ def _opened(cfg: Config, *, fresh: bool) -> Iterator[Archive]:
 def parse_when(text: str, now: Millis) -> Millis:
     """'2026-10-01' (local midnight), '2026-10-01T14:00' (local), '7d', '12h' (ago)."""
     if m := re.fullmatch(r"(\d+)([dh])", text):
-        return Millis(now - int(m[1]) * {"d": 86_400_000, "h": 3_600_000}[m[2]])
+        if (ago := int(m[1]) * {"d": 86_400_000, "h": 3_600_000}[m[2]]) > _LARGEST:
+            raise ValueError(f"{text!r} is out of range")
+        return Millis(now - ago)
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M"):
         try:
             local = datetime.strptime(text, fmt)
@@ -337,10 +342,13 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
 
         return convert
 
-    def positive(text: str) -> int:
-        if not text.isdigit() or int(text) < 1:
-            raise ValueError(f"expected a positive number, not {text!r}")
-        return int(text)
+    def number(least: int) -> Callable[[str], object]:
+        def parse(text: str) -> int:
+            if not text.isdigit() or not least <= int(text) <= _LARGEST:
+                raise ValueError(f"expected a number from {least} to 2**62, not {text!r}")
+            return int(text)
+
+        return checked(parse)
 
     when = checked(lambda text: parse_when(text, now))
     ref = checked(parse_ref)
@@ -359,7 +367,7 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
         p.add_argument("--project", metavar="P", help="part of the session's directory")
         p.add_argument("--since", type=when, metavar="WHEN", help="2026-10-01, 2026-10-01T14:00, 7d, or 12h")
         p.add_argument("--until", type=when, metavar="WHEN")
-        p.add_argument("--limit", type=checked(positive), default=limit, metavar="N")
+        p.add_argument("--limit", type=number(1), default=limit, metavar="N")
 
     p = command("search", cmd_search, "find sessions where every word appears")
     p.add_argument("words", nargs="+", metavar="WORDS", help='"a phrase" in quotes, deploy* for a prefix')
@@ -375,7 +383,7 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
     p = command("export", cmd_export, "write the archived transcript byte for byte")
     p.add_argument("id", type=ref, metavar="ID")
     p.add_argument("--agent", type=agent, metavar="AID")
-    p.add_argument("--generation", type=int, metavar="N", help="an earlier generation of a rewritten file")
+    p.add_argument("--generation", type=number(0), metavar="N", help="an earlier generation of a rewritten file")
     command("status", cmd_status, "archive size, coverage, and sweeper health")
     command("sweep", cmd_sweep, "archive new bytes now")
     command("rebuild", cmd_rebuild, "re-derive the search index from the archive")
