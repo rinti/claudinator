@@ -188,6 +188,16 @@ def test_export_writes_the_archived_bytes(capsysbinary):
     assert capsysbinary.readouterr().out == original
 
 
+def test_any_agent_id_the_archive_accepts_can_be_typed_back(capsysbinary):
+    append(transcript(), user("delegate"))
+    append(transcript(agent="aprompt_X1b2-Q"), user("the quokka task"))
+    assert cli.main(["show", "8f2d", "--agent", "aprompt_X1"]) == 0
+    assert capsysbinary.readouterr().out.endswith(b"agent aprompt_\n\n2026-10-01 10:00  you\n  the quokka task\n")
+    assert cli.main(["export", "8f2d", "--agent", "aprompt_X1b2-Q"]) == 0
+    assert capsysbinary.readouterr().out == transcript(agent="aprompt_X1b2-Q").read_bytes()
+    assert cli.main(["show", "8f2d", "--agent", "APROMPT_X1"]) == 1
+
+
 def test_resume_restores_a_deleted_transcript_then_execs_claude(capsys, tmp_path, execs):
     workdir = tmp_path / "project"
     workdir.mkdir()

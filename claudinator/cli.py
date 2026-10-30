@@ -29,7 +29,7 @@ from claudinator.archive import (
     UnknownSession,
     now,
 )
-from claudinator.layout import Config
+from claudinator.layout import AGENT_ID, Config
 from claudinator.record import AgentId, Kind, Millis, cleanup_period_days
 
 _NOTE_ARCHIVED_BYTES = 4 << 20
@@ -99,10 +99,17 @@ def parse_when(text: str, now: Millis) -> Millis:
 
 
 def parse_ref(text: str) -> str:
-    """Session or agent id prefix: [0-9a-f-]{4,36}, lowercased."""
+    """Session id prefix: [0-9a-f-]{4,36}, lowercased."""
     if re.fullmatch(r"[0-9a-f-]{4,36}", ref := text.lower()):
         return ref
     raise ValueError(f"expected at least 4 characters of an id, not {text!r}")
+
+
+def parse_agent(text: str) -> str:
+    """Agent id prefix, in the characters classify() admits, case kept."""
+    if AGENT_ID.fullmatch(text):
+        return text
+    raise ValueError(f"expected the start of an agent id (letters, digits, - and _), not {text!r}")
 
 
 def cmd_search(archive: Archive, args: argparse.Namespace, swept: SweepReport | None) -> int:
@@ -322,6 +329,7 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
 
     when = checked(lambda text: parse_when(text, now))
     ref = checked(parse_ref)
+    agent = checked(parse_agent)
     parser = argparse.ArgumentParser(
         prog="claudinator", description="A permanent, searchable archive of every Claude Code transcript."
     )
@@ -348,13 +356,13 @@ def _parser(now: Millis) -> argparse.ArgumentParser:
     window(command("sessions", cmd_sessions, "list sessions by last activity", _Needs.FRESH), 30)
     p = command("show", cmd_show, "print a conversation from the archive", _Needs.FRESH)
     p.add_argument("id", type=ref, metavar="ID")
-    p.add_argument("--agent", type=ref, metavar="AID", help="print one subagent's transcript")
+    p.add_argument("--agent", type=agent, metavar="AID", help="print one subagent's transcript")
     p.add_argument("--full", action="store_true", help="print tool output in full")
     p = command("resume", cmd_resume, "run claude --resume, restoring a deleted transcript first", _Needs.FRESH)
     p.add_argument("id", type=ref, metavar="ID")
     p = command("export", cmd_export, "write the archived transcript byte for byte", _Needs.FRESH)
     p.add_argument("id", type=ref, metavar="ID")
-    p.add_argument("--agent", type=ref, metavar="AID")
+    p.add_argument("--agent", type=agent, metavar="AID")
     p.add_argument("--generation", type=int, metavar="N", help="an earlier generation of a rewritten file")
     command("status", cmd_status, "archive size, coverage, and sweeper health", _Needs.FRESH)
     command("sweep", cmd_sweep, "archive new bytes now", _Needs.ARCHIVE)
