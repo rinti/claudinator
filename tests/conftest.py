@@ -6,6 +6,15 @@ import pytest
 from claudinator import cli, launchd
 
 
+@pytest.fixture(autouse=True, scope="session")
+def libc_zone_left_as_found():
+    """The suite leaves the process's libc time zone as it found it, so no
+    test sees a zone another test chose."""
+    before = os.environ.get("TZ"), time.tzname
+    yield
+    assert (os.environ.get("TZ"), time.tzname) == before, "a test changed the libc time zone without restoring it"
+
+
 @pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
     """Every test runs against a fresh HOME, so Config.from_env() points at
@@ -15,9 +24,27 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("CLAUDINATOR_DB", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    monkeypatch.setenv("TZ", "UTC")
-    time.tzset()
     return home
+
+
+@pytest.fixture(autouse=True)
+def zone():
+    """Sets the libc time zone, UTC unless a test asks for another, and puts
+    the old one back afterwards. TZ alone changes nothing until tzset()
+    runs, so restoring the variable is not enough."""
+    before = os.environ.get("TZ")
+
+    def set_zone(name: str) -> None:
+        os.environ["TZ"] = name
+        time.tzset()
+
+    set_zone("UTC")
+    yield set_zone
+    if before is None:
+        del os.environ["TZ"]
+    else:
+        os.environ["TZ"] = before
+    time.tzset()
 
 
 class FakeLaunchctl:
