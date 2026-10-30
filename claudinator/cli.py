@@ -234,7 +234,7 @@ def _print_status(st: Status, swept: SweepReport, cleanup_days: int | None) -> i
     failed_now = bool(swept.errors or swept.refused)
     refused = st.last_refused if st.last_refused and (last is None or st.last_refused.at > last.finished) else None
     unarchived = sum(p.unarchived_bytes for p in st.pending)
-    _emit(f"archive   {_short(str(st.db_path))}  {_size(st.db_bytes)} ({_size(st.archived_bytes)} of transcripts)")
+    _emit(f"archive   {_short(str(st.db_path))}  {_size(st.db_bytes)} ({_size(st.uncompressed_bytes)} of transcripts)")
     _emit(
         f"coverage  {st.transcripts} transcripts in {st.sessions} sessions, {unarchived} unarchived bytes,"
         f" {st.unparsed_lines} unparsed lines, {st.multi_generation} rewritten files"
