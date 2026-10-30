@@ -883,13 +883,13 @@ def test_rebuild_says_how_many_transcript_generations_it_replayed(capsys):
     assert run(capsys, "rebuild")[1] == "rebuilt the search index from 2 archived transcript generations\n"
 
 
-def test_serve_prints_the_url_that_signs_in_and_opens_it_in_a_browser(capsys, monkeypatch):
+def test_serve_prints_its_secret_url_and_opens_it_in_a_browser(capsys, monkeypatch):
     run(capsys, "sweep")
     browsed = []
     monkeypatch.setattr(cli, "_browse", browsed.append)
     monkeypatch.setattr(web.Server, "serve_forever", lambda server, poll_interval=0.5: None)
     code, out, err = run(capsys, "serve")
-    printed = re.fullmatch(r"claudinator: serving the archive at (http://127\.0\.0\.1:\d+/\?k=[\w-]{43}) until Ctrl-C\n", out)
+    printed = re.fullmatch(r"claudinator: serving the archive at (http://127\.0\.0\.1:\d+/[\w-]{43}/) until Ctrl-C\n", out)
     assert (code, err, browsed) == (0, "", [printed[1]])
     assert run(capsys, "serve", "--no-browser")[0] == 0
     assert len(browsed) == 1

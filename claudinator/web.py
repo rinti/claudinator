@@ -37,7 +37,7 @@ from claudinator.record import AgentId, Kind, Millis, Note, Picture, SessionId, 
 from claudinator.search_text import marks, searchable
 
 PAGE_POLICY = (
-    "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'self'; frame-ancestors 'none'"
 )
 FILE_POLICY = "default-src 'none'; sandbox"
 IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
@@ -52,7 +52,7 @@ class Server(ThreadingHTTPServer):
     def __init__(self, cfg: Config, port: int) -> None:
         super().__init__(("127.0.0.1", port), _Handler)
         self.cfg = cfg
-        self.token = secrets.token_urlsafe(32)
+        self.root = f"/{secrets.token_urlsafe(32)}/"
 
     @property
     def port(self) -> int:
@@ -60,7 +60,7 @@ class Server(ThreadingHTTPServer):
 
     @property
     def url(self) -> str:
-        return f"http://127.0.0.1:{self.port}/?k={self.token}"
+        return f"http://127.0.0.1:{self.port}{self.root}"
 
 
 def bind(cfg: Config, port: int = 0) -> Server:
@@ -105,26 +105,21 @@ class _Handler(BaseHTTPRequestHandler):
         if self.headers.get("Origin", f"http://{hosts[0]}") not in tuple(f"http://{host}" for host in hosts):
             return _message(403, "This server answers only its own pages.")
         url = urlsplit(self.path)
-        query = dict(parse_qsl(url.query))
-        cookie = f"claudinator-{self.server.port}"
-        if "k" in query:
-            if not _same(query.pop("k"), self.server.token):
-                return _message(403, "This sign-in link is from another run. Open the URL claudinator serve printed.")
-            location = "/" + url.path.lstrip("/") + (f"?{urlencode(query)}" if query else "")
-            signed_in = f"{cookie}={self.server.token}; HttpOnly; SameSite=Strict; Path=/"
-            return Response(303, HTML, b"", headers=(("Location", location), ("Set-Cookie", signed_in)))
-        cookies = dict(c.strip().partition("=")[::2] for c in self.headers.get("Cookie", "").split(";"))
-        if not _same(cookies.get(cookie, ""), self.server.token):
-            return _message(403, "Open the URL claudinator serve printed to sign in.")
+        if url.path == "/favicon.ico":
+            return Response(HTTPStatus.NO_CONTENT, HTML, b"")
+        root = self.server.root
+        if not _same(url.path[: len(root)], root):
+            return _message(403, "Open the URL claudinator serve printed. Addresses from an earlier run no longer work.")
+        path, query = url.path[len(root) - 1 :], dict(parse_qsl(url.query))
         for pattern, route in ROUTES:
-            if m := pattern.fullmatch(url.path):
+            if m := pattern.fullmatch(path):
                 try:
-                    return route(self.server.cfg, query, m)
+                    return route(self.server.cfg, root, query, m)
                 except UnknownSession as e:
-                    return _message(404, str(e))
+                    return _message(404, str(e), root)
                 except (ArchiveError, sqlite3.Error, OSError) as e:
-                    return _message(500, str(e))
-        return _message(404, "Nothing is here.")
+                    return _message(500, str(e), root)
+        return _message(404, "Nothing is here.", root)
 
     def _send(self, response: Response) -> None:
         try:
@@ -146,12 +141,12 @@ class _Handler(BaseHTTPRequestHandler):
             pass
 
 
-def _same(given: str, token: str) -> bool:
-    return hmac.compare_digest(given.encode(), token.encode())
+def _same(given: str, root: str) -> bool:
+    return hmac.compare_digest(given.encode(), root.encode())
 
 
-def _message(status: int, text: str) -> Response:
-    return Response(status, HTML, _document(page(HTTPStatus(status).phrase, el("p", {"class": "banner"}, text))))
+def _message(status: int, text: str, root: str | None = None) -> Response:
+    return Response(status, HTML, _document(page(root, HTTPStatus(status).phrase, el("p", {"class": "banner"}, text))))
 
 
 @contextmanager
@@ -171,17 +166,17 @@ OFFSET = r"\d{1,18}"
 HOME = re.compile(r"/")
 
 
-def home(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
+def home(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
     form = Form.read(query)
     with _reading(cfg, sweep=True) as (archive, swept):
         try:
             filters, terms = form.filters(now()), form.terms()
             if terms:
                 hits = archive.search(Query(terms, filters, form.tools, SEARCH_LIMIT))
-                return Response(200, HTML, _document(search_page(hits, form, swept)))
-            return Response(200, HTML, _document(sessions_page(archive.sessions(filters, None), form, swept)))
+                return Response(200, HTML, _document(search_page(root, hits, form, swept)))
+            return Response(200, HTML, _document(sessions_page(root, archive.sessions(filters, None), form, swept)))
         except (ValueError, EmptyQuery) as e:
-            return Response(400, HTML, _document(sessions_page((), form, swept, str(e))))
+            return Response(400, HTML, _document(sessions_page(root, (), form, swept, str(e))))
 
 
 TRANSCRIPT = re.compile(rf"/s/({SID})(?:/({AID}))?")
@@ -190,17 +185,17 @@ TRANSCRIPT = re.compile(rf"/s/({SID})(?:/({AID}))?")
 def href_transcript(
     sid: SessionId, aid: AgentId | None = None, at: Key | None = None, q: str = "", hidden: bool = False
 ) -> str:
-    path = f"/s/{sid}" + (f"/{aid}" if aid else "")
+    path = f"s/{sid}" + (f"/{aid}" if aid else "")
     landed = {} if at is None else {"at": str(at)} | ({"q": q} if q else {})
     query = landed | ({"hidden": "1"} if hidden else {})
     return path + (f"?{urlencode(query)}" if query else "") + ("" if at is None else f"#m{at}")
 
 
 def href_call(sid: SessionId, parent: AgentId | None, tool_use_id: str) -> str:
-    return f"/s/{sid}" + (f"/{quote(parent, safe='')}" if parent else "") + f"?{urlencode({'call': tool_use_id})}"
+    return f"s/{sid}" + (f"/{quote(parent, safe='')}" if parent else "") + f"?{urlencode({'call': tool_use_id})}"
 
 
-def transcript(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
+def transcript(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
     sid, aid = SessionId(m[1]), m[2] and AgentId(m[2])
     with _reading(cfg, sweep=True) as (archive, swept):
         session = archive.session(sid)
@@ -208,10 +203,10 @@ def transcript(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Respo
     if "call" in query:
         for step in steps:
             if isinstance(step, Call) and step.tool_use_id == query["call"]:
-                return Response(303, HTML, b"", headers=(("Location", href_transcript(sid, aid, step.key)),))
+                return Response(303, HTML, b"", headers=(("Location", root + href_transcript(sid, aid, step.key)),))
     at = re.fullmatch(rf"({OFFSET})\.(\d{{1,9}})", query.get("at", ""))
     landed = at and Key(int(at[1]), int(at[2]))
-    body = transcript_page(session, aid, steps, landed, query.get("q", ""), query.get("hidden") == "1", swept)
+    body = transcript_page(root, session, aid, steps, landed, query.get("q", ""), query.get("hidden") == "1", swept)
     return Response(200, HTML, _document(body))
 
 
@@ -219,14 +214,14 @@ RAW = re.compile(rf"/raw/({SID})(?:/({AID}))?/({OFFSET})")
 
 
 def href_raw(sid: SessionId, aid: AgentId | None, line_off: int) -> str:
-    return f"/raw/{sid}" + (f"/{aid}" if aid else "") + f"/{line_off}"
+    return f"raw/{sid}" + (f"/{aid}" if aid else "") + f"/{line_off}"
 
 
-def raw(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
+def raw(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
     with _reading(cfg, sweep=False) as (archive, _):
         line = archive.line(SessionId(m[1]), m[2] and AgentId(m[2]), int(m[3]))
     if line is None:
-        return _message(404, "No line starts there.")
+        return _message(404, "No line starts there.", root)
     try:
         body = json.dumps(json.loads(line), indent=2, ensure_ascii=True).encode()
     except ValueError, RecursionError:
@@ -238,15 +233,15 @@ IMAGE = re.compile(rf"/image/({SID})(?:/({AID}))?/({OFFSET})\.(\d{{1,9}})(?:/(\d
 
 
 def href_image(sid: SessionId, aid: AgentId | None, key: Key, part: int | None) -> str:
-    return f"/image/{sid}" + (f"/{aid}" if aid else "") + f"/{key}" + (f"/{part}" if part is not None else "")
+    return f"image/{sid}" + (f"/{aid}" if aid else "") + f"/{key}" + (f"/{part}" if part is not None else "")
 
 
-def picture(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
+def picture(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
     with _reading(cfg, sweep=False) as (archive, _):
         line = archive.line(SessionId(m[1]), m[2] and AgentId(m[2]), int(m[3]))
     found = line and image(line, int(m[4]), m[5] and int(m[5]))
     if not found or found[0] not in IMAGE_TYPES:
-        return _message(404, "No image of a type this server shows is there.")
+        return _message(404, "No image of a type this server shows is there.", root)
     return Response(200, found[0], found[1], FILE_POLICY)
 
 
@@ -254,10 +249,10 @@ EXPORT = re.compile(rf"/export/({SID})(?:/({AID}))?")
 
 
 def href_export(sid: SessionId, aid: AgentId | None) -> str:
-    return f"/export/{sid}" + (f"/{aid}" if aid else "")
+    return f"export/{sid}" + (f"/{aid}" if aid else "")
 
 
-def export(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
+def export(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
     sid, aid = SessionId(m[1]), m[2] and AgentId(m[2])
     out = BytesIO()
     with _reading(cfg, sweep=False) as (archive, _):
@@ -270,25 +265,17 @@ def export(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
 STYLESHEET = re.compile(r"/web\.css")
 
 
-def stylesheet(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
+def stylesheet(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
     return Response(200, "text/css; charset=utf-8", STYLE)
 
 
-FAVICON = re.compile(r"/favicon\.ico")
-
-
-def favicon(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
-    return Response(HTTPStatus.NO_CONTENT, HTML, b"")
-
-
-ROUTES: tuple[tuple[re.Pattern[str], Callable[[Config, Mapping[str, str], re.Match[str]], Response]], ...] = (
+ROUTES: tuple[tuple[re.Pattern[str], Callable[[Config, str, Mapping[str, str], re.Match[str]], Response]], ...] = (
     (HOME, home),
     (TRANSCRIPT, transcript),
     (RAW, raw),
     (IMAGE, picture),
     (EXPORT, export),
     (STYLESHEET, stylesheet),
-    (FAVICON, favicon),
 )
 
 
@@ -318,8 +305,11 @@ class Form:
         return Filters(self.project or None, when("since", self.since), when("until", self.until))
 
 
-def sessions_page(rows: Sequence[SessionSummary], form: Form, swept: SweepReport | None, error: str = "") -> Html:
+def sessions_page(
+    root: str, rows: Sequence[SessionSummary], form: Form, swept: SweepReport | None, error: str = ""
+) -> Html:
     return page(
+        root,
         "claudinator",
         _top(form),
         _banner(swept, error),
@@ -328,9 +318,10 @@ def sessions_page(rows: Sequence[SessionSummary], form: Form, swept: SweepReport
     )
 
 
-def search_page(hits: Sequence[SessionHit], form: Form, swept: SweepReport | None) -> Html:
+def search_page(root: str, hits: Sequence[SessionHit], form: Form, swept: SweepReport | None) -> Html:
     found = _plural(len(hits), "session") + (" or more" if len(hits) == SEARCH_LIMIT else "")
     return page(
+        root,
         f"{form.q} · claudinator",
         _top(form),
         _banner(swept, ""),
@@ -340,6 +331,7 @@ def search_page(hits: Sequence[SessionHit], form: Form, swept: SweepReport | Non
 
 
 def transcript_page(
+    root: str,
     session: Session,
     aid: AgentId | None,
     steps: Sequence[Step],
@@ -371,7 +363,7 @@ def transcript_page(
     header = el(
         "header",
         {"class": "session"},
-        el("a", {"href": "/"}, "all sessions"),
+        el("a", {"href": "./"}, "all sessions"),
         el("h1", None, title + (f" · subagent {aid[:8]}" if aid else "")),
         el(
             "p",
@@ -400,7 +392,7 @@ def transcript_page(
             body.append(el("h2", {"class": f"speaker {who}"}, f"{human.when(step.ts)}  {who}"))
             speaker = who
         body.append(_step(s.id, aid, step, at, terms))
-    return page(title, header, _banner(swept, ""), el("main", None, *body))
+    return page(root, title, header, _banner(swept, ""), el("main", None, *body))
 
 
 def _agent(sid: SessionId, a: Subagent) -> Html:
@@ -550,10 +542,10 @@ def _top(form: Form) -> Html:
     return el(
         "header",
         None,
-        el("h1", None, el("a", {"href": "/"}, "claudinator")),
+        el("h1", None, el("a", {"href": "./"}, "claudinator")),
         el(
             "form",
-            {"method": "get", "action": "/", "class": "find"},
+            {"method": "get", "action": "./", "class": "find"},
             el("input", {"type": "search", "name": "q", "value": form.q, "placeholder": 'words, "a phrase", deploy*'}),
             el("input", {"name": "project", "value": form.project, "placeholder": "project"}),
             el("input", {"name": "since", "value": form.since, "placeholder": "since: 2026-10-01, 7d"}),
@@ -575,7 +567,7 @@ def _banner(swept: SweepReport | None, error: str) -> Html | None:
 
 def _session_row(s: SessionSummary) -> Html:
     where = human.short(s.cwd)
-    project = el("a", {"href": "/?" + urlencode({"project": s.cwd}), "title": where}, where) if s.cwd else where
+    project = el("a", {"href": "./?" + urlencode({"project": s.cwd}), "title": where}, where) if s.cwd else where
     return el(
         "tr",
         None,
@@ -615,7 +607,7 @@ class Html(str):
     pass
 
 
-_VOID = frozenset({"meta", "link", "img", "input"})
+_VOID = frozenset({"meta", "base", "link", "img", "input"})
 
 
 def text(s: str) -> Html:
@@ -650,13 +642,16 @@ def el(tag: str, attrs: Mapping[str, str | bool | None] | None = None, *children
     return Html("".join(out))
 
 
-def page(title: str, *body: Html | None) -> Html:
+def page(root: str | None, title: str, *body: Html | None) -> Html:
+    """Every link on a page is relative to root, its <base>. A page that
+    answers a request without the prefix gets None, so it cannot reveal it."""
     head = el(
         "head",
         None,
         el("meta", {"charset": "utf-8"}),
         el("meta", {"name": "viewport", "content": "width=device-width, initial-scale=1"}),
-        el("link", {"rel": "stylesheet", "href": "/web.css"}),
+        el("base", {"href": root}) if root else None,
+        el("link", {"rel": "stylesheet", "href": "web.css"}) if root else None,
         el("title", None, human.printable(title)),
     )
     return el("html", {"lang": "en"}, head, el("body", None, *body))

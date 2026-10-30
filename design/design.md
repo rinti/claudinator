@@ -29,7 +29,7 @@ claudinator install | uninstall
 - `search` lists sessions where every word appears, best match first, with one excerpt each. By default it searches your prompts, Claude's replies, and session titles. `--tools` adds tool calls and tool output.
 - `sessions` lists sessions by last activity.
 - `show` prints a conversation in order from the archive, whether or not the transcript is still on disk. `--agent` prints one subagent's transcript. `--full` prints tool output in full.
-- `serve` browses and searches the archive in your browser until Ctrl-C, with each tool call's output under the call and each subagent one click away. It listens on 127.0.0.1 behind a sign-in link that works for one run. `--port` picks the port, and `--no-browser` prints the link without opening it. After `uv tool install --reinstall ~/dev/claudinator`, `serve` refuses an archive that another version stamped until the installed claudinator has run once, so run `claudinator sweep` first.
+- `serve` browses and searches the archive in your browser until Ctrl-C, with each tool call's output under the call and each subagent one click away. It listens on 127.0.0.1 under a secret link that works for one run. `--port` picks the port, and `--no-browser` prints the link without opening it. After `uv tool install --reinstall ~/dev/claudinator`, `serve` refuses an archive that another version stamped until the installed claudinator has run once, so run `claudinator sweep` first.
 - `resume` runs `claude --resume <id>` in the session's working directory, first restoring the transcript from the archive if Claude Code deleted it.
 - `export` writes the archived transcript byte for byte. This restores a transcript that Claude Code has deleted.
 - `status` reports archive size, coverage, unarchived bytes, and sweeper health. It exits 1 when the sweeper is not loaded, the last sweep failed, an older claudinator's sweep was refused since then, the last sweep is older than two intervals, the sweep `status` itself ran first hit an error, or a `.jsonl` file under `projects/` matches no layout claudinator knows.
@@ -81,7 +81,7 @@ Search and read in a browser instead, where a hit opens at the turn it matched:
 
 ```
 $ claudinator serve
-claudinator: serving the archive at http://127.0.0.1:52817/?k=Xq3... until Ctrl-C
+claudinator: serving the archive at http://127.0.0.1:52817/Xq3.../ until Ctrl-C
 ```
 
 Resume, including a session whose transcript Claude Code has deleted:

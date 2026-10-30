@@ -8,7 +8,7 @@ import subprocess
 import threading
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import pytest
 
@@ -48,13 +48,11 @@ def served():
     server.server_close()
 
 
-def get(server, target, *, cookie="signed in", host=None, headers=(), method="GET") -> tuple[int, dict[str, str], bytes]:
-    if cookie == "signed in":
-        cookie = f"claudinator-{server.port}={server.token}"
-    sent = {"Host": host or f"127.0.0.1:{server.port}", **({"Cookie": cookie} if cookie else {}), **dict(headers)}
+def get(server, target, *, prefix=None, host=None, headers=(), method="GET") -> tuple[int, dict[str, str], bytes]:
+    sent = {"Host": host or f"127.0.0.1:{server.port}", **dict(headers)}
     connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=10)
     try:
-        connection.request(method, target, headers=sent)
+        connection.request(method, (server.root[:-1] if prefix is None else prefix) + target, headers=sent)
         response = connection.getresponse()
         return response.status, {k.lower(): v for k, v in response.getheaders()}, response.read()
     finally:
@@ -75,23 +73,84 @@ def offsets(*chunks: bytes) -> list[int]:
     return out
 
 
-def test_the_printed_url_signs_a_browser_in_and_takes_the_token_out_of_the_address(served):
-    url = urlsplit(served.url)
-    status, headers, _ = get(served, f"{url.path}?{url.query}", cookie=None)
-    assert (status, headers["location"]) == (303, "/")
-    assert headers["set-cookie"] == f"claudinator-{served.port}={served.token}; HttpOnly; SameSite=Strict; Path=/"
-    assert get(served, "/", cookie=headers["set-cookie"].split(";")[0])[0] == 200
-    status, headers, _ = get(served, f"/s/{SID}?{url.query}&at=0.0", cookie=None)
-    assert (status, headers["location"]) == (303, f"/s/{SID}?at=0.0")
+class Links(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.base = ""
+        self.targets: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        found = dict(attrs)
+        if tag == "base":
+            self.base = found["href"]
+        self.targets += [value for name, value in attrs if name in ("href", "src", "action")]
 
 
-def test_a_wrong_token_or_a_missing_cookie_is_refused(served):
-    status, headers, _ = get(served, "/?k=" + "x" * 43, cookie=None)
-    assert (status, "set-cookie" in headers) == (403, False)
-    assert get(served, "/", cookie=None)[0] == 403
-    assert get(served, "/", cookie=f"claudinator-{served.port}={'x' * 43}")[0] == 403
-    assert get(served, "/web.css", cookie=None)[0] == 403
-    assert get(served, "/favicon.ico", cookie=None)[0] == 403
+def test_every_link_on_every_page_resolves_under_the_secret_prefix_and_answers(served):
+    pasted = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(PNG).decode()}}
+    append(
+        transcript(),
+        line({"type": "mode"}),
+        user("delegate the quokka"),
+        tool_call("Agent", {"description": "Find the cursor"}, tool_use_id="toolu_77"),
+        line({"type": "user", "message": {"content": [pasted]}}),
+    )
+    append(transcript(agent=AID), user("find the cursor"))
+    write_meta(SID, AID, agentType="Explore", description="Find the cursor", toolUseId="toolu_77")
+    origin = f"http://127.0.0.1:{served.port}"
+    crawled = set()
+    for target in ("/", "/?q=quokka", f"/s/{SID}", f"/s/{SID}/{AID}", f"/s/{SID}?hidden=1"):
+        links = Links()
+        links.feed(page(served, target))
+        document = origin + served.root + target[1:]
+        for value in links.targets:
+            if value.startswith("#"):
+                continue
+            resolved = urlsplit(urljoin(urljoin(document, links.base), value))
+            assert (resolved.scheme, resolved.netloc) == ("http", f"127.0.0.1:{served.port}"), value
+            assert resolved.path.startswith(served.root), value
+            crawled.add(resolved.path + (f"?{resolved.query}" if resolved.query else ""))
+    for target in crawled:
+        status, headers, _ = get(served, target, prefix="")
+        assert status in (200, 303), target
+        assert headers.get("location", served.root).startswith(served.root), target
+    assert {target.split("/")[2].partition("?")[0] for target in crawled} >= {"", "s", "raw", "image", "export", "web.css"}
+
+
+def test_a_request_without_the_exact_prefix_gets_403_and_no_data(served):
+    append(transcript(), user("the quokka line"))
+    open_archive().sweep()
+    token = served.root.strip("/")
+    assert b"quokka" in get(served, f"/s/{SID}")[2]
+    signed = {"Cookie": f"claudinator-{served.port}={token}"}
+    for prefix in ("", f"/{'x' * len(token)}", f"/{token[:-1]}", f"/{token}x", f"/{token.swapcase()}"):
+        for target in (f"/s/{SID}", f"/raw/{SID}/0", f"/export/{SID}", "/web.css", "/"):
+            status, _, body = get(served, target, prefix=prefix, headers=signed)
+            assert (status, b"quokka" in body, token.encode() in body) == (403, False, False), prefix + target
+    assert get(served, served.root[:-1], prefix="")[0] == 403
+    assert get(served, "/favicon.ico", prefix="")[:3:2] == (204, b"")
+
+
+def test_no_response_sets_a_cookie_or_points_off_the_prefix(served):
+    append(transcript(), user("delegate"), tool_call("Agent", {"description": "Find"}, tool_use_id="toolu_77"))
+    printed = urlsplit(served.url)
+    targets = (
+        printed.path + (f"?{printed.query}" if printed.query else ""),
+        f"{served.root}s/{SID}?call=toolu_77",
+        f"{served.root}s/{SID}",
+        f"{served.root}web.css",
+        f"{served.root}nothing",
+        "/",
+        "/favicon.ico",
+        f"/\\evil.example/?k={served.root.strip('/')}",
+        f"//evil.example/{served.root}",
+        f"{served.root}\\evil.example/",
+    )
+    answers = [get(served, target, prefix="") for target in targets]
+    assert [status for status, _, _ in answers] == [200, 303, 200, 200, 404, 403, 204, 403, 403, 404]
+    for target, (_, headers, _) in zip(targets, answers):
+        assert "set-cookie" not in headers, target
+        assert headers.get("location", served.root).startswith(served.root), target
 
 
 def test_only_this_server_as_127_0_0_1_or_localhost_gets_an_answer(served):
@@ -109,12 +168,11 @@ def test_every_response_forbids_scripts_and_caching(served):
     answers = {
         "page": get(served, f"/s/{SID}"),
         "stylesheet": get(served, "/web.css"),
-        "favicon": get(served, "/favicon.ico"),
+        "favicon": get(served, "/favicon.ico", prefix=""),
         "raw": get(served, f"/raw/{SID}/0"),
         "image": get(served, f"/image/{SID}/0.0"),
         "download": get(served, f"/export/{SID}"),
-        "sign-in": get(served, served.url.removeprefix(f"http://127.0.0.1:{served.port}"), cookie=None),
-        "refused": get(served, "/", cookie=None),
+        "refused": get(served, "/", prefix=""),
         "missing": get(served, f"/s/{SID2}"),
         "unsupported": get(served, "/", method="POST"),
     }
@@ -125,7 +183,6 @@ def test_every_response_forbids_scripts_and_caching(served):
         "raw": 200,
         "image": 200,
         "download": 200,
-        "sign-in": 303,
         "refused": 403,
         "missing": 404,
         "unsupported": 501,
@@ -186,7 +243,7 @@ def test_a_commands_output_shows_without_its_wrapper_tags_and_marks_land_on_the_
     )
     append(transcript(), *lines)
     at = offsets(*lines)[1]
-    assert f'href="/s/{SID}?at={at}.0&amp;q=quokka+wombat#m{at}.0"' in page(served, "/?q=quokka+wombat&tools=on")
+    assert f'href="s/{SID}?at={at}.0&amp;q=quokka+wombat#m{at}.0"' in page(served, "/?q=quokka+wombat&tools=on")
     shown = page(served, f"/s/{SID}")
     assert (
         f'<div class="step output" id="m{at}.0"><pre>Resolved 1 quokka</pre>'
@@ -216,11 +273,11 @@ def test_an_agent_call_links_its_subagent_and_the_subagent_links_back(served):
     call, inner = offsets(*main)[1], offsets(*child)[1]
     shown = page(served, f"/s/{SID}")
     assert f'<section class="step call" id="m{call}.0">' in shown
-    assert f'<a class="spawned" href="/s/{SID}/{AID}">subagent a7c9c203 · Explore · Find the cursor</a>' in shown
-    assert f'<a href="/s/{SID}?call=toolu_77">the call that started it</a>' in page(served, f"/s/{SID}/{AID}")
-    assert get(served, f"/s/{SID}?call=toolu_77")[1]["location"] == f"/s/{SID}?at={call}.0#m{call}.0"
-    assert f'<a href="/s/{SID}/{AID}?call=toolu_88">the call that started it</a>' in page(served, f"/s/{SID}/{nested}")
-    assert get(served, f"/s/{SID}/{AID}?call=toolu_88")[1]["location"] == f"/s/{SID}/{AID}?at={inner}.0#m{inner}.0"
+    assert f'<a class="spawned" href="s/{SID}/{AID}">subagent a7c9c203 · Explore · Find the cursor</a>' in shown
+    assert f'<a href="s/{SID}?call=toolu_77">the call that started it</a>' in page(served, f"/s/{SID}/{AID}")
+    assert get(served, f"/s/{SID}?call=toolu_77")[1]["location"] == f"{served.root}s/{SID}?at={call}.0#m{call}.0"
+    assert f'<a href="s/{SID}/{AID}?call=toolu_88">the call that started it</a>' in page(served, f"/s/{SID}/{nested}")
+    assert get(served, f"/s/{SID}/{AID}?call=toolu_88")[1]["location"] == f"{served.root}s/{SID}/{AID}?at={inner}.0#m{inner}.0"
 
 
 def test_the_list_counts_its_sessions_and_reads_date_title_project_prompts_agents(served):
@@ -244,10 +301,10 @@ def test_a_search_hit_opens_its_transcript_at_the_matching_step_with_the_words_m
     append(transcript(SID2), user("nothing to see"), ai_title("Zebracorn hunt"))
     at = offsets(*lines)[1]
     found = page(served, "/?q=quokka")
-    assert f'href="/s/{SID}?at={at}.0&amp;q=quokka#m{at}.0"' in found
+    assert f'href="s/{SID}?at={at}.0&amp;q=quokka#m{at}.0"' in found
     assert f'id="m{at}.0"><div class="text">the <mark>quokka</mark> line</div>' in page(served, f"/s/{SID}?at={at}.0&q=quokka")
-    assert f'href="/s/{SID}/{AID}?at=0.0&amp;q=wombat#m0.0"' in page(served, "/?q=wombat")
-    assert f'<a class="excerpt" href="/s/{SID2}">' in page(served, "/?q=zebracorn")
+    assert f'href="s/{SID}/{AID}?at=0.0&amp;q=wombat#m0.0"' in page(served, "/?q=wombat")
+    assert f'<a class="excerpt" href="s/{SID2}">' in page(served, "/?q=zebracorn")
 
 
 def test_lines_that_show_nothing_fold_into_one_marker_with_a_raw_link_each(served):
@@ -256,7 +313,7 @@ def test_lines_that_show_nothing_fold_into_one_marker_with_a_raw_link_each(serve
     at = offsets(*lines)
     assert (
         '<details class="step hidden" id="m0.0"><summary>2 hidden lines: 1 mode, 1 file-history-snapshot</summary>'
-        f'<ul><li><a href="/raw/{SID}/0">mode</a></li><li><a href="/raw/{SID}/{at[1]}">file-history-snapshot</a></li></ul>'
+        f'<ul><li><a href="raw/{SID}/0">mode</a></li><li><a href="raw/{SID}/{at[1]}">file-history-snapshot</a></li></ul>'
         "</details>"
     ) in page(served, f"/s/{SID}?hidden=1")
 
@@ -269,15 +326,15 @@ def test_hidden_lines_stay_out_of_the_way_until_asked_for_and_notices_always_sho
     shown = page(served, f"/s/{SID}")
     assert 'class="step hidden"' not in shown
     assert '<span class="label">api error</span>' in shown
-    assert f'<span> · 3 hidden lines · <a href="/s/{SID}?hidden=1">show</a></span>' in shown
+    assert f'<span> · 3 hidden lines · <a href="s/{SID}?hidden=1">show</a></span>' in shown
     revealed = page(served, f"/s/{SID}?hidden=1")
     assert revealed.count('class="step hidden"') == 3
     assert '<span class="label">api error</span>' in revealed
-    assert f'<span> · 3 hidden lines · <a href="/s/{SID}">hide</a></span>' in revealed
+    assert f'<span> · 3 hidden lines · <a href="s/{SID}">hide</a></span>' in revealed
     landed = page(served, f"/s/{SID}?at={at}.0&q=quokka")
-    assert f'<a href="/s/{SID}?at={at}.0&amp;q=quokka&amp;hidden=1#m{at}.0">show</a>' in landed
+    assert f'<a href="s/{SID}?at={at}.0&amp;q=quokka&amp;hidden=1#m{at}.0">show</a>' in landed
     revealed = page(served, f"/s/{SID}?at={at}.0&q=quokka&hidden=1")
-    assert f'<a href="/s/{SID}?at={at}.0&amp;q=quokka#m{at}.0">hide</a>' in revealed
+    assert f'<a href="s/{SID}?at={at}.0&amp;q=quokka#m{at}.0">hide</a>' in revealed
     assert "the <mark>quokka</mark> line" in revealed
 
 
@@ -338,7 +395,7 @@ def test_a_server_left_running_across_an_upgrade_asks_for_a_restart_and_changes_
 def test_the_server_writes_no_request_log(served, capfd):
     append(transcript(), user("quokka"))
     get(served, "/?q=quokka")
-    get(served, served.url.removeprefix(f"http://127.0.0.1:{served.port}"), cookie=None)
+    get(served, "/s/" + SID, prefix="/" + "x" * 43)
     get(served, "/missing")
     get(served, "/", method="POST")
     assert capfd.readouterr() == ("", "")
@@ -359,7 +416,7 @@ def test_transcript_text_is_text_whatever_it_holds():
     with open_archive() as archive:
         archive.sweep()
         session = archive.session(SID)
-        shown = web.transcript_page(session, None, build(archive.lines(SID), session.agents, None), None, "", False, None)
+        shown = web.transcript_page("/T/", session, None, build(archive.lines(SID), session.agents, None), None, "", False, None)
     assert (
         '<div class="text">run &lt;script&gt;alert(1)&lt;/script&gt; and &lt;img src=x onerror=alert(2)&gt; on '
         '<span class="esc">\\x1b</span>[31mred <span class="esc">\\u202e</span>gpj.exe</div>'
@@ -383,7 +440,7 @@ def test_only_text_el_and_marked_make_markup():
 
 
 def test_what_was_typed_into_the_form_comes_back_as_text():
-    shown = web.sessions_page((), web.Form(q='"><script>alert(4)</script>', project="‮x"), None, "since: <b>")
+    shown = web.sessions_page("/T/", (), web.Form(q='"><script>alert(4)</script>', project="‮x"), None, "since: <b>")
     assert 'value="&quot;&gt;&lt;script&gt;alert(4)&lt;/script&gt;"' in shown
     assert 'name="project" value="\\u202ex"' in shown
     assert '<p class="banner">since: &lt;b&gt;</p>' in shown
@@ -404,12 +461,14 @@ class Elements(HTMLParser):
 
 
 @pytest.mark.skipif(not CHROME.exists(), reason="needs Google Chrome in /Applications")
-def test_a_real_browser_signs_in_and_renders_a_hostile_transcript_as_text(served, tmp_path):
+def test_a_real_browser_renders_a_hostile_transcript_as_text_and_refuses_nothing(served, tmp_path):
     append(transcript(), user(HOSTILE))
-    signed = served.url.replace("/?k=", f"/s/{SID}?k=")
+    signed = f"{served.url}s/{SID}"
     flags = ["--headless=new", "--disable-gpu", "--no-first-run", "--use-mock-keychain", f"--user-data-dir={tmp_path}"]
-    browser = [CHROME, *flags, "--dump-dom", signed]
-    dom = subprocess.run(browser, capture_output=True, text=True, timeout=60).stdout
+    browser = [CHROME, *flags, "--enable-logging=stderr", "--v=0", "--dump-dom", signed]
+    run = subprocess.run(browser, capture_output=True, text=True, timeout=60)
+    dom = run.stdout
+    assert [entry for entry in run.stderr.splitlines() if ":CONSOLE" in entry] == []
     found = Elements()
     found.feed(dom)
     assert (found.tags.count("main"), found.tags.count("script"), found.handlers) == (1, 0, [])
