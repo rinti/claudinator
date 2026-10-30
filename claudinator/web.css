@@ -1,0 +1,41 @@
+:root { color-scheme: light dark; --you: #eef3ff; --muted: #888; --error: #b3261e; --line: #ccc; --mark: #ffe58a; }
+@media (prefers-color-scheme: dark) { :root { --you: #1d2733; --line: #444; --mark: #6b5a00; } }
+body { font: 15px/1.45 system-ui, sans-serif; max-width: 64rem; margin: 0 auto; padding: 1rem; }
+a { color: inherit; }
+
+/* Transcript text keeps its line breaks, wraps anywhere, and is isolated so right-to-left text cannot reorder the page around it. */
+.text, pre { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: isolate; }
+pre { font: 13px/1.4 ui-monospace, monospace; margin: 0.25rem 0; }
+.esc { color: var(--muted); font: 0.85em ui-monospace, monospace; }
+
+/* The heaviest transcripts have about 1,700 steps: lay out only those near the viewport. */
+.step { content-visibility: auto; contain-intrinsic-size: auto 2.5rem; margin: 0.35rem 0; position: relative; }
+
+.speaker { font-size: 0.85rem; font-weight: normal; color: var(--muted); margin: 1.2rem 0 0.25rem; }
+.said.you { background: var(--you); padding: 0.4rem 0.6rem; border-radius: 6px; }
+.call { border-left: 3px solid var(--line); padding-left: 0.6rem; }
+.call .output { margin-left: 0.5rem; }
+.output.error, .output.error summary { color: var(--error); }
+.label { font-size: 0.75rem; text-transform: uppercase; color: var(--muted); }
+.marker { color: var(--muted); font-style: italic; }
+.thought summary, .hidden summary { color: var(--muted); }
+.hidden { font-size: 0.75rem; margin: 0; }
+.hidden ul { columns: 3; margin: 0.2rem 0; }
+summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+img { max-width: 100%; height: auto; display: block; }
+.raw { font-size: 0.7rem; color: var(--muted); }
+.spawned { display: block; margin: 0.2rem 0; }
+
+/* Where a search hit lands. */
+:target, :target > summary { outline: 2px solid #f0b400; outline-offset: 2px; }
+mark { background: var(--mark); color: inherit; }
+
+header .find { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0 1rem; }
+header .find input[type="search"] { flex: 1 1 16rem; }
+table.sessions { width: 100%; border-collapse: collapse; }
+table.sessions td { padding: 0.2rem 0.4rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.hits li { margin: 0.6rem 0; }
+.excerpt { display: block; text-decoration: none; }
+.muted, .gone { color: var(--muted); }
+.banner { background: #fff4e5; color: #222; padding: 0.5rem; border-radius: 4px; }
+.agents { margin: 0.3rem 0; }

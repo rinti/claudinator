@@ -104,6 +104,13 @@ Rejected: fable's move of the write path to `sweep.py` (tests patch `archive.pro
 - **`Output` keeps `tool_use_id`.** `build` pairs a result with its call by that id, so the step carries it.
 - **`human.py` takes only what the pages use.** `ago` stays in `cli.py`, because only `status` prints it. `LARGEST` moves with `parse_when`, which checks against it, and `cli.py` reads both as `human.*`.
 - **`show` changes in one more case than the design names.** A result now prints after its own call whenever anything came between them, a prompt included, not only when calls ran in parallel. A fork's copy of the call that started it no longer points at the fork.
+- **A back link resolves its call on the server.** Element ids come only from `Key` integers, so the sketch's `#call-<tool_use_id>` anchor is gone. A subagent page links `/s/<sid>[/<parent>]?call=<tool_use_id>`, and that transcript answers with a 303 to `?at=<key>#m<key>` of the call. A click on a back link therefore builds the parent's steps twice.
+- **No banner for an `at` that names no step.** Title hits link without `at`, and no source has a generation above 0, so the case has no source today. The page then opens at its top.
+- **Search shows at most 50 sessions.** The page says "or more" at that limit. A bad since or until, or words with no letter or digit, answer 400 with the form and the reason.
+- **A result with images starts collapsed.** Whatever its length, its images then load only when the reader opens it.
+- **Every response goes through one sender.** `http.server` answers unsupported methods and malformed requests through `send_error`, which `web.py` routes to the same headers as a page.
+- **`web.css` ships.** A wheel built from this branch with `uv build` holds `claudinator/web.css` beside `schema.sql`.
+- **A raw link can miss one rare line.** When a restarted writer appends a whole record onto a torn tail that settled, `records()` yields that record at the start of its segment, but `line()` finds the torn line starting earlier and answers 404. The `.jsonl` download still holds it.
 
 ## Open questions and risks
 
