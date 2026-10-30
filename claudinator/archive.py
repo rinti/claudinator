@@ -642,63 +642,72 @@ class Archive:
         kinds = CONVERSATION | (TOOLS if q.tools else frozenset())
         cursor = self._db.cursor()
         cursor.row_factory = sqlite3.Row
-        rows = cursor.execute(
-            _SEARCH_SQL,
-            {
-                "exprs": json.dumps([fts_expr(term) for term in terms]),
-                "kinds": json.dumps(sorted(kinds)),
-                "since": q.filters.since,
-                "until": q.filters.until,
-                "project": q.filters.project,
-                "limit": q.limit,
-            },
-        ).fetchall()
-        ids = json.dumps([row["session_id"] for row in rows])
-        sessions = {row["session_id"]: self._summary(row) for row in self._session_rows(Filters(), None, ids=ids)}
         hits = []
-        for row in rows:
-            text, marks = excerpt(self._entry_text(row["source_id"], row["line_off"], row["block"]), terms)
-            best = Excerpt(Kind(row["kind"]), row["ts"], row["agent_id"], text, marks)
-            hits.append(SessionHit(sessions[row["session_id"]], row["hits"], best))
+        with self._read():
+            rows = cursor.execute(
+                _SEARCH_SQL,
+                {
+                    "exprs": json.dumps([fts_expr(term) for term in terms]),
+                    "kinds": json.dumps(sorted(kinds)),
+                    "since": q.filters.since,
+                    "until": q.filters.until,
+                    "project": q.filters.project,
+                    "limit": q.limit,
+                },
+            ).fetchall()
+            ids = json.dumps([row["session_id"] for row in rows])
+            sessions = {row["session_id"]: self._summary(row) for row in self._session_rows(Filters(), None, ids=ids)}
+            for row in rows:
+                text, marks = excerpt(self._entry_text(row["source_id"], row["line_off"], row["block"]), terms)
+                best = Excerpt(Kind(row["kind"]), row["ts"], row["agent_id"], text, marks)
+                hits.append(SessionHit(sessions[row["session_id"]], row["hits"], best))
         return hits
 
     def sessions(self, filters: Filters = Filters(), limit: int | None = 30) -> list[SessionSummary]:
         """Sessions newest-activity first. since/until select sessions whose
         [first_ts, last_ts] overlaps the window."""
-        return [self._summary(row) for row in self._session_rows(filters, limit)]
+        with self._read():
+            return [self._summary(row) for row in self._session_rows(filters, limit)]
 
     def session(self, ref: str) -> Session:
         """Resolve a unique session-id prefix and return the session with its
         subagents. Raises UnknownSession or AmbiguousSession."""
-        rows = self._session_rows(Filters(), None, prefix=ref)
-        if not rows:
-            raise UnknownSession(f"no archived session starts with {ref}")
-        if len(rows) > 1:
-            raise AmbiguousSession(ref, [self._summary(row) for row in rows])
-        summary = self._summary(rows[0])
-        metas = {aid: subagent_meta(body) for aid, body in self._docs(summary.id, DocRole.SUBAGENT_META)}
-        agents = []
-        for aid, first_ts in self._db.execute(
-            "SELECT s.agent_id, MIN(t.first_ts) FROM source s JOIN transcript t ON t.source_id = s.id"
-            " WHERE s.session_id = ? AND s.agent_id IS NOT NULL GROUP BY s.agent_id ORDER BY 2, 1",
-            (summary.id,),
-        ):
-            meta = metas.get(aid)
-            agents.append(Subagent(aid, meta and meta.description, meta and meta.agent_type, first_ts))
+        with self._read():
+            rows = self._session_rows(Filters(), None, prefix=ref)
+            if not rows:
+                raise UnknownSession(f"no archived session starts with {ref}")
+            if len(rows) > 1:
+                raise AmbiguousSession(ref, [self._summary(row) for row in rows])
+            summary = self._summary(rows[0])
+            metas = {aid: subagent_meta(body) for aid, body in self._docs(summary.id, DocRole.SUBAGENT_META)}
+            agents = []
+            for aid, first_ts in self._db.execute(
+                "SELECT s.agent_id, MIN(t.first_ts) FROM source s JOIN transcript t ON t.source_id = s.id"
+                " WHERE s.session_id = ? AND s.agent_id IS NOT NULL GROUP BY s.agent_id ORDER BY 2, 1",
+                (summary.id,),
+            ):
+                meta = metas.get(aid)
+                agents.append(Subagent(aid, meta and meta.description, meta and meta.agent_type, first_ts))
         return Session(summary, tuple(agents))
 
     def conversation(self, session_id: SessionId, agent_id: AgentId | None = None) -> Iterator[Message]:
         """The transcript in file order, from the archive, whether or not the
-        file still exists on disk."""
-        source_id = self._source(session_id, agent_id)
-        spawned = {}
-        for aid, body in self._docs(session_id, DocRole.SUBAGENT_META):
-            if tool_use_id := subagent_meta(body).tool_use_id:
-                spawned[tool_use_id] = aid
-        for _, rec, _ in _records(self._segments(source_id)):
-            if isinstance(rec, Turn):
-                for _, b in rec.blocks:
-                    yield Message(rec.ts, b.kind, b.text, b.tool, spawned.get(b.tool_use_id))
+        file still exists on disk. The transcript, its subagent links, and
+        its segments are fixed in one snapshot when this is called, and the
+        messages are read as the caller iterates."""
+        with self._read():
+            source_id = self._source(session_id, agent_id)
+            spawned = {}
+            for aid, body in self._docs(session_id, DocRole.SUBAGENT_META):
+                if tool_use_id := subagent_meta(body).tool_use_id:
+                    spawned[tool_use_id] = aid
+            segments = self._segments(source_id)
+        return (
+            Message(rec.ts, b.kind, b.text, b.tool, spawned.get(b.tool_use_id))
+            for _, rec, _ in _records(segments)
+            if isinstance(rec, Turn)
+            for _, b in rec.blocks
+        )
 
     def export(
         self,
@@ -711,51 +720,68 @@ class Archive:
         Code wrote them: the latest generation, or the one named. Returns
         bytes written. This is what makes `claude --resume` possible after
         Claude Code's cleanup deleted the file."""
+        with self._read():
+            segments = self._segments(self._source(session_id, agent_id, generation))
         written = 0
-        for _, chunk in self._segments(self._source(session_id, agent_id, generation)):
+        for _, chunk in segments:
             out.write(chunk)
             written += len(chunk)
         return written
 
     def status(self) -> Status:
-        archived, stored = self._db.execute(
-            "SELECT COALESCE(SUM(byte_end - byte_start), 0), COALESCE(SUM(length(zstd)), 0) FROM segment"
-        ).fetchone()
-        sessions, transcripts, rewritten = self._db.execute(
-            "SELECT COUNT(DISTINCT session_id), COUNT(DISTINCT path),"
-            " COUNT(DISTINCT CASE WHEN generation > 0 THEN path END) FROM source"
-        ).fetchone()
-        (unparsed,) = self._db.execute("SELECT COALESCE(SUM(unparsed), 0) FROM transcript").fetchone()
-        mains = [Path(p) for (p,) in self._db.execute("SELECT DISTINCT path FROM source WHERE agent_id IS NULL")]
-        known = self._archived()
-        found = discover(self.cfg)
-        pending = []
-        for loc in found.transcripts:
-            try:
-                n = _next(loc.path, known.get(loc.path))
-            except OSError:
-                continue  # the sweep that reads it reports why it cannot
-            if n is not None:
-                pending.append(Pending(loc.path, len(n.chunk), n.settled))
-        last, refused = self._meta("last_sweep"), self._meta("last_refused")
-        return Status(
-            checked_at=now(),
-            db_path=self.cfg.db,
-            db_bytes=sum(p.stat().st_size for p in (self.cfg.db, Path(f"{self.cfg.db}-wal")) if p.exists()),
-            archived_bytes=archived,
-            stored_bytes=stored,
-            sessions=sessions,
-            transcripts=transcripts,
-            gone=sum(not p.exists() for p in mains),
-            multi_generation=rewritten,
-            unparsed_lines=unparsed,
-            pending=tuple(pending),
-            unclassified=found.unclassified,
-            last_sweep=_report(json.loads(last)) if last else None,
-            last_refused=_known(Refusal, json.loads(refused)) if refused else None,
-        )
+        with self._read():
+            archived, stored = self._db.execute(
+                "SELECT COALESCE(SUM(byte_end - byte_start), 0), COALESCE(SUM(length(zstd)), 0) FROM segment"
+            ).fetchone()
+            sessions, transcripts, rewritten = self._db.execute(
+                "SELECT COUNT(DISTINCT session_id), COUNT(DISTINCT path),"
+                " COUNT(DISTINCT CASE WHEN generation > 0 THEN path END) FROM source"
+            ).fetchone()
+            (unparsed,) = self._db.execute("SELECT COALESCE(SUM(unparsed), 0) FROM transcript").fetchone()
+            mains = [Path(p) for (p,) in self._db.execute("SELECT DISTINCT path FROM source WHERE agent_id IS NULL")]
+            known = self._archived()
+            found = discover(self.cfg)
+            pending = []
+            for loc in found.transcripts:
+                try:
+                    n = _next(loc.path, known.get(loc.path))
+                except OSError:
+                    continue  # the sweep that reads it reports why it cannot
+                if n is not None:
+                    pending.append(Pending(loc.path, len(n.chunk), n.settled))
+            last, refused = self._meta("last_sweep"), self._meta("last_refused")
+            return Status(
+                checked_at=now(),
+                db_path=self.cfg.db,
+                db_bytes=sum(p.stat().st_size for p in (self.cfg.db, Path(f"{self.cfg.db}-wal")) if p.exists()),
+                archived_bytes=archived,
+                stored_bytes=stored,
+                sessions=sessions,
+                transcripts=transcripts,
+                gone=sum(not p.exists() for p in mains),
+                multi_generation=rewritten,
+                unparsed_lines=unparsed,
+                pending=tuple(pending),
+                unclassified=found.unclassified,
+                last_sweep=_report(json.loads(last)) if last else None,
+                last_refused=_known(Refusal, json.loads(refused)) if refused else None,
+            )
 
     # -- private -----------------------------------------------------------
+
+    @contextmanager
+    def _read(self) -> Iterator[None]:
+        """One read transaction around the statements of a public read
+        method, so they all see one snapshot even when another process
+        commits a sweep or a rebuild between them. Entry ids, for one, are
+        renumbered by every rebuild. In WAL mode a reader neither waits for
+        a writer nor holds one up."""
+        self._db.execute("BEGIN")
+        try:
+            yield
+        finally:
+            if self._db.in_transaction:
+                self._db.execute("COMMIT")
 
     @contextmanager
     def _write(self, *, wait: bool, newer_ok: bool = False) -> Iterator[None]:
@@ -907,16 +933,17 @@ class Archive:
     def _segments(self, source_id: int) -> Iterator[tuple[int, bytes]]:
         """(byte_start, payload) of every segment of a source in file order.
 
-        No statement stays open while the caller works on a segment: the
-        starts are fetched whole and each payload by its key. rebuild
+        The starts are read now, in the caller's snapshot, and each payload
+        by its key when the iterator reaches it. A segment never changes
+        once written, so that is the payload the snapshot holds, and no
+        statement stays open while the caller works on a segment. rebuild
         projects as it reads, and once its DDL has run, the ROLLBACK TO
         with which _project drops a refused record aborts every statement
         open on the connection."""
         starts = self._db.execute(
             "SELECT byte_start FROM segment WHERE source_id = ? ORDER BY byte_start", (source_id,)
         ).fetchall()
-        for (start,) in starts:
-            yield start, self._payload(source_id, start)
+        return ((start, self._payload(source_id, start)) for (start,) in starts)
 
     def _payload(self, source_id: int, start: int) -> bytes:
         """The bytes of one segment. A lookup by primary key, so fetching its
@@ -955,9 +982,9 @@ class Archive:
     def _summary(self, row: sqlite3.Row) -> SessionSummary:
         desktop = desktop_session(row["desktop"]) if row["desktop"] else None
         title = row["custom_title"] or (desktop and desktop.title) or row["ai_title"]
-        if title is None and row["first_prompt"] is not None:
-            entry = self._db.execute("SELECT source_id, line_off, block FROM entry WHERE id = ?", (row["first_prompt"],))
-            title = " ".join(self._entry_text(*entry.fetchone()).split())[:200]
+        if title is None and row["prompt_source"] is not None:
+            text = self._entry_text(row["prompt_source"], row["prompt_off"], row["prompt_block"])
+            title = " ".join(text.split())[:200]
         return SessionSummary(
             id=row["session_id"],
             cwd=row["cwd"],
@@ -1153,9 +1180,7 @@ SELECT m.session_id, t.cwd, t.custom_title,
          WHERE d.session_id = m.session_id AND d.role = :desktop
          ORDER BY d.mtime_ns DESC LIMIT 1) AS desktop,
        t.ai_title,
-       (SELECT e.id FROM entry e
-         WHERE e.source_id = m.id AND e.kind = :prompt
-         ORDER BY e.line_off, e.block LIMIT 1) AS first_prompt,
+       p.source_id AS prompt_source, p.line_off AS prompt_off, p.block AS prompt_block,
        span.first_ts, span.last_ts,
        (SELECT COUNT(*) FROM entry e WHERE e.source_id = m.id AND e.kind = :prompt) AS prompts,
        span.subagents, s.path
@@ -1163,6 +1188,9 @@ SELECT m.session_id, t.cwd, t.custom_title,
   JOIN source s ON s.id = m.id
   JOIN transcript t ON t.source_id = m.id
   JOIN span ON span.session_id = m.session_id
+  LEFT JOIN entry p ON p.id = (SELECT e.id FROM entry e
+                                WHERE e.source_id = m.id AND e.kind = :prompt
+                                ORDER BY e.line_off, e.block LIMIT 1)
  WHERE (:project IS NULL OR instr(casefold(t.cwd), casefold(:project)) > 0)
    AND (:since IS NULL OR span.last_ts >= :since)
    AND (:until IS NULL OR span.first_ts < :until)

@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -314,3 +315,33 @@ def test_search_prefers_an_excerpt_with_every_word_over_a_stronger_match_of_one(
         archive.sweep()
         (hit,) = archive.search(Query(("launchd", "agent")))
     assert hit.best.text.startswith("the launchd agent")
+
+
+@pytest.mark.parametrize("read", ["sessions", "search"])
+def test_a_read_sees_one_snapshot_while_a_rebuild_commits_partway(monkeypatch, read):
+    newer, older = transcript(SID2), transcript()  # the sweep archives SID2's file first
+    append(newer, user("the newer quokka session", ts="2026-10-02T10:00:00.000Z"))
+    append(older, user("the older quokka session", ts="2026-10-01T10:00:00.000Z"))
+    with open_archive() as archive:
+        archive.sweep()
+        append(newer, user("a later prompt in the newer", ts="2026-10-02T11:00:00.000Z"))
+        archive.sweep()
+    other, real_exists, armed = open_archive(), os.path.exists, [True]
+
+    def exists(path):
+        if armed[0] and path == str(newer):
+            armed[0] = False
+            other.rebuild(force=True)  # renumbers the entries: the newer file's come first now
+        return real_exists(path)
+
+    monkeypatch.setattr(os.path, "exists", exists)
+    try:
+        with open_archive() as archive:
+            if read == "sessions":
+                titles = {s.id: s.title for s in archive.sessions()}
+            else:
+                titles = {hit.session.id: hit.session.title for hit in archive.search(Query(("quokka",)))}
+    finally:
+        other.close()
+    assert not armed[0]
+    assert titles == {SID2: "the newer quokka session", SID: "the older quokka session"}
