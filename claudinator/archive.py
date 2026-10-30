@@ -362,7 +362,9 @@ class Archive:
     def open(cls, cfg: Config, *, readonly: bool = False) -> Archive:
         """Open the database, creating it if it does not exist, and make the
         projection current. When both versions are current this takes no
-        write lock, so a reader never waits for a sweep in another process."""
+        write lock, so a reader never waits for a sweep in another process.
+        readonly does neither: it refuses a missing database or a stamp
+        other than its own."""
         if not cfg.db.exists():
             if readonly:
                 raise ArchiveError(f"no archive at {cfg.db}; run claudinator install")

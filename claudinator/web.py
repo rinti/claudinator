@@ -109,7 +109,7 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/favicon.ico":
             return Response(HTTPStatus.NO_CONTENT, HTML, b"")
         root = self.server.root
-        if not _same(url.path[: len(root)], root):
+        if not hmac.compare_digest(url.path[: len(root)].encode(), root.encode()):
             return _message(403, "Open the URL claudinator serve printed. Addresses from an earlier run no longer work.")
         path, query = url.path[len(root) - 1 :], dict(parse_qsl(url.query))
         for pattern, route in ROUTES:
@@ -140,10 +140,6 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(response.body)
         except ConnectionError:
             pass
-
-
-def _same(given: str, root: str) -> bool:
-    return hmac.compare_digest(given.encode(), root.encode())
 
 
 def _message(status: int, text: str, root: str | None = None) -> Response:
