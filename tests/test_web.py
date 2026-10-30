@@ -203,7 +203,7 @@ def test_every_response_forbids_scripts_and_caching(served):
         assert policy.startswith("default-src 'none';") and "script-src" not in policy, name
         assert (headers["x-content-type-options"], headers["cache-control"], headers["referrer-policy"]) == (
             "nosniff",
-            "no-store",
+            "max-age=31536000, immutable" if name == "font" else "no-store",
             "no-referrer",
         ), name
     assert all(answers[name][1]["content-security-policy"].endswith("; sandbox") for name in ("raw", "image", "download"))

@@ -94,6 +94,7 @@ class Response:
     body: bytes
     policy: str = PAGE_POLICY
     headers: tuple[tuple[str, str], ...] = ()
+    cache: str = "no-store"
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -142,7 +143,7 @@ class _Handler(BaseHTTPRequestHandler):
                 ("Content-Security-Policy", response.policy),
                 ("X-Content-Type-Options", "nosniff"),
                 ("Referrer-Policy", "no-referrer"),
-                ("Cache-Control", "no-store"),
+                ("Cache-Control", response.cache),
                 *response.headers,
             ):
                 self.send_header(name, value)
@@ -290,7 +291,9 @@ FONT = re.compile(r"/fonts/(Geist|GeistMono)-Variable\.woff2")
 
 
 def font(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
-    return Response(200, "font/woff2", FONTS[m[1]])
+    """Cached, unlike everything else: a font is no secret, and refetching both
+    on every page held each page's load back. A new run's token makes a new URL."""
+    return Response(200, "font/woff2", FONTS[m[1]], cache="max-age=31536000, immutable")
 
 
 ROUTES: tuple[tuple[re.Pattern[str], Callable[[Config, str, Mapping[str, str], re.Match[str]], Response]], ...] = (
