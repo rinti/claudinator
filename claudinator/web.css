@@ -8,7 +8,8 @@ a:hover { text-decoration: underline; }
 pre { font: 13px/1.4 ui-monospace, monospace; margin: 0.25rem 0; }
 .esc { color: var(--muted); font: 0.85em ui-monospace, monospace; }
 
-.step { content-visibility: auto; contain-intrinsic-size: auto 2.5rem; margin: 0.35rem 0; position: relative; }
+/* No content-visibility: its placeholder heights move a search hit's target out of view as the steps above it render. */
+.step { margin: 0.35rem 0; position: relative; }
 
 .speaker { font-size: 0.85rem; font-weight: normal; color: var(--muted); margin: 1.2rem 0 0.25rem; }
 .said.you { background: var(--you); padding: 0.4rem 0.6rem; border-radius: 6px; }
