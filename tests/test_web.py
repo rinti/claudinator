@@ -867,10 +867,17 @@ def test_a_long_subagent_list_can_be_scrolled_to_its_end_while_the_aside_sticks(
 
 FLIP = """<script>
 const seen = () => Object.fromEntries([".prompt", ".reply", ".box", ".minute"].map(css => [css, [...document.querySelectorAll(css)].map(found => found.checkVisibility())]));
+const drawn = step => {
+  step.scrollIntoView({block: "center"});
+  const box = step.getBoundingClientRect(), time = step.parentElement.querySelector(":scope > time").getBoundingClientRect();
+  const icon = getComputedStyle(step, "::after");
+  const hit = document.elementFromPoint((time.right + box.left) / 2, box.top + parseFloat(icon.top) + parseFloat(icon.lineHeight) / 2);
+  return [icon.content, hit === step];
+};
 addEventListener("load", () => {
+  const icons = [...document.querySelectorAll(".prompt, .reply")].map(drawn);
   const before = seen();
   document.querySelector(".switch.calls")?.click();
-  const icons = [...document.querySelectorAll(".prompt, .reply")].map(step => getComputedStyle(step, "::after").content);
   document.body.dataset.at = JSON.stringify({before, after: seen(), icons});
 });
 </script>"""
@@ -891,10 +898,10 @@ def test_icons_say_who_wrote_each_message_and_the_switch_hides_tool_rows_but_not
     append(transcript(agent=AID), user("find the cursor"), reply("found it"))
     keyboard, robot = '"\u2328\ufe0f" / ""', '"\U0001f916" / ""'
     shown = json.loads(measured(served, tmp_path, f"/s/{SID}", FLIP))
-    assert shown["icons"] == [keyboard, robot]
+    assert shown["icons"] == [[keyboard, True], [robot, True]]
     assert shown["before"] == {".prompt": [True], ".reply": [True], ".box": [True, True], ".minute": [True, True, True]}
     assert shown["after"] == {".prompt": [True], ".reply": [True], ".box": [False, False], ".minute": [True, False, True]}
     at = f"{offsets(*lines)[4]}.0"
     landed = json.loads(measured(served, tmp_path, f"/s/{SID}?at={at}", FLIP, f"#m{at}"))
     assert landed["after"] == {".prompt": [True], ".reply": [True], ".box": [False, True], ".minute": [True, True, True]}
-    assert json.loads(measured(served, tmp_path, f"/s/{SID}/{AID}", FLIP))["icons"] == [robot, robot]
+    assert json.loads(measured(served, tmp_path, f"/s/{SID}/{AID}", FLIP))["icons"] == [[robot, True], [robot, True]]
