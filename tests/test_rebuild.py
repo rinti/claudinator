@@ -52,6 +52,10 @@ def conversation(rnd: random.Random, n: int) -> bytes:
     return b"".join(parts)
 
 
+def a_successor_starts_a_fresh_line(unwritten: bytes) -> bytes:
+    return unwritten[unwritten.find(b"\n") + 1 :]
+
+
 def test_incremental_projection_equals_rebuild(home):
     rnd = random.Random(5)
     files = [transcript(), transcript(agent=AID), transcript(SID2)]
@@ -65,7 +69,7 @@ def test_incremental_projection_equals_rebuild(home):
                 if rnd.random() < 0.15:
                     settle(path)
                     if rnd.random() < 0.5:
-                        rest = rest[rest.find(b"\n") + 1 :]
+                        rest = a_successor_starts_a_fresh_line(rest)
                 pending[path] = rest
             assert archive.sweep().errors == ()
         incremental = projection_dump(archive, home)
