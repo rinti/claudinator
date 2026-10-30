@@ -6,6 +6,7 @@ import re
 import sqlite3
 import subprocess
 import threading
+from datetime import UTC, date, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -232,13 +233,13 @@ def test_a_transcript_shows_each_result_inside_the_call_it_answers(served):
     append(transcript(), *lines)
     at = offsets(*lines)
     shown = page(served, f"/s/{SID}")
-    read, bash = (re.search(rf'<div class="step call[^"]*" id="m{at[n]}\.0">.*?<a class="raw" href="raw/{SID}/{at[n]}">', shown, re.S)[0] for n in (1, 2))
-    assert f'<div class="output" id="m{at[4]}.0"><pre>one</pre>' in read
-    assert f'<div class="output error" id="m{at[3]}.0"><pre>exit 1</pre>' in bash
-    assert bash.startswith('<div class="step call error"') and '<span class="size">error</span>' in bash
+    read, bash = (re.search(rf'<div class="step call[^"]*" id="m{at[n]}\.0">.*?</details></div>', shown, re.S)[0] for n in (1, 2))
+    assert f'<div class="part output" id="m{at[4]}.0"><pre>one</pre>' in read
+    assert f'<div class="part output error" id="m{at[3]}.0"><pre>exit 1</pre>' in bash
+    assert bash.startswith('<div class="step call error"') and '<span class="size error">error</span>' in bash
 
 
-def test_a_call_is_one_row_with_a_short_output_below_it_and_a_long_one_inside(served):
+def test_a_call_is_one_closed_row_that_opens_to_its_input_and_then_its_output(served):
     lines = (
         user("go"),
         tool_call("Bash", {"command": "echo hi"}, tool_use_id="toolu_1"),
@@ -249,20 +250,45 @@ def test_a_call_is_one_row_with_a_short_output_below_it_and_a_long_one_inside(se
     )
     append(transcript(), *lines)
     at = offsets(*lines)
-    given = "<pre>{\n  &quot;command&quot;: &quot;%s&quot;\n}</pre>"
+
+    def row(n: int, given: str, size: str, opened: str = "") -> str:
+        return (
+            f'<div class="step call" id="m{at[n]}.0"><details{opened}><summary><b>Bash</b> <span class="gist">{given}</span>'
+            f'<span class="size">{size}</span></summary><div class="panel"><div class="part">'
+            f'<pre class="input">{{\n  &quot;command&quot;: &quot;{given}&quot;\n}}</pre><a class="raw" href="raw/{SID}/{at[n]}">raw</a></div>'
+        )
+
     shown = page(served, f"/s/{SID}")
-    assert (
-        f'<div class="step call" id="m{at[1]}.0"><details><summary><b>Bash</b> <span class="gist">echo hi</span> <span class="size">1 line</span></summary>'
-        f'{given % "echo hi"}</details><div class="output" id="m{at[2]}.0"><pre>hi</pre>'
-    ) in shown
-    assert (
-        f'<div class="step call" id="m{at[3]}.0"><details><summary><b>Bash</b> <span class="gist">seq 4</span> <span class="size">4 lines</span></summary>'
-        f'{given % "seq 4"}<div class="output" id="m{at[4]}.0"><pre>1\n2\n3\nquokka</pre>'
-    ) in shown
-    assert f'<div class="step call" id="m{at[5]}.0"><details><summary><b>Bash</b> <span class="gist">true</span> <span class="size">no output</span></summary>' in shown
+    assert row(1, "echo hi", "1 line") + f'<div class="part output" id="m{at[2]}.0"><pre>hi</pre>' in shown
+    assert row(3, "seq 4", "4 lines") + f'<div class="part output" id="m{at[4]}.0"><pre>1\n2\n3\nquokka</pre>' in shown
+    assert row(5, "true", "no output") + "</div></details></div>" in shown
     landed = page(served, f"/s/{SID}?at={at[4]}.0&q=quokka")
-    assert f'<div class="step call" id="m{at[3]}.0"><details open>' in landed and "<pre>1\n2\n3\n<mark>quokka</mark></pre>" in landed
-    assert f'<div class="step call" id="m{at[1]}.0"><details>' in landed
+    assert row(3, "seq 4", "4 lines", " open") in landed and "<pre>1\n2\n3\n<mark>quokka</mark></pre>" in landed
+    assert row(1, "echo hi", "1 line") in landed
+
+
+def test_calls_outputs_and_thoughts_of_one_minute_share_a_box_until_something_else_comes(served):
+    thinking = assistant({"type": "thinking", "thinking": "first idea\nsecond idea"}, ts="2026-10-01T10:00:20.000Z")
+    lines = (
+        user("go", ts="2026-10-01T10:00:00.000Z"),
+        tool_call("Bash", {"command": "a"}, tool_use_id="toolu_1", ts="2026-10-01T10:00:10.000Z"),
+        tool_result("a", tool_use_id="toolu_1", ts="2026-10-01T10:00:11.000Z"),
+        thinking,
+        user("<bash-stdout>printed</bash-stdout>", ts="2026-10-01T10:00:30.000Z"),
+        reply("between", ts="2026-10-01T10:00:40.000Z"),
+        tool_call("Bash", {"command": "b"}, tool_use_id="toolu_2", ts="2026-10-01T10:00:50.000Z"),
+        tool_call("Bash", {"command": "c"}, tool_use_id="toolu_3", ts="2026-10-01T10:01:05.000Z"),
+    )
+    append(transcript(), *lines)
+    at = offsets(*lines)
+    steps = page(served, f"/s/{SID}").partition('<div class="steps">')[2]
+    found = re.findall(r'<div class="(box|minute)">|<(?:div|details) class="step (\w+)[^"]*" id="m(\d+)\.0"', steps)
+    assert [kind or f"{name}@{at.index(int(off))}" for kind, name, off in found] == [
+        "minute", "prompt@0", "box", "call@1", "thought@3", "output@4", "reply@5", "box", "call@6",
+        "minute", "box", "call@7",
+    ]
+    assert '<summary><b>Thinking</b> <span class="gist">first idea</span><span class="size">2 lines</span></summary>' in steps
+    assert '<summary><b>Output</b> <span class="gist">printed</span><span class="size">1 line</span></summary>' in steps
 
 
 def test_a_call_sums_up_its_input_by_its_first_string_field(served):
@@ -282,7 +308,7 @@ def test_a_call_sums_up_its_input_by_its_first_string_field(served):
         ("Grep", "x" * 159 + "…"),
         ("TodoWrite", "{&quot;todos&quot;:[{&quot;content&quot;:&quot;ship&quot;}],&quot;merge&quot;:true}"),
     ]
-    assert '<pre>{\n  &quot;command&quot;: &quot;ls -la\\n   /tmp&quot;,\n  &quot;description&quot;: &quot;List tmp&quot;\n}</pre>' in page(served, f"/s/{SID}")
+    assert '<pre class="input">{\n  &quot;command&quot;: &quot;ls -la\\n   /tmp&quot;,\n  &quot;description&quot;: &quot;List tmp&quot;\n}</pre>' in page(served, f"/s/{SID}")
 
 
 def test_a_commands_output_shows_without_its_wrapper_tags_and_marks_land_on_the_words(served):
@@ -295,11 +321,13 @@ def test_a_commands_output_shows_without_its_wrapper_tags_and_marks_land_on_the_
     assert f'href="s/{SID}?at={at}.0&amp;q=quokka+wombat#m{at}.0"' in page(served, "/?q=quokka+wombat&tools=on")
     shown = page(served, f"/s/{SID}")
     assert (
-        f'<div class="step output" id="m{at}.0"><pre>Resolved 1 quokka</pre>'
+        f'<div class="step output" id="m{at}.0"><details><summary><b>Output</b> <span class="gist">Resolved 1 quokka</span>'
+        '<span class="size">2 lines</span></summary><div class="panel"><div class="part"><pre>Resolved 1 quokka</pre>'
         '<div class="stderr"><span class="label">stderr</span><pre>warning: a wombat</pre></div>'
     ) in shown
     assert "bash-std" not in shown
     landed = page(served, f"/s/{SID}?at={at}.0&q=quokka+wombat")
+    assert f'<div class="step output" id="m{at}.0"><details open>' in landed
     assert "<pre>Resolved 1 <mark>quokka</mark></pre>" in landed
     assert "<pre>warning: a <mark>wombat</mark></pre>" in landed
 
@@ -321,9 +349,9 @@ def test_a_notice_is_a_sentence_that_quotes_its_text_where_the_text_adds_to_it(s
     append(transcript(), *lines)
     at = offsets(*lines)
     shown = page(served, f"/s/{SID}")
-    assert f'<div class="step notice queued" id="m{at[1]}.0">You queued a prompt while Claude worked: <span class="text">also the quokka</span><a ' in shown
-    assert f'<div class="step notice interrupted" id="m{at[2]}.0">You interrupted Claude.<a ' in shown
-    assert f'<div class="step notice compacted" id="m{at[3]}.0">The conversation was compacted.<a ' in shown
+    assert f'<div class="step note queued" id="m{at[1]}.0">You queued a prompt while Claude worked: <span class="text">also the quokka</span><a ' in shown
+    assert f'<div class="step note interrupted" id="m{at[2]}.0">You interrupted Claude.<a ' in shown
+    assert f'<div class="step note compacted" id="m{at[3]}.0">The conversation was compacted.<a ' in shown
 
 
 def test_an_agent_call_links_its_subagent_and_the_subagent_links_back(served):
@@ -337,14 +365,44 @@ def test_an_agent_call_links_its_subagent_and_the_subagent_links_back(served):
     write_meta(SID, nested, agentType="Explore", description="Look deeper", toolUseId="toolu_88", parentAgentId=AID)
     call, inner = offsets(*main)[1], offsets(*child)[1]
     shown = page(served, f"/s/{SID}")
-    assert f'<li><span class="id">a7c9c203</span><a href="s/{SID}/{AID}">Find the cursor</a><span class="type">Explore</span></li>' in shown
-    assert f'<div class="step call" id="m{call}.0"><details><summary><b>Agent</b> <span class="gist">Find the cursor</span></summary>' in shown
-    assert f'</details><a class="spawned" href="s/{SID}/{AID}">subagent a7c9c203</a>' in shown
-    started = f'<a href="s/{SID}">delegate</a>. <a href="s/{SID}?call=toolu_77">See the call that started it</a>.'
-    assert f"<h1>Find the cursor</h1><p>Subagent a7c9c203, type Explore, in {started}</p>" in page(served, f"/s/{SID}/{AID}")
+    listed = f'<li><a href="s/{SID}/{AID}"><span class="name">Find the cursor</span><span class="id">a7c9c203</span><span class="type">Explore</span></a></li>'
+    assert listed in shown
+    assert f'<div class="step call spawns" id="m{call}.0"><details><summary><b>Agent</b> <span class="gist">Find the cursor</span></summary>' in shown
+    assert f'</details><a class="spawned" href="s/{SID}/{AID}">↳ a7c9c203</a></div>' in shown
+    subagent = page(served, f"/s/{SID}/{AID}")
+    assert f'<a class="back" href="s/{SID}"><span aria-hidden="true">←</span>delegate</a>' in subagent
+    started = f'<p>In <a href="s/{SID}">delegate</a></p><p><a href="s/{SID}?call=toolu_77">See the call that started it</a></p>'
+    assert f'<h2>Subagent</h2><p class="kind">Explore</p>{started}' in subagent
     assert get(served, f"/s/{SID}?call=toolu_77")[1]["location"] == f"{served.root}s/{SID}?at={call}.0#m{call}.0"
     assert f'<a href="s/{SID}/{AID}?call=toolu_88">See the call that started it</a>' in page(served, f"/s/{SID}/{nested}")
     assert get(served, f"/s/{SID}/{AID}?call=toolu_88")[1]["location"] == f"{served.root}s/{SID}/{AID}?at={inner}.0#m{inner}.0"
+
+
+def test_the_back_link_returns_to_the_results_a_page_was_opened_from(served):
+    lines = (user("first"), reply("the quokka line"))
+    append(transcript(), *lines)
+    append(transcript(agent=AID), user("a quokka in a subagent"))
+    write_meta(SID, AID, agentType="Explore", description="Find the cursor")
+    at = offsets(*lines)[1]
+    back = r'<a class="back" href="([^"]*)"><span aria-hidden="true">←</span>(.*?)</a>'
+    assert re.findall(back, page(served, f"/s/{SID}")) == [("./", "All sessions")]
+    assert re.findall(back, page(served, f"/s/{SID}?at={at}.0&q=quokka+%22a+line%22")) == [
+        ("./?q=quokka+%22a+line%22", "Results for “quokka &quot;a line&quot;”")
+    ]
+    assert re.findall(back, page(served, f"/s/{SID}/{AID}")) == [(f"s/{SID}", "first")]
+    assert re.findall(back, page(served, f"/s/{SID}/{AID}?at=0.0&q=quokka")) == [("./?q=quokka", "Results for “quokka”")]
+
+
+def test_prompts_are_numbered_from_the_start_of_their_own_transcript(served):
+    append(transcript(), user("one"), reply("ok"), user("/clear"), tool_call("Bash", {"command": "x"}), user("three"))
+    append(transcript(agent=AID), user("the subagent's own first"))
+    labels = r'<p class="label">(.*?)</p><div class="text">(.*?)</div>'
+    assert re.findall(labels, page(served, f"/s/{SID}")) == [
+        ("Prompt 1", "one"),
+        ("Prompt 2", '<span class="cmd">/clear</span>'),
+        ("Prompt 3", "three"),
+    ]
+    assert re.findall(labels, page(served, f"/s/{SID}/{AID}")) == [("Prompt 1", "the subagent&#x27;s own first")]
 
 
 def test_a_transcript_shows_the_time_once_a_minute_and_a_heading_where_the_day_changes(served):
@@ -358,54 +416,103 @@ def test_a_transcript_shows_the_time_once_a_minute_and_a_heading_where_the_day_c
     )
     append(transcript(), *lines)
     at = offsets(*lines)
-    main = page(served, f"/s/{SID}").partition("<main>")[2]
-    found = re.findall(r'<h2 class="day">(.*?)</h2>|<time>(.*?)</time>|<div class="step [^"]*" id="m(\d+)\.0"', main)
+    steps = page(served, f"/s/{SID}").partition('<div class="steps">')[2]
+    found = re.findall(r'<h2 class="day">(.*?)</h2>|<time>(.*?)</time>|<div class="step [^"]*" id="m(\d+)\.0"', steps)
     assert [day or time or int(step) for day, time, step in found] == [
         "Thursday 29 October 2026", "22:38", at[0], at[1], at[2], "22:39", at[3],
-        "Friday 30 October", "00:01", at[4],
+        "Friday 30 October 2026", "00:01", at[4],
         "Friday 1 January 2027", "09:30", at[5],
     ]
 
 
-def test_a_transcript_header_says_where_and_when_how_much_and_how_to_resume(served):
+def test_a_transcript_says_where_when_how_long_how_much_and_how_to_resume(served):
     append(transcript(), user("hello", ts="2026-10-29T22:38:00Z"), reply("hi", ts="2026-10-30T10:59:00Z"))
     append(transcript(agent=AID), user("subagent", ts="2026-10-29T23:00:00Z"))
     append(transcript(SID2), user("short", ts="2026-10-29T08:00:00Z"), reply("done", ts="2026-10-29T08:20:00Z"))
+    where = '<span><span class="dir">/Users/me/dev/</span><span class="leaf">demo</span></span>'
     shown = page(served, f"/s/{SID}")
-    assert "<p>In /Users/me/dev/demo, 29 Oct 22:38 to 30 Oct 10:59.</p><p>1 prompt and 1 subagent. Resume it with <code>claudinator resume 8f2d43fe</code></p>" in shown
+    assert (
+        f'<p class="facts">{where}<span>Thu 29 Oct · 22:38 – Fri 30 Oct · 10:59</span><span class="faint">12h 21m</span>'
+        "<span>1 prompt</span><span>1 subagent</span></p>"
+    ) in shown
+    assert '<h2>Resume</h2><p class="command"><span aria-hidden="true">$</span><code>claudinator resume 8f2d43fe</code></p><div class="actions">' in shown
     transcript(SID2).unlink()
     gone = page(served, f"/s/{SID2}")
-    assert "<p>In /Users/me/dev/demo, 29 Oct 08:00 to 08:20.</p><p>1 prompt. Claude Code has deleted its copy, and resuming puts it back. Resume it with " in gone
+    assert f'<p class="facts">{where}<span>Thu 29 Oct · 08:00 – 08:20</span><span class="faint">20m</span><span>1 prompt</span></p>' in gone
+    assert '<code>claudinator resume 075b60d8</code></p><p class="gone">Claude Code deleted its copy. Resuming puts it back.</p>' in gone
 
 
-def test_the_list_groups_sessions_by_day_and_reads_time_title_project_and_counts(served):
-    sid3 = "3c0ffee0-0000-4000-8000-000000000003"
+def test_the_list_groups_sessions_by_day_and_reads_time_title_project_and_counts(served, monkeypatch):
+    sid3, sid4 = "3c0ffee0-0000-4000-8000-000000000003", "4c0ffee0-0000-4000-8000-000000000004"
     append(transcript(), user("hello", ts="2026-10-01T10:00:00Z"))
     append(transcript(agent=AID), user("subagent", ts="2026-10-01T10:00:00Z"))
     elsewhere = {"cwd": "/tmp/elsewhere"}
     append(transcript(SID2, slug="-tmp-elsewhere"), user("again", ts="2026-10-02T09:00:00Z", **elsewhere), user("more", ts="2026-10-02T09:30:00Z", **elsewhere))
     append(transcript(sid3), user("early", ts="2026-10-02T08:00:00Z"))
+    append(transcript(sid4), user("last year", ts="2025-12-31T23:00:00Z"))
+    monkeypatch.setattr(web, "now", lambda: int(datetime(2026, 10, 2, 12, tzinfo=UTC).timestamp() * 1000))
     shown = page(served, "/")
-    assert shown.index('<p class="count">3 sessions</p>') < shown.index('<h2 class="day">')
-    assert re.findall(r'<h2 class="day">(.*?)</h2>|<time>(.*?)</time>', shown) == [
-        ("Friday 2 October 2026", ""), ("", "09:30"), ("", "08:00"), ("Thursday 1 October", ""), ("", "10:00"),
+    assert shown.index("<h1>4 sessions</h1>") < shown.index('<div class="day-head">')
+    heads = re.findall(r'<div class="day-head"><h2>(.*?)</h2>(?:<span class="tag">(.*?)</span>)?<span class="n">(.*?)</span></div>', shown)
+    assert heads == [
+        ("Friday 2 October", "Today", "2 sessions"),
+        ("Thursday 1 October", "Yesterday", "1 session"),
+        ("Wednesday 31 December 2025", "", "1 session"),
     ]
-    assert '</ol><h2 class="day">Thursday 1 October</h2><ol class="sessions">' in shown
+    assert re.findall(r"<time>(.*?)</time>", shown) == ["09:30", "08:00", "10:00", "23:00"]
     assert (
-        f'<li><time>10:00</time><span class="title"><a href="s/{SID}">hello</a></span>'
-        '<a class="project" href="./?project=%2FUsers%2Fme%2Fdev%2Fdemo" title="/Users/me/dev/demo">/Users/me/dev/demo</a>'
-        '<span class="count">1 prompt</span><span class="count">1 subagent</span></li>'
+        f'<li><time>10:00</time><span class="title"><a class="open" href="s/{SID}"><span class="head">hello</span></a></span>'
+        '<a class="project" href="./?project=%2FUsers%2Fme%2Fdev%2Fdemo" title="/Users/me/dev/demo">'
+        '<span class="dir">/Users/me/dev/</span><span class="leaf">demo</span></a>'
+        '<span class="count"><span class="n">1</span> prompt</span><span class="count"><span class="n">1</span> subagent</span></li>'
     ) in shown
-    assert '>/tmp/elsewhere</a><span class="count">2 prompts</span><span class="count"></span></li>' in shown
+    assert '<span class="leaf">elsewhere</span></a><span class="count"><span class="n">2</span> prompts</span><span></span></li>' in shown
 
 
-def test_a_search_hit_says_when_and_where_and_where_its_best_hit_is(served):
+def test_a_title_sets_a_leading_slash_command_and_heading_apart_from_the_rest(served):
+    titles = {
+        SID: "/pstack:poteto-mode store every session",
+        SID2: "/clear",
+        "3c0ffee0-0000-4000-8000-000000000003": "# Sync and update\nYou are running unattended",
+        "4c0ffee0-0000-4000-8000-000000000004": "/Users/me/notes is a path, not a command",
+    }
+    for sid, prompt in titles.items():
+        append(transcript(sid), user(prompt))
+    open_archive().sweep()
+    transcript(SID2).unlink()
+    shown = page(served, "/")
+    parts = dict(re.findall(r'<a class="open" href="s/([^"]+)">(.*?)</a>', shown))
+    assert parts == {
+        SID: '<span class="cmd">/pstack:poteto-mode</span><span class="rest">store every session</span>',
+        SID2: '<span class="cmd">/clear</span>',
+        "3c0ffee0-0000-4000-8000-000000000003": '<span class="hash">#</span><span class="head">Sync and update</span><span class="rest">You are running unattended</span>',
+        "4c0ffee0-0000-4000-8000-000000000004": '<span class="head">/Users/me/notes is a path, not a command</span>',
+    }
+    assert f'<a class="open" href="s/{SID2}"><span class="cmd">/clear</span></a><span class="badge">deleted</span></span>' in shown
+
+
+def test_a_search_result_counts_its_hits_and_says_when_where_and_where_the_best_one_is(served):
     append(transcript(), user("first", ts="2026-10-01T10:00:00Z"), reply("the quokka line", ts="2026-10-01T10:05:00Z"), reply("another quokka", ts="2026-10-01T10:06:00Z"))
     append(transcript(agent=AID), user("a wombat in a subagent", ts="2026-10-01T10:06:00Z"))
     append(transcript(SID2), user("nothing to see", ts="2026-10-02T08:00:00Z"), ai_title("Zebracorn hunt"))
-    assert "<p>10:06 on 1 Oct 2026 in /Users/me/dev/demo, 2 hits, best in a reply</p>" in page(served, "/?q=quokka")
-    assert "<p>10:06 on 1 Oct 2026 in /Users/me/dev/demo, 1 hit, in a prompt in subagent a7c9c203</p>" in page(served, "/?q=wombat")
-    assert "<p>08:00 on 2 Oct 2026 in /Users/me/dev/demo, 1 hit, in the title</p>" in page(served, "/?q=zebracorn")
+    where = '<span><span class="dir">/Users/me/dev/</span><span class="leaf">demo</span></span>'
+    result = r'<p class="tally"><span class="n">(\d+)</span> <span>(\w+)</span></p>.*?<p class="meta"><span>(.*?)</span>(.*?)<span class="tag">(.*?)</span></p>'
+    assert re.findall(result, page(served, "/?q=quokka")) == [("2", "hits", "Thu 1 Oct 2026 · 10:06", where, "best in a reply")]
+    assert re.findall(result, page(served, "/?q=wombat")) == [("1", "hit", "Thu 1 Oct 2026 · 10:06", where, "in a prompt · subagent a7c9c203")]
+    assert re.findall(result, page(served, "/?q=zebracorn")) == [("1", "hit", "Fri 2 Oct 2026 · 08:00", where, "in the title")]
+
+
+def test_the_toolbar_names_the_filters_and_clear_drops_only_the_words(served):
+    append(transcript(), user("the quokka", ts="2026-10-01T10:00:00Z"))
+    listed = page(served, "/?project=demo&since=2026-09-01")
+    assert '<h1>1 session</h1><span class="scope">in demo since 2026-09-01</span></div>' in listed
+    found = page(served, "/?q=quokka&project=demo&tools=on")
+    assert '<h1>1 session</h1><span class="scope">matching “quokka” in demo</span><a class="clear" href="./?project=demo&amp;tools=on">Clear</a>' in found
+    assert '<input class="switch" type="checkbox" name="tools" form="find" checked>' in found
+    assert 'Nothing matches that.' in page(served, "/?q=zebracorn")
+    refused = get(served, "/?since=today")[2].decode()
+    assert '<h1>No sessions</h1><span class="scope">since today</span></div>' in refused
+    assert '</div><p class="banner">since: expected ' in refused
 
 
 def test_a_search_hit_opens_its_transcript_at_the_matching_step_with_the_words_marked(served):
@@ -414,11 +521,11 @@ def test_a_search_hit_opens_its_transcript_at_the_matching_step_with_the_words_m
     append(transcript(agent=AID), user("a wombat in a subagent"))
     append(transcript(SID2), user("nothing to see"), ai_title("Zebracorn hunt"))
     at = offsets(*lines)[1]
-    found = page(served, "/?q=quokka")
-    assert f'href="s/{SID}?at={at}.0&amp;q=quokka#m{at}.0"' in found
+    found = page(served, "/?q=quokka").partition('<ol class="hits">')[2]
+    assert re.findall(r'<a [^>]*href="([^"]*)"', found) == [f"s/{SID}?at={at}.0&amp;q=quokka#m{at}.0"]
     assert f'id="m{at}.0"><div class="text">the <mark>quokka</mark> line</div>' in page(served, f"/s/{SID}?at={at}.0&q=quokka")
     assert f'href="s/{SID}/{AID}?at=0.0&amp;q=wombat#m0.0"' in page(served, "/?q=wombat")
-    assert f'<a class="excerpt" href="s/{SID2}">' in page(served, "/?q=zebracorn")
+    assert f'<a class="open" href="s/{SID2}">Zebracorn hunt</a>' in page(served, "/?q=zebracorn")
 
 
 def test_lines_that_show_nothing_fold_into_one_marker_with_a_raw_link_each(served):
@@ -426,7 +533,8 @@ def test_lines_that_show_nothing_fold_into_one_marker_with_a_raw_link_each(serve
     append(transcript(), *lines)
     at = offsets(*lines)
     assert (
-        '<details class="step hidden" id="m0.0"><summary>2 hidden lines: 1 mode, 1 file-history-snapshot</summary>'
+        '<details class="step note hidden" id="m0.0"><summary>2 hidden lines: 1 mode, 1 file-history-snapshot'
+        '<span class="badge">hidden</span></summary>'
         f'<ul><li><a href="raw/{SID}/0">mode</a></li><li><a href="raw/{SID}/{at[1]}">file-history-snapshot</a></li></ul>'
         "</details>"
     ) in page(served, f"/s/{SID}?hidden=1")
@@ -437,20 +545,23 @@ def test_hidden_lines_stay_out_of_the_way_until_asked_for_and_notices_always_sho
     lines = (line({"type": "mode"}), user("hello"), api_error, line({"type": "mode"}), reply("the quokka line"), line({"type": "mode"}))
     append(transcript(), *lines)
     at = offsets(*lines)[4]
+    toggle = '<a class="button" href="{}"><span>Hidden lines <span class="n">3</span></span><span class="switch" role="img" aria-label="{}"{}></span></a>'
     shown = page(served, f"/s/{SID}")
-    assert 'class="step hidden"' not in shown
+    assert 'class="step note hidden"' not in shown
     error = 'The API answered with an error: <span class="text">overloaded</span>'
     assert error in shown
-    assert f'<a href="s/{SID}?hidden=1">Show 3 hidden lines</a></p>' in shown
+    assert toggle.format(f"s/{SID}?hidden=1", "not shown", "") in shown
     revealed = page(served, f"/s/{SID}?hidden=1")
-    assert revealed.count('class="step hidden"') == 3
+    assert revealed.count('class="step note hidden"') == 3
     assert error in revealed
-    assert f'<a href="s/{SID}">Hide hidden lines</a></p>' in revealed
+    assert toggle.format(f"s/{SID}", "shown", " data-on") in revealed
     landed = page(served, f"/s/{SID}?at={at}.0&q=quokka")
-    assert f'<a href="s/{SID}?at={at}.0&amp;q=quokka&amp;hidden=1#m{at}.0">Show 3 hidden lines</a>' in landed
+    assert toggle.format(f"s/{SID}?at={at}.0&amp;q=quokka&amp;hidden=1#m{at}.0", "not shown", "") in landed
     revealed = page(served, f"/s/{SID}?at={at}.0&q=quokka&hidden=1")
-    assert f'<a href="s/{SID}?at={at}.0&amp;q=quokka#m{at}.0">Hide hidden lines</a>' in revealed
+    assert toggle.format(f"s/{SID}?at={at}.0&amp;q=quokka#m{at}.0", "shown", " data-on") in revealed
     assert "the <mark>quokka</mark> line" in revealed
+    append(transcript(SID2), user("nothing hidden"))
+    assert "Hidden lines" not in page(served, f"/s/{SID2}")
 
 
 def test_a_raw_line_is_its_json_in_ascii(served):
@@ -557,7 +668,7 @@ def test_transcript_text_is_text_whatever_it_holds():
         '<span class="esc">\\x1b</span>[31mred <span class="esc">\\u202e</span>gpj.exe</div>'
     ) in shown
     assert "<title>Invoice \\u202egpj.exe &lt;b&gt;</title>" in shown
-    assert '<summary><b>&lt;b&gt;Tool</b> <span class="gist">&lt;/pre&gt;&lt;script&gt;</span> <span class="size">no output</span></summary>' in shown
+    assert '<summary><b>&lt;b&gt;Tool</b> <span class="gist">&lt;/pre&gt;&lt;script&gt;</span><span class="size">no output</span></summary>' in shown
     assert 'alt="image, x&quot; onerror=&quot;alert(3), 3 B"' in shown
     assert "<script" not in shown and "<img src=x" not in shown and "‮" not in shown and "\x1b" not in shown
 
@@ -575,9 +686,10 @@ def test_only_text_el_and_marked_make_markup():
 
 
 def test_what_was_typed_into_the_form_comes_back_as_text():
-    shown = web.sessions_page("/T/", (), web.Form(q='"><script>alert(4)</script>', project="‮x"), None, "since: <b>")
+    typed = web.Form(q='"><script>alert(4)</script>', project="‮x")
+    shown = web.sessions_page("/T/", (), typed, None, date(2026, 10, 30), "since: <b>")
     assert 'value="&quot;&gt;&lt;script&gt;alert(4)&lt;/script&gt;"' in shown
-    assert 'name="project" value="\\u202ex"' in shown
+    assert 'name="project" form="find" value="\\u202ex"' in shown
     assert '<p class="banner">since: &lt;b&gt;</p>' in shown
 
 

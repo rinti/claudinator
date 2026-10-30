@@ -7,10 +7,10 @@ import re
 import secrets
 import sqlite3
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -151,10 +151,15 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def _message(status: int, text: str, root: str | None = None) -> Response:
-    back = el("p", None, el("a", {"href": "./"}, "All sessions")) if root else None
-    return Response(
-        status, HTML, _document(page(root, HTTPStatus(status).phrase, el("p", {"class": "banner"}, text), back))
+    phrase = HTTPStatus(status).phrase
+    said = el(
+        "main",
+        {"class": "message"},
+        el("h1", None, phrase),
+        el("p", {"class": "banner"}, text),
+        _back("./", "All sessions") if root else None,
     )
+    return Response(status, HTML, _document(page(root, phrase, _top("") if root else None, said)))
 
 
 @contextmanager
@@ -175,16 +180,18 @@ HOME = re.compile(r"/")
 
 
 def home(cfg: Config, root: str, query: Mapping[str, str], m: re.Match[str]) -> Response:
-    form = Form.read(query)
+    form, at = Form.read(query), now()
+    today = datetime.fromtimestamp(at / 1000).date()
     with _reading(cfg, sweep=True) as (archive, swept):
         try:
-            filters, terms = form.filters(now()), form.terms()
+            filters, terms = form.filters(at), form.terms()
             if terms:
                 hits = archive.search(Query(terms, filters, form.tools, SEARCH_LIMIT))
                 return Response(200, HTML, _document(search_page(root, hits, form, swept)))
-            return Response(200, HTML, _document(sessions_page(root, archive.sessions(filters, None), form, swept)))
+            rows = archive.sessions(filters, None)
+            return Response(200, HTML, _document(sessions_page(root, rows, form, swept, today)))
         except (ValueError, EmptyQuery) as e:
-            return Response(400, HTML, _document(sessions_page(root, (), form, swept, str(e))))
+            return Response(400, HTML, _document(sessions_page(root, (), form, swept, today, str(e))))
 
 
 TRANSCRIPT = re.compile(rf"/s/({SID})(?:/({AID}))?")
@@ -322,34 +329,181 @@ class Form:
 
 
 def sessions_page(
-    root: str, rows: Sequence[SessionSummary], form: Form, swept: SweepReport | None, error: str = ""
+    root: str, rows: Sequence[SessionSummary], form: Form, swept: SweepReport | None, today: date, error: str = ""
 ) -> Html:
+    count = "No sessions" if error else _plural(len(rows), "session")
+    days = groupby(rows, key=lambda s: None if s.last_ts is None else _local(s.last_ts).date())
     return page(
         root,
         "claudinator",
-        _top(form),
-        _banner(swept, error),
-        None if error else el("p", {"class": "count"}, _plural(len(rows), "session")),
-        *_days(_session_days(rows)),
+        _top(form.q),
+        el(
+            "main",
+            {"class": "list"},
+            _toolbar(form, count, _scope(form), clear=False),
+            _banner(swept, error),
+            *(_day_section(day, list(run), today) for day, run in days),
+        ),
     )
 
 
-def _session_days(rows: Sequence[SessionSummary]) -> Iterator[tuple[datetime | None, Html]]:
-    for _, run in groupby(rows, key=lambda s: None if s.last_ts is None else _local(s.last_ts).date()):
-        day = list(run)
-        yield _local(day[0].last_ts), el("ol", {"class": "sessions"}, *map(_session_row, day))
+def _day_section(day: date | None, rows: list[SessionSummary], today: date) -> Html:
+    near = {today: "Today", today - timedelta(days=1): "Yesterday"}.get(day) if day else None
+    head = el(
+        "div",
+        {"class": "day-head"},
+        el("h2", None, "No date" if day is None else _day(day, year=day.year != today.year)),
+        el("span", {"class": "tag"}, near) if near else None,
+        el("span", {"class": "n"}, _plural(len(rows), "session")),
+    )
+    return el("section", {"class": "day"}, head, el("ol", {"class": "sessions"}, *map(_session_row, rows)))
+
+
+def _session_row(s: SessionSummary) -> Html:
+    when, where = _local(s.last_ts), human.short(s.cwd)
+    gone = None if s.on_disk else el("span", {"class": "badge"}, "deleted")
+    title = el("span", {"class": "title"}, el("a", {"class": "open", "href": href_transcript(s.id)}, *_title(s)), gone)
+    if s.cwd:
+        project = el(
+            "a", {"class": "project", "href": "./?" + urlencode({"project": s.cwd}), "title": where}, *_where(s.cwd)
+        )
+    else:
+        project = el("span", {"class": "project"}, *_where(s.cwd))
+    return el(
+        "li",
+        None,
+        el("time", None, f"{when:%H:%M}" if when else ""),
+        title,
+        project,
+        _tally(s.prompts, "prompt"),
+        _tally(s.subagents, "subagent") if s.subagents else el("span", None),
+    )
+
+
+COMMAND = re.compile(r"/[^\W\d][\w:.-]*(?=\s|$)")
+"""A leading slash command, as Claude Code writes one into the prompt it
+records: /clear or /pstack:poteto-mode, never a path like /Users/me."""
+
+
+def _title(s: SessionSummary) -> tuple[Html | None, ...]:
+    title = s.title or s.id[:8]
+    if m := COMMAND.match(title):
+        rest = title[m.end() :].strip()
+        return el("span", {"class": "cmd"}, m[0]), el("span", {"class": "rest"}, rest) if rest else None
+    if s.heading and title.startswith(f"# {s.heading}"):
+        rest = title[2 + len(s.heading) :].strip()
+        head = el("span", {"class": "head"}, s.heading)
+        return el("span", {"class": "hash"}, "#"), head, el("span", {"class": "rest"}, rest) if rest else None
+    return (el("span", {"class": "head"}, title),)
+
+
+def _where(cwd: str | None) -> tuple[Html | None, Html]:
+    parent, slash, leaf = human.short(cwd).rpartition("/")
+    return el("span", {"class": "dir"}, parent + slash) if slash else None, el("span", {"class": "leaf"}, leaf)
+
+
+def _tally(n: int, noun: str) -> Html:
+    return el("span", {"class": "count"}, el("span", {"class": "n"}, f"{n:,}"), " ", _noun(n, noun))
 
 
 def search_page(root: str, hits: Sequence[SessionHit], form: Form, swept: SweepReport | None) -> Html:
-    found = _plural(len(hits), "session") + (" or more" if len(hits) == SEARCH_LIMIT else "")
+    count = _plural(len(hits), "session") + (", the best of more" if len(hits) == SEARCH_LIMIT else "")
+    about = " ".join(part for part in (f"matching “{form.q}”", _scope(form)) if part)
+    if hits:
+        found = el("ol", {"class": "hits"}, *(_hit(hit, form.q) for hit in hits))
+    else:
+        tip = "Try fewer words, a prefix like deploy*, or turn on Include tools."
+        found = el("div", {"class": "none"}, el("p", {"class": "big"}, "Nothing matches that."), el("p", None, tip))
     return page(
         root,
         f"{form.q} in claudinator",
-        _top(form),
-        _banner(swept, ""),
-        el("p", {"class": "count"}, found),
-        el("ol", {"class": "hits"}, *(_hit(hit, form.q) for hit in hits)),
+        _top(form.q),
+        el("main", {"class": "search"}, _toolbar(form, count, about, clear=True), _banner(swept, ""), found),
     )
+
+
+KINDS = {
+    Kind.PROMPT: "a prompt",
+    Kind.REPLY: "a reply",
+    Kind.TOOL_CALL: "a tool call",
+    Kind.TOOL_OUTPUT: "a tool's output",
+    Kind.TITLE: "the title",
+}
+
+
+def _hit(hit: SessionHit, q: str) -> Html:
+    s, best = hit.session, hit.best
+    at = None if best.kind is Kind.TITLE else Key(best.line_off, best.block)
+    when = _local(s.last_ts)
+    found = ("best in " if hit.hits > 1 else "in ") + KINDS[best.kind]
+    meta = el(
+        "p",
+        {"class": "meta"},
+        el("span", None, f"{when:%a} {when.day} {when:%b %Y} · {when:%H:%M}") if when else None,
+        el("span", None, *_where(s.cwd)),
+        el("span", {"class": "tag"}, found + (f" · subagent {best.agent_id[:8]}" if best.agent_id else "")),
+    )
+    title = el("a", {"class": "open", "href": href_transcript(s.id, best.agent_id, at, q)}, s.title or s.id[:8])
+    return el(
+        "li",
+        None,
+        el(
+            "p",
+            {"class": "tally"},
+            el("span", {"class": "n"}, f"{hit.hits:,}"),
+            " ",
+            el("span", None, _noun(hit.hits, "hit")),
+        ),
+        el(
+            "div",
+            {"class": "found"},
+            el("h2", None, title),
+            meta,
+            None if at is None else el("p", {"class": "excerpt"}, marked(best.text, best.marks)),
+        ),
+    )
+
+
+def _toolbar(form: Form, count: str, about: str, *, clear: bool) -> Html:
+    said = el(
+        "div",
+        {"class": "said"},
+        el("h1", None, count),
+        el("span", {"class": "scope"}, about) if about else None,
+        el("a", {"class": "clear", "href": _href_filters(form)}, "Clear") if clear else None,
+    )
+    tools = el("input", {"class": "switch", "type": "checkbox", "name": "tools", "form": "find", "checked": form.tools})
+    return el(
+        "div",
+        {"class": "toolbar"},
+        said,
+        el(
+            "div",
+            {"class": "pills"},
+            _pill("Project", "project", form.project, "any"),
+            _pill("Since", "since", form.since, "7d"),
+            _pill("Until", "until", form.until, "any"),
+            el("label", {"class": "pill tools"}, tools, "Include tools"),
+        ),
+    )
+
+
+def _pill(word: str, name: str, value: str, placeholder: str) -> Html:
+    field = el(
+        "input", {"name": name, "form": "find", "value": value, "placeholder": placeholder, "spellcheck": "false"}
+    )
+    return el("label", {"class": "pill"}, word, field)
+
+
+def _scope(form: Form) -> str:
+    said = (("in", form.project), ("since", form.since), ("until", form.until))
+    return " ".join(f"{word} {value}" for word, value in said if value)
+
+
+def _href_filters(form: Form) -> str:
+    kept = {"project": form.project, "since": form.since, "until": form.until, "tools": "on" if form.tools else ""}
+    query = urlencode({name: value for name, value in kept.items() if value})
+    return "./" + (f"?{query}" if query else "")
 
 
 def transcript_page(
@@ -364,76 +518,139 @@ def transcript_page(
 ) -> Html:
     s = session.summary
     terms = searchable(Form(q=q).terms())
-    folded = sum(map(_folded, steps))
-    toggle = el(
-        "a",
-        {"href": href_transcript(s.id, aid, at, q, not hidden)},
-        "Hide hidden lines" if hidden else f"Show {_plural(folded, 'hidden line')}",
-    )
-    links = el(
-        "p",
-        {"class": "links"},
-        el("a", {"href": href_export(s.id, aid)}, "Download the transcript"),
-        *((" ", toggle) if folded else ()),
-    )
-    span = el("p", None, _span(s))
-    agents = None
+    agent = None if aid is None else next((a for a in session.agents if a.id == aid), None)
     if aid is None:
-        heading, facts = s.title or s.id[:8], (span, _resume(s))
-        if session.agents:
-            subagents = el("ul", None, *(_agent(s.id, a) for a in session.agents))
-            agents = el("section", {"class": "agents"}, el("h2", None, "Subagents"), subagents)
+        heading = s.title or s.id[:8]
     else:
-        agent = next((a for a in session.agents if a.id == aid), None)
-        heading, facts = (agent and agent.description) or f"Subagent {aid[:8]}", (_subagent(s, aid, agent), span)
-    header = el(
-        "header", {"class": "session"}, el("a", {"href": "./"}, "All sessions"), el("h1", None, heading), *facts, links
-    )
+        heading = (agent and agent.description) or f"Subagent {aid[:8]}"
+    if q:
+        back = _back("./?" + urlencode({"q": q}), f"Results for “{q}”")
+    elif aid:
+        back = _back(href_transcript(s.id), s.title or s.id[:8])
+    else:
+        back = _back("./", "All sessions")
+    header = el("header", {"class": "session"}, el("h1", None, heading), _facts(s, main=aid is None))
+    prompts = (step.key for step in steps if isinstance(step, Said) and step.kind is Kind.PROMPT)
+    numbers = {key: n for n, key in enumerate(prompts, 1)}
     shown = [step for step in steps if hidden or not _folded(step)]
-    minutes = (
-        (
-            minute,
-            el(
-                "div",
-                {"class": "minute"},
-                el("time", None, f"{minute:%H:%M}") if minute else None,
-                *(_step(s.id, aid, step, at, terms) for step in run),
-            ),
-        )
-        for minute, run in _minutes(shown)
+    toggle = _toggle(href_transcript(s.id, aid, at, q, not hidden), sum(map(_folded, steps)), hidden)
+    aside = _aside(session, aid, agent, el("div", {"class": "actions"}, _download(s.id, aid), toggle))
+    body = el("div", {"class": "steps"}, *_dated(s.id, aid, shown, at, terms, numbers))
+    return page(
+        root,
+        heading,
+        _top(q),
+        el(
+            "main",
+            {"class": "transcript"},
+            back,
+            header,
+            _banner(swept, ""),
+            el("div", {"class": "columns"}, aside, body),
+        ),
     )
-    body = el("main", None, *_days(minutes))
-    return page(root, heading, header, _banner(swept, ""), agents, body)
 
 
-def _span(s: SessionSummary) -> str:
-    where = f"In {human.short(s.cwd)}" if s.cwd else "In an unknown directory"
+def _back(href: str, label: str) -> Html:
+    return el("a", {"class": "back", "href": href}, el("span", {"aria-hidden": "true"}, "←"), label)
+
+
+def _facts(s: SessionSummary, *, main: bool) -> Html:
     first, last = _local(s.first_ts), _local(s.last_ts)
-    if first is None or last is None:
-        return where + "."
-    end = f"{last:%H:%M}" if last.date() == first.date() else _short_date(last)
-    return f"{where}, {_short_date(first)} to {end}."
+    span = duration = None
+    if first and last:
+        end = f"{last:%H:%M}" if last.date() == first.date() else _stamp(last)
+        span, duration = f"{_stamp(first)} – {end}", _duration(last - first)
+    return el(
+        "p",
+        {"class": "facts"},
+        el("span", None, *_where(s.cwd)),
+        el("span", None, span) if span else None,
+        el("span", {"class": "faint"}, duration) if duration else None,
+        el("span", None, _plural(s.prompts, "prompt")) if main else None,
+        el("span", None, _plural(s.subagents, "subagent")) if main and s.subagents else None,
+    )
 
 
-def _resume(s: SessionSummary) -> Html:
-    counts = _plural(s.prompts, "prompt") + (f" and {_plural(s.subagents, 'subagent')}" if s.subagents else "")
-    deleted = "" if s.on_disk else " Claude Code has deleted its copy, and resuming puts it back."
-    return el("p", None, f"{counts}.{deleted} Resume it with ", el("code", None, f"claudinator resume {s.id[:8]}"))
+def _stamp(when: datetime) -> str:
+    return f"{when:%a} {when.day} {when:%b} · {when:%H:%M}"
 
 
-def _subagent(s: SessionSummary, aid: AgentId, agent: Subagent | None) -> Html:
-    kind = f", type {agent.agent_type}," if agent and agent.agent_type else ""
-    said = (f"Subagent {aid[:8]}{kind} in ", el("a", {"href": href_transcript(s.id)}, s.title or s.id[:8]), ".")
-    if agent and agent.tool_use_id:
-        call = el("a", {"href": href_call(s.id, agent.parent, agent.tool_use_id)}, "See the call that started it")
-        said += (" ", call, ".")
-    return el("p", None, *said)
+def _duration(span: timedelta) -> str:
+    hours, minutes = divmod(round(span.total_seconds() / 60), 60)
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h" if days else f"{hours}h {minutes}m" if hours else f"{minutes}m"
+
+
+def _aside(session: Session, aid: AgentId | None, agent: Subagent | None, actions: Html) -> Html:
+    s = session.summary
+    if aid is not None:
+        about = [el("h2", None, "Subagent")]
+        if agent and agent.agent_type:
+            about.append(el("p", {"class": "kind"}, agent.agent_type))
+        about.append(el("p", None, "In ", el("a", {"href": href_transcript(s.id)}, s.title or s.id[:8])))
+        if agent and agent.tool_use_id:
+            about.append(
+                el(
+                    "p",
+                    None,
+                    el("a", {"href": href_call(s.id, agent.parent, agent.tool_use_id)}, "See the call that started it"),
+                )
+            )
+        return el("aside", None, el("section", None, *about, actions))
+    command = el(
+        "p",
+        {"class": "command"},
+        el("span", {"aria-hidden": "true"}, "$"),
+        el("code", None, f"claudinator resume {s.id[:8]}"),
+    )
+    gone = None if s.on_disk else el("p", {"class": "gone"}, "Claude Code deleted its copy. Resuming puts it back.")
+    resume = el("section", None, el("h2", None, "Resume"), command, gone, actions)
+    if not session.agents:
+        return el("aside", None, resume)
+    agents = el(
+        "section",
+        None,
+        el("h2", None, "Subagents ", el("span", {"class": "n"}, f"{len(session.agents):,}")),
+        el("ul", {"class": "agents"}, *(_agent(s.id, a) for a in session.agents)),
+    )
+    return el("aside", None, resume, agents)
 
 
 def _agent(sid: SessionId, a: Subagent) -> Html:
-    link = el("a", {"href": href_transcript(sid, a.id)}, a.description or f"Subagent {a.id[:8]}")
     return el(
-        "li", None, el("span", {"class": "id"}, a.id[:8]), link, el("span", {"class": "type"}, a.agent_type or "")
+        "li",
+        None,
+        el(
+            "a",
+            {"href": href_transcript(sid, a.id)},
+            el("span", {"class": "name"}, a.description or f"Subagent {a.id[:8]}"),
+            el("span", {"class": "id"}, a.id[:8]),
+            el("span", {"class": "type"}, a.agent_type) if a.agent_type else None,
+        ),
+    )
+
+
+def _download(sid: SessionId, aid: AgentId | None) -> Html:
+    return el(
+        "a",
+        {"class": "button", "href": href_export(sid, aid)},
+        "Download transcript",
+        el("span", {"class": "faint"}, ".jsonl ↓"),
+    )
+
+
+def _toggle(href: str, folded: int, hidden: bool) -> Html | None:
+    if not folded:
+        return None
+    state = el(
+        "span", {"class": "switch", "role": "img", "aria-label": "shown" if hidden else "not shown", "data-on": hidden}
+    )
+    return el(
+        "a",
+        {"class": "button", "href": href},
+        el("span", None, "Hidden lines ", el("span", {"class": "n"}, f"{folded:,}")),
+        state,
     )
 
 
@@ -441,8 +658,8 @@ def _local(ms: int | None) -> datetime | None:
     return None if ms is None else datetime.fromtimestamp(ms / 1000)
 
 
-def _short_date(when: datetime) -> str:
-    return f"{when.day} {when:%b %H:%M}"
+def _day(day: date, *, year: bool) -> str:
+    return f"{day:%A} {day.day} {day:%B}" + (f" {day.year}" if year else "")
 
 
 def _minutes(steps: Sequence[Step]) -> Iterator[tuple[datetime | None, list[Step]]]:
@@ -460,16 +677,26 @@ def _minutes(steps: Sequence[Step]) -> Iterator[tuple[datetime | None, list[Step
         yield minute, [step for _, step in run]
 
 
-def _days(dated: Iterable[tuple[datetime | None, Html]]) -> Iterator[Html]:
-    """Each item, after a heading wherever the local day changes. The first
-    heading names the year, and so does one where the year turns."""
+def _dated(
+    sid: SessionId,
+    aid: AgentId | None,
+    steps: Sequence[Step],
+    at: Key | None,
+    terms: tuple[str, ...],
+    numbers: Mapping[Key, int],
+) -> Iterator[Html]:
+    """Each minute's run, after a divider wherever the local day changes.
+    Within a run, consecutive calls, outputs, and thoughts share one box."""
     seen = None
-    for when, item in dated:
-        if when is not None and when.date() != seen:
-            year = f" {when.year}" if seen is None or when.year != seen.year else ""
-            yield el("h2", {"class": "day"}, f"{when:%A} {when.day} {when:%B}{year}")
-            seen = when.date()
-        yield item
+    for minute, run in _minutes(steps):
+        if minute is not None and minute.date() != seen:
+            seen = minute.date()
+            yield el("h2", {"class": "day"}, _day(seen, year=True))
+        parts: list[Html] = []
+        for machine, group in groupby(run, key=lambda step: isinstance(step, Call | Output | Thought)):
+            made = [_step(sid, aid, step, at, terms, numbers) for step in group]
+            parts += [el("div", {"class": "box"}, *made)] if machine else made
+        yield el("div", {"class": "minute"}, el("time", None, f"{minute:%H:%M}") if minute else None, *parts)
 
 
 def _folded(step: Step) -> int:
@@ -490,41 +717,42 @@ STOCK = frozenset({Notice.COMPACTED, Notice.INTERRUPTED})
 """Notices whose short text is Claude Code's wording of what the sentence says."""
 
 
-def _step(sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms: tuple[str, ...]) -> Html:
+def _step(
+    sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms: tuple[str, ...], numbers: Mapping[Key, int]
+) -> Html:
     raw_link = el("a", {"class": "raw", "href": href_raw(sid, aid, step.key.line_off)}, "raw")
     here = step.key == at
     match step:
-        case Said(key, _, kind, text):
-            said = el("div", {"class": "text"}, _text(text, here, terms))
-            return el("div", {"class": f"step {kind.value}", "id": f"m{key}"}, said, raw_link)
+        case Said(key, _, Kind.PROMPT, text):
+            text = text.strip()
+            command = COMMAND.match(text)
+            said = el(
+                "div",
+                {"class": "text"},
+                el("span", {"class": "cmd"}, _text(command[0], here, terms)) if command else None,
+                *_prose(text[command.end() :].lstrip() if command else text, here, terms),
+            )
+            label = el("p", {"class": "label"}, f"Prompt {numbers[key]}")
+            return el("div", {"class": "step prompt", "id": f"m{key}"}, label, said, raw_link)
+        case Said(key, _, _, text):
+            said = el("div", {"class": "text"}, *_prose(text.strip(), here, terms))
+            return el("div", {"class": "step reply", "id": f"m{key}"}, said, raw_link)
         case Call():
-            return _call(sid, aid, step, at, terms, raw_link)
+            return _call(sid, aid, step, at, terms)
         case Output():
-            css = "step output error" if step.error else "step output"
-            body = _output_body(sid, aid, step, at, terms)
-            if not _folds(step):
-                return el("div", {"class": css, "id": f"m{step.key}"}, *body)
-            first = (_plain(step).splitlines() or [""])[0]
-            summary = el(
-                "summary",
-                None,
-                el("span", {"class": "gist"}, human.clip(first, 120)),
-                " ",
-                el("span", {"class": "size"}, _size(step)),
+            first = (_plain(step).strip().splitlines() or [""])[0]
+            body = el("div", {"class": "part"}, *_output_body(sid, aid, step, at, terms))
+            return _row(
+                step.key, "output error" if step.error else "output", "Output", first, _size(step), (body,), here
             )
-            return el("details", {"class": css, "id": f"m{step.key}", "open": here}, summary, *body)
         case Thought(key, _, text):
-            return el(
-                "details",
-                {"class": "step thought", "id": f"m{key}", "open": here},
-                el("summary", None, f"Thinking, {_count(text)}"),
-                el("div", {"class": "text"}, _text(text, here, terms)),
-                raw_link,
-            )
+            first = (text.strip().splitlines() or [""])[0]
+            body = el("div", {"class": "part"}, el("div", {"class": "text"}, *_prose(text, here, terms)), raw_link)
+            return _row(key, "thought", "Thinking", first, el("span", {"class": "size"}, _lines(text)), (body,), here)
         case Image(key, _, shown):
             return el("div", {"class": "step image", "id": f"m{key}"}, _img(sid, aid, key, shown), raw_link)
         case Marker(key, Note(notice, text)):
-            css = f"step notice {notice.name.lower()}"
+            css = f"step note {notice.name.lower()}"
             gist = task_summary(text)
             quoted = notice not in STOCK and text.strip()
             if _long(text) or gist is not None:
@@ -545,46 +773,50 @@ def _step(sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms
             counts = ", ".join(f"{n} {name}" for name, n in Counter(name for _, name in lines).most_common())
             return el(
                 "details",
-                {"class": "step hidden", "id": f"m{key}"},
-                el("summary", None, f"{_plural(len(lines), 'hidden line')}: {counts}"),
+                {"class": "step note hidden", "id": f"m{key}"},
+                el(
+                    "summary",
+                    None,
+                    f"{_plural(len(lines), 'hidden line')}: {counts}",
+                    el("span", {"class": "badge"}, "hidden"),
+                ),
                 el("ul", None, *(el("li", None, el("a", {"href": href_raw(sid, aid, o)}, name)) for o, name in lines)),
             )
 
 
-def _call(
-    sid: SessionId, aid: AgentId | None, call: Call, at: Key | None, terms: tuple[str, ...], raw_link: Html
+def _row(
+    key: Key, css: str, name: str, gist: str, end: Html | None, panel: Sequence[Html | None], opened: bool, *after: Html
 ) -> Html:
-    """One row: the tool, its input's gist, and its output's size. A short
-    output shows below the row, and opening the row shows the input and any other."""
+    """One row of a box: a chevron, a name, a gist, and at its end a size, an
+    error, or a link to the subagent; opening it shows the panel."""
+    summary = el("summary", None, el("b", None, name), " ", el("span", {"class": "gist"}, human.clip(gist, 160)), end)
+    details = el("details", {"open": opened}, summary, el("div", {"class": "panel"}, *panel))
+    return el("div", {"class": f"step {css}", "id": f"m{key}"}, details, *after)
+
+
+def _call(sid: SessionId, aid: AgentId | None, call: Call, at: Key | None, terms: tuple[str, ...]) -> Html:
     out = call.result
-    below = out is not None and not _folds(out) and bool(_plain(out).strip())
-    output = None
+    given = json.dumps(json.loads(call.input), indent=2, ensure_ascii=False)
+    raw_link = el("a", {"class": "raw", "href": href_raw(sid, aid, call.key.line_off)}, "raw")
+    panel = [el("div", {"class": "part"}, el("pre", {"class": "input"}, _text(given, call.key == at, terms)), raw_link)]
     if out is not None:
-        css = "output error" if out.error else "output"
-        output = el("div", {"class": css, "id": f"m{out.key}"}, *_output_body(sid, aid, out, at, terms))
-    size = () if call.spawned else (" ", el("span", {"class": "size"}, _size(out)))
-    summary = el(
-        "summary", None, el("b", None, call.tool), " ", el("span", {"class": "gist"}, _gist(call.input)), *size
-    )
-    given = el(
-        "pre", None, _text(json.dumps(json.loads(call.input), indent=2, ensure_ascii=False), call.key == at, terms)
-    )
-    opened = call.key == at or (out is not None and not below and out.key == at)
-    details = el("details", {"open": opened}, summary, given, None if below else output)
-    spawned = (
-        el("a", {"class": "spawned", "href": href_transcript(sid, call.spawned.id)}, f"subagent {call.spawned.id[:8]}")
-        if call.spawned
-        else None
-    )
-    css = "step call error" if out is not None and out.error else "step call"
-    return el("div", {"class": css, "id": f"m{call.key}"}, details, spawned, output if below else None, raw_link)
+        css = "part output error" if out.error else "part output"
+        panel.append(el("div", {"class": css, "id": f"m{out.key}"}, *_output_body(sid, aid, out, at, terms)))
+    opened = at is not None and at in (call.key, out and out.key)
+    if call.spawned:
+        spawned = el(
+            "a", {"class": "spawned", "href": href_transcript(sid, call.spawned.id)}, f"↳ {call.spawned.id[:8]}"
+        )
+        return _row(call.key, "call spawns", call.tool, _gist(call.input), None, panel, opened, spawned)
+    css = "call error" if out is not None and out.error else "call"
+    return _row(call.key, css, call.tool, _gist(call.input), _size(out), panel, opened)
 
 
 def _gist(given: str) -> str:
     value = json.loads(given)
     fields = value.values() if isinstance(value, dict) else ()
     first = next((v for v in fields if isinstance(v, str) and v.strip()), None)
-    return human.clip(" ".join(first.split()) if first else given, 160)
+    return " ".join(first.split()) if first else given
 
 
 def _streams(out: Output) -> tuple[tuple[str, bool], ...]:
@@ -596,17 +828,13 @@ def _plain(out: Output) -> str:
     return "\n".join(text for text, _ in _streams(out))
 
 
-def _folds(out: Output) -> bool:
-    return bool(out.pictures) or _long(_plain(out))
-
-
-def _size(out: Output | None) -> str:
+def _size(out: Output | None) -> Html:
     if out is not None and out.error:
-        return "error"
+        return el("span", {"class": "size error"}, "error")
     shown = "" if out is None else _plain(out)
-    lines = [_count(shown)] if shown.strip() else []
+    lines = [_lines(shown)] if shown.strip() else []
     images = [_plural(len(out.pictures), "image")] if out is not None and out.pictures else []
-    return " and ".join(lines + images) or "no output"
+    return el("span", {"class": "size"}, " and ".join(lines + images) or "no output")
 
 
 def _output_body(
@@ -630,9 +858,21 @@ def _img(sid: SessionId, aid: AgentId | None, key: Key, shown: Picture) -> Html:
     return el("img", {"loading": "lazy", "alt": about, "src": href_image(sid, aid, key, shown.part)})
 
 
+def _prose(s: str, here: bool, terms: tuple[str, ...]) -> tuple[Html, ...]:
+    return (_text(s, here, terms),)
+
+
 def _text(s: str, here: bool, terms: tuple[str, ...]) -> Html:
+    return _mark(_cut(s), here, terms)
+
+
+def _cut(s: str) -> str:
     if len(s) > INLINE_CHARS:
-        s = s[:INLINE_CHARS] + f"\n… cut at {human.size(INLINE_CHARS)}; the raw line has all of it"
+        return s[:INLINE_CHARS] + f"\n… cut at {human.size(INLINE_CHARS)}; the raw line has all of it"
+    return s
+
+
+def _mark(s: str, here: bool, terms: tuple[str, ...]) -> Html:
     return marked(s, marks(s, terms)) if here and terms else text(s)
 
 
@@ -640,34 +880,44 @@ def _long(s: str) -> bool:
     return len(s) > FOLD_CHARS or s.count("\n") >= FOLD_LINES
 
 
-def _count(s: str) -> str:
+def _lines(s: str) -> str:
     return _plural(len(s.splitlines()) or 1, "line")
 
 
 def _plural(n: int, noun: str) -> str:
-    return f"{n} {noun}{'' if n == 1 else 's'}"
+    return f"{n:,} {_noun(n, noun)}"
 
 
-def _top(form: Form) -> Html:
+def _noun(n: int, noun: str) -> str:
+    return noun if n == 1 else noun + "s"
+
+
+def _top(q: str) -> Html:
+    glass = el(
+        "svg",
+        {"class": "glass", "viewBox": "0 0 16 16", "aria-hidden": "true"},
+        el("circle", {"cx": "7", "cy": "7", "r": "5"}),
+        el("path", {"d": "M11 11l3.5 3.5"}),
+    )
+    field = el(
+        "input",
+        {
+            "type": "search",
+            "name": "q",
+            "value": q,
+            "aria-label": "Search",
+            "placeholder": 'Search sessions, words, "a phrase", deploy*',
+        },
+    )
+    find = el(
+        "form",
+        {"id": "find", "class": "find", "method": "get", "action": "./", "role": "search"},
+        glass,
+        field,
+        el("button", None, "Search"),
+    )
     return el(
-        "header",
-        {"class": "top"},
-        el("h1", None, el("a", {"href": "./"}, "claudinator")),
-        el(
-            "form",
-            {"method": "get", "action": "./", "class": "find"},
-            el("input", {"type": "search", "name": "q", "value": form.q, "placeholder": 'words, "a phrase", deploy*'}),
-            el("input", {"name": "project", "value": form.project, "placeholder": "project"}),
-            el("input", {"name": "since", "value": form.since, "placeholder": "since: 2026-10-01, 7d"}),
-            el("input", {"name": "until", "value": form.until, "placeholder": "until"}),
-            el(
-                "label",
-                None,
-                el("input", {"type": "checkbox", "name": "tools", "checked": form.tools}),
-                " include tools",
-            ),
-            el("button", None, "Search"),
-        ),
+        "header", {"class": "top"}, el("div", None, el("a", {"class": "wordmark", "href": "./"}, "claudinator"), find)
     )
 
 
@@ -678,53 +928,6 @@ def _banner(swept: SweepReport | None, error: str) -> Html | None:
     if swept is not None and swept.busy:
         notes.append("Another sweep is writing; this shows what is already archived.")
     return el("p", {"class": "banner"}, " ".join(notes)) if notes else None
-
-
-def _session_row(s: SessionSummary) -> Html:
-    when, where = _local(s.last_ts), human.short(s.cwd)
-    title = el("a", {"href": href_transcript(s.id)}, human.clip(s.title or s.id[:8], 120))
-    if s.cwd:
-        project = el("a", {"class": "project", "href": "./?" + urlencode({"project": s.cwd}), "title": where}, where)
-    else:
-        project = el("span", {"class": "project"}, where)
-    return el(
-        "li",
-        None,
-        el("time", None, f"{when:%H:%M}" if when else ""),
-        el("span", {"class": "title"}, title, None if s.on_disk else el("span", {"class": "gone"}, " gone")),
-        project,
-        el("span", {"class": "count"}, _plural(s.prompts, "prompt")),
-        el("span", {"class": "count"}, _plural(s.subagents, "subagent") if s.subagents else ""),
-    )
-
-
-KINDS = {
-    Kind.PROMPT: "a prompt",
-    Kind.REPLY: "a reply",
-    Kind.TOOL_CALL: "a tool call",
-    Kind.TOOL_OUTPUT: "a tool's output",
-    Kind.TITLE: "the title",
-}
-
-
-def _hit(hit: SessionHit, q: str) -> Html:
-    s, best = hit.session, hit.best
-    at = None if best.kind is Kind.TITLE else Key(best.line_off, best.block)
-    when = _local(s.last_ts)
-    found = KINDS[best.kind] + (f" in subagent {best.agent_id[:8]}" if best.agent_id else "")
-    count = f"{_plural(hit.hits, 'hit')}, best in {found}" if hit.hits > 1 else f"1 hit, in {found}"
-    about = (f"{when:%H:%M} on {when.day} {when:%b %Y} " if when else "") + f"in {human.short(s.cwd)}, {count}"
-    return el(
-        "li",
-        None,
-        el("a", {"href": href_transcript(s.id)}, s.title or s.id[:8]),
-        el("p", None, about),
-        el(
-            "a",
-            {"class": "excerpt", "href": href_transcript(s.id, best.agent_id, at, q)},
-            marked(best.text, best.marks),
-        ),
-    )
 
 
 class Html(str):
@@ -774,6 +977,7 @@ def page(root: str | None, title: str, *body: Html | None) -> Html:
         None,
         el("meta", {"charset": "utf-8"}),
         el("meta", {"name": "viewport", "content": "width=device-width, initial-scale=1"}),
+        el("meta", {"name": "color-scheme", "content": "light dark"}),
         el("base", {"href": root}) if root else None,
         el("link", {"rel": "stylesheet", "href": "web.css"}) if root else None,
         el("title", None, human.printable(title)),
