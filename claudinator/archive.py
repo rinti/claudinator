@@ -495,7 +495,7 @@ class Archive:
         cursor = self._db.cursor()
         cursor.row_factory = sqlite3.Row
         hits = []
-        with self._read():
+        with self._snapshot():
             rows = cursor.execute(
                 _SEARCH_SQL,
                 {
@@ -518,13 +518,13 @@ class Archive:
     def sessions(self, filters: Filters = Filters(), limit: int | None = 30) -> list[SessionSummary]:
         """Sessions newest-activity first. since/until select sessions whose
         [first_ts, last_ts] overlaps the window."""
-        with self._read():
+        with self._snapshot():
             return [self._summary(row) for row in self._session_rows(filters, limit)]
 
     def session(self, ref: str) -> Session:
         """Resolve a unique session-id prefix and return the session with its
         subagents. Raises UnknownSession or AmbiguousSession."""
-        with self._read():
+        with self._snapshot():
             rows = self._session_rows(Filters(), None, prefix=ref)
             if not rows:
                 raise UnknownSession(f"no archived session starts with {ref}")
@@ -547,7 +547,7 @@ class Archive:
         file still exists on disk. The transcript, its subagent links, and
         its segments are fixed in one snapshot when this is called, and the
         messages are read as the caller iterates."""
-        with self._read():
+        with self._snapshot():
             source_id = self._source(session_id, agent_id)
             spawned = {}
             for aid, body in self._docs(session_id, DocRole.SUBAGENT_META):
@@ -571,7 +571,7 @@ class Archive:
         """Write the archived bytes of a transcript, byte for byte as Claude
         Code wrote them: the latest generation, or the one named. Returns
         bytes written."""
-        with self._read():
+        with self._snapshot():
             segments = self._segments(self._source(session_id, agent_id, generation))
         written = 0
         for _, chunk in segments:
@@ -580,7 +580,7 @@ class Archive:
         return written
 
     def status(self) -> Status:
-        with self._read():
+        with self._snapshot():
             uncompressed, compressed = self._db.execute(
                 "SELECT COALESCE(SUM(byte_end - byte_start), 0), COALESCE(SUM(length(zstd)), 0) FROM segment"
             ).fetchone()
@@ -621,7 +621,7 @@ class Archive:
             )
 
     @contextmanager
-    def _read(self) -> Iterator[None]:
+    def _snapshot(self) -> Iterator[None]:
         self._db.execute("BEGIN")
         try:
             yield
