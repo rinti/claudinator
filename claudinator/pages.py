@@ -21,6 +21,7 @@ from claudinator.search_text import marks, searchable
 SEARCH_LIMIT = 50
 FOLD_LINES, FOLD_CHARS = 3, 300
 INLINE_CHARS = 1 << 20
+BOXED = Call | Output | Thought
 
 
 def href_transcript(
@@ -312,7 +313,8 @@ def transcript_page(
     s = session.summary
     results = _back(href_list(search), f"Results for “{search.q}”") if search.q else None
     toggle = _toggle(href_transcript(s.id, aid, at, search, not hidden), sum(map(_folded, steps)), hidden)
-    actions = el("div", {"class": "actions"}, _download(s.id, aid), toggle)
+    switch = _switch(sum(isinstance(step, BOXED) for step in steps))
+    actions = el("div", {"class": "actions"}, _download(s.id, aid), toggle, switch)
     if aid is None:
         heading, back = _name(s), results or _back("./", "All sessions")
         span, counts = (s.first_ts, s.last_ts), (s.prompts, s.subagents)
@@ -449,6 +451,17 @@ def _toggle(href: str, folded: int, hidden: bool) -> Html | None:
     )
 
 
+def _switch(rows: int) -> Html | None:
+    if not rows:
+        return None
+    return el(
+        "label",
+        {"class": "button"},
+        el("span", None, "Tool calls and thinking ", el("span", {"class": "n"}, f"{rows:,}")),
+        el("input", {"class": "switch calls", "type": "checkbox", "checked": True}),
+    )
+
+
 def _local(ms: int | None) -> datetime | None:
     return None if ms is None else datetime.fromtimestamp(ms / 1000)
 
@@ -479,7 +492,7 @@ def _dated(view: _View, steps: Sequence[Step]) -> Iterator[Html]:
             seen = minute.date()
             yield el("h2", {"class": "date"}, _day(seen, year=True))
         parts: list[Html] = []
-        for machine, group in groupby(run, key=lambda step: isinstance(step, Call | Output | Thought)):
+        for machine, group in groupby(run, key=lambda step: isinstance(step, BOXED)):
             made = [_step(view, step) for step in group]
             parts += [el("div", {"class": "box"}, *made)] if machine else made
         yield el("div", {"class": "minute"}, el("time", None, f"{minute:%H:%M}") if minute else None, *parts)

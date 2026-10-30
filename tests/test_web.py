@@ -648,6 +648,23 @@ def test_hidden_lines_stay_out_of_the_way_until_asked_for_and_notices_always_sho
     assert "Hidden lines" not in page(served, f"/s/{SID2}")
 
 
+def test_the_tool_switch_counts_each_boxed_row_once_and_shows_only_when_there_is_one(served):
+    lines = (
+        user("go"),
+        tool_call("Bash", {"command": "ls"}, tool_use_id="toolu_1"),
+        tool_result("a", tool_use_id="toolu_1"),
+        assistant({"type": "thinking", "thinking": "look closer"}),
+        user("<bash-stdout>printed</bash-stdout>"),
+        tool_call("Read", {"file_path": "a"}, tool_use_id="toolu_2"),
+        reply("done"),
+    )
+    append(transcript(), *lines)
+    switch = '<label class="button"><span>Tool calls and thinking <span class="n">4</span></span><input class="switch calls" type="checkbox" checked></label>'
+    assert switch in page(served, f"/s/{SID}")
+    append(transcript(SID2), user("hello"), reply("hi"))
+    assert "switch calls" not in page(served, f"/s/{SID2}")
+
+
 def test_only_a_subagent_page_marks_its_main_as_a_subagent(served):
     append(transcript(), user("delegate"))
     append(transcript(agent=AID), user("find the cursor"))
@@ -848,16 +865,36 @@ def test_a_long_subagent_list_can_be_scrolled_to_its_end_while_the_aside_sticks(
     assert 0 < top and last <= height, (top, last, height)
 
 
-ICONS = """<script>
-const icons = [...document.querySelectorAll(".prompt, .reply")].map(step => getComputedStyle(step, "::after").content);
-document.body.dataset.at = JSON.stringify(icons);
+FLIP = """<script>
+const seen = () => Object.fromEntries([".prompt", ".reply", ".box", ".minute"].map(css => [css, [...document.querySelectorAll(css)].map(found => found.checkVisibility())]));
+addEventListener("load", () => {
+  const before = seen();
+  document.querySelector(".switch.calls")?.click();
+  const icons = [...document.querySelectorAll(".prompt, .reply")].map(step => getComputedStyle(step, "::after").content);
+  document.body.dataset.at = JSON.stringify({before, after: seen(), icons});
+});
 </script>"""
 
 
 @pytest.mark.skipif(not CHROME.exists(), reason="needs Google Chrome in /Applications")
-def test_a_keyboard_marks_what_the_user_typed_and_a_robot_what_an_agent_wrote(served, tmp_path):
-    append(transcript(), user("delegate"), reply("on it"))
+def test_icons_say_who_wrote_each_message_and_the_switch_hides_tool_rows_but_not_a_landed_hit(served, tmp_path):
+    lines = (
+        user("delegate", ts="2026-10-01T10:00:00Z"),
+        tool_call("Bash", {"command": "ls"}, tool_use_id="toolu_1", ts="2026-10-01T10:00:10Z"),
+        tool_result("a", tool_use_id="toolu_1", ts="2026-10-01T10:00:11Z"),
+        assistant({"type": "thinking", "thinking": "look closer"}, ts="2026-10-01T10:01:00Z"),
+        tool_call("Read", {"file_path": "a"}, tool_use_id="toolu_2", ts="2026-10-01T10:01:10Z"),
+        tool_call("Grep", {"pattern": "b"}, tool_use_id="toolu_3", ts="2026-10-01T10:01:20Z"),
+        reply("on it", ts="2026-10-01T10:02:00Z"),
+    )
+    append(transcript(), *lines)
     append(transcript(agent=AID), user("find the cursor"), reply("found it"))
     keyboard, robot = '"\u2328\ufe0f" / ""', '"\U0001f916" / ""'
-    assert json.loads(measured(served, tmp_path, f"/s/{SID}", ICONS)) == [keyboard, robot]
-    assert json.loads(measured(served, tmp_path, f"/s/{SID}/{AID}", ICONS)) == [robot, robot]
+    shown = json.loads(measured(served, tmp_path, f"/s/{SID}", FLIP))
+    assert shown["icons"] == [keyboard, robot]
+    assert shown["before"] == {".prompt": [True], ".reply": [True], ".box": [True, True], ".minute": [True, True, True]}
+    assert shown["after"] == {".prompt": [True], ".reply": [True], ".box": [False, False], ".minute": [True, False, True]}
+    at = f"{offsets(*lines)[4]}.0"
+    landed = json.loads(measured(served, tmp_path, f"/s/{SID}?at={at}", FLIP, f"#m{at}"))
+    assert landed["after"] == {".prompt": [True], ".reply": [True], ".box": [False, True], ".minute": [True, True, True]}
+    assert json.loads(measured(served, tmp_path, f"/s/{SID}/{AID}", FLIP))["icons"] == [robot, robot]
