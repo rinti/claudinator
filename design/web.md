@@ -111,6 +111,7 @@ Rejected: fable's move of the write path to `sweep.py` (tests patch `archive.pro
 - **Every response goes through one sender.** `http.server` answers unsupported methods and malformed requests through `send_error`, which `web.py` routes to the same headers as a page.
 - **`web.css` ships.** A wheel built from this branch with `uv build` holds `claudinator/web.css` beside `schema.sql`.
 - **Hidden runs start hidden.** In a 25-prompt session 138 of 312 steps were hidden-run markers, one between almost every call. A transcript leaves them out unless its URL has `hidden=1`, and its header counts the hidden lines with a link that toggles them and keeps `at`, `q`, and the fragment. So a hidden line is two clicks from the page. Notices always show.
+- **A command's output shows without Claude Code's wrappers.** `record.printed()` splits the indexed text of a `!` command or a slash command into its stdout and stderr, and `record.task_summary()` reads a task notification's `<summary>` for its collapsed line. Both are display functions, so the index and `text_of` keep the wrapped text and the golden digest is unchanged. A page marks words in what it shows, so a hit still marks the matched words.
 - **A raw link can miss one rare line.** When a restarted writer appends a whole record onto a torn tail that settled, `records()` yields that record at the start of its segment, but `line()` finds the torn line starting earlier and answers 404. The `.jsonl` download still holds it.
 
 ## Open questions and risks

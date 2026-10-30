@@ -37,7 +37,7 @@ from claudinator.archive import (
 )
 from claudinator.conversation import Call, Hidden, Image, Key, Marker, Output, Said, Step, Thought, build
 from claudinator.layout import AGENT_ID, Config
-from claudinator.record import AgentId, Kind, Millis, Note, Picture, SessionId, image
+from claudinator.record import AgentId, Kind, Millis, Note, Picture, SessionId, image, printed, task_summary
 from claudinator.search_text import marks, searchable
 
 PAGE_POLICY = (
@@ -482,10 +482,11 @@ def _step(sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms
         case Marker(key, Note(notice, text)):
             label = el("span", {"class": "label"}, notice.value)
             css = f"step marker {notice.name.lower()}"
-            if not _long(text):
+            gist = task_summary(text)
+            if not _long(text) and gist is None:
                 shown = el("span", {"class": "text"}, text)
                 return el("div", {"class": css, "id": f"m{key}"}, label, " ", shown, raw_link)
-            first = (text.strip().splitlines() or [""])[0]
+            first = gist or (text.strip().splitlines() or [""])[0]
             return el(
                 "details",
                 {"class": css, "id": f"m{key}", "open": here},
@@ -517,17 +518,27 @@ def _output(
 ) -> Html:
     here = out.key == at
     css += "output error" if out.error else "output"
+    streams = printed(out.text)
+    if streams is None:
+        streams = ((out.text, False),)
     body = (
-        el("pre", None, _text(out.text, here, terms)),
+        *(_stream(text, stderr, here, terms) for text, stderr in streams),
         *(_img(sid, aid, out.key, p) for p in out.pictures),
         el("a", {"class": "raw", "href": href_raw(sid, aid, out.key.line_off)}, "raw"),
     )
-    if not _long(out.text) and not out.pictures:
+    shown = "\n".join(text for text, _ in streams)
+    if not _long(shown) and not out.pictures:
         label = el("span", {"class": "label"}, "error") if out.error else None
         return el("div", {"class": css, "id": f"m{out.key}"}, label, *body)
-    first = (out.text.splitlines() or [""])[0]
-    summary = human.clip(first, 120) + f" · {_count(out.text)}" + (" · error" if out.error else "")
+    first = (shown.splitlines() or [""])[0]
+    flags = (" · error" if out.error else "") + (" · stderr" if any(stderr for _, stderr in streams) else "")
+    summary = human.clip(first, 120) + f" · {_count(shown)}" + flags
     return el("details", {"class": css, "id": f"m{out.key}", "open": here}, el("summary", None, summary), *body)
+
+
+def _stream(text: str, stderr: bool, here: bool, terms: tuple[str, ...]) -> Html:
+    shown = el("pre", None, _text(text, here, terms))
+    return el("div", {"class": "stderr"}, el("span", {"class": "label"}, "stderr"), shown) if stderr else shown
 
 
 def _img(sid: SessionId, aid: AgentId | None, key: Key, shown: Picture) -> Html:

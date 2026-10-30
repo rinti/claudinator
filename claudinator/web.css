@@ -15,7 +15,7 @@ pre { font: 13px/1.4 ui-monospace, monospace; margin: 0.25rem 0; }
 .said.you { background: var(--you); padding: 0.4rem 0.6rem; border-radius: 6px; }
 .call { border-left: 3px solid var(--line); padding-left: 0.6rem; }
 .call .output { margin-left: 0.5rem; }
-.output.error, .output.error summary { color: var(--error); }
+.output.error, .output.error summary, .stderr { color: var(--error); }
 .label { font-size: 0.75rem; text-transform: uppercase; color: var(--muted); }
 .marker { color: var(--muted); font-style: italic; }
 .thought summary, .hidden summary { color: var(--muted); }

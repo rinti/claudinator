@@ -21,8 +21,10 @@ from claudinator.record import (
     desktop_session,
     image,
     parse,
+    printed,
     project,
     subagent_meta,
+    task_summary,
     text_of,
     tool_input,
 )
@@ -418,6 +420,32 @@ def test_thinking_and_pictures_are_shown_but_never_indexed():
 def test_a_tool_call_gives_back_its_input_as_json():
     (_, call), = parse(lines.BASH_CALL.encode()).blocks
     assert tool_input(call) == '{"command":"cat tools/forks.json","description":"Read forks.json"}'
+
+
+def test_printed_gives_what_a_command_wrote_without_its_wrapper_tags():
+    assert printed(text_of(parse(lines.BASH_STDOUT.encode()), 0)) == (("(Bash completed with no output)", False),)
+    assert printed(text_of(parse(lines.LOCAL_COMMAND_STDOUT.encode()), 0)) == (("(no content)", False),)
+    assert printed("\n<bash-stdout>Resolved\n1 package</bash-stdout><bash-stderr>warn: old</bash-stderr>") == (
+        ("Resolved\n1 package", False),
+        ("warn: old", True),
+    )
+    assert printed("<local-command-stderr>no such command</local-command-stderr>") == (("no such command", True),)
+    assert printed("<bash-stdout> </bash-stdout><bash-stderr></bash-stderr>") == ()
+
+
+def test_printed_leaves_text_that_is_more_than_the_wrappers():
+    assert printed("log: <bash-stdout>x</bash-stdout>") is None
+    assert printed("<bash-stdout>x</bash-stdout> and after") is None
+    assert printed("<bash-stdout>x</bash-stderr>") is None
+    assert printed("plain output") is None
+    assert printed("") is None
+
+
+def test_task_summary_reads_a_background_tasks_notification():
+    note = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Build finished</summary>\n</task-notification>"
+    assert task_summary(note) == "Build finished"
+    assert task_summary("<task-notification>\n<task-id>b1</task-id>\n</task-notification>") is None
+    assert task_summary("<summary>not a task's</summary>") is None
 
 
 PNG = b"\x89PNG\r\n\x1a\n zebracorn"

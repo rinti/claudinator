@@ -175,6 +175,31 @@ def test_a_call_sums_up_its_input_by_its_first_string_field(served):
     assert '<pre>{\n  &quot;command&quot;: &quot;ls -la\\n   /tmp&quot;,\n  &quot;description&quot;: &quot;List tmp&quot;\n}</pre>' in page(served, f"/s/{SID}")
 
 
+def test_a_commands_output_shows_without_its_wrapper_tags_and_marks_land_on_the_words(served):
+    lines = (
+        user("<bash-input>uv sync</bash-input>"),
+        user("<bash-stdout>Resolved 1 quokka</bash-stdout><bash-stderr>warning: a wombat</bash-stderr>"),
+    )
+    append(transcript(), *lines)
+    at = offsets(*lines)[1]
+    assert f'href="/s/{SID}?at={at}.0&amp;q=quokka+wombat#m{at}.0"' in page(served, "/?q=quokka+wombat&tools=on")
+    shown = page(served, f"/s/{SID}")
+    assert (
+        f'<div class="step output" id="m{at}.0"><pre>Resolved 1 quokka</pre>'
+        '<div class="stderr"><span class="label">stderr</span><pre>warning: a wombat</pre></div>'
+    ) in shown
+    assert "bash-std" not in shown
+    landed = page(served, f"/s/{SID}?at={at}.0&q=quokka+wombat")
+    assert "<pre>Resolved 1 <mark>quokka</mark></pre>" in landed
+    assert "<pre>warning: a <mark>wombat</mark></pre>" in landed
+
+
+def test_a_task_notification_is_summed_up_by_its_summary(served):
+    note = "<task-notification><task-id>b1</task-id><summary>Build finished</summary></task-notification>"
+    append(transcript(), user("go"), user(note, origin={"kind": "task-notification"}))
+    assert '<summary><span class="label">notification</span> Build finished</summary>' in page(served, f"/s/{SID}")
+
+
 def test_an_agent_call_links_its_subagent_and_the_subagent_links_back(served):
     nested = "b0b0b0b0b0b0b0b0b"
     main = (user("delegate"), tool_call("Agent", {"description": "Find the cursor"}, tool_use_id="toolu_77"))

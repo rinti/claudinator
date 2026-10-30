@@ -215,6 +215,21 @@ def tool_input(block: Block) -> str:
     return block.text[len(block.tool) + 1 :]
 
 
+def printed(text: str) -> tuple[tuple[str, bool], ...] | None:
+    """What a `!` command or a slash command printed, as (text, is stderr)
+    for each non-blank stream, without Claude Code's wrapper tags. None when
+    text holds anything besides those wrappers."""
+    if not _STREAM.match(text) or _STREAM.sub("", text).strip():
+        return None
+    return tuple((out, stream == "err") for _, stream, out in _STREAM.findall(text) if out.strip())
+
+
+def task_summary(text: str) -> str | None:
+    """The <summary> of a background task's notification."""
+    m = _TASK_SUMMARY.search(text)
+    return m[1] if m else None
+
+
 def image(line: bytes, block: int, part: int | None) -> tuple[str, bytes] | None:
     """The declared media type and decoded bytes of the Picture at (block,
     part) of a raw line, or None when there is none or it is not base64."""
@@ -310,6 +325,8 @@ _SHELL_INPUT = re.compile(r"\s*<bash-input>(.*?)</bash-input>", re.S)
 _COMMAND = re.compile(r"\s*<command-(?:name|message)>")
 _COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 _COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
+_STREAM = re.compile(r"\s*<(bash|local-command)-std(out|err)>(.*?)</\1-std\2>", re.S)
+_TASK_SUMMARY = re.compile(r"<task-notification>.*?<summary>(.*?)</summary>", re.S)
 
 
 def _typed(block: Block) -> Block | None:
