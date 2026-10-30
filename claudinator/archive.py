@@ -261,10 +261,11 @@ def plan(head: bytes, tail_sha256: bytes, cursor: int, size: int, settled: bool,
     return Plan.UNCHANGED if size == cursor else Plan.APPEND
 
 
-def _look(fd: int, a: _Archived, size: int, settled: bool) -> tuple[Plan, bytes]:
-    n = min(TAIL_BYTES, a.cursor)
-    window = pread(fd, n, a.cursor - n) if size >= a.cursor else b""
-    return plan(a.head, a.tail_sha256, a.cursor, size, settled, pread(fd, len(a.head), 0), window), window
+def _look(fd: int, archived: _Archived, size: int, settled: bool) -> tuple[Plan, bytes]:
+    n = min(TAIL_BYTES, archived.cursor)
+    window = pread(fd, n, archived.cursor - n) if size >= archived.cursor else b""
+    file_head = pread(fd, len(archived.head), 0)
+    return plan(archived.head, archived.tail_sha256, archived.cursor, size, settled, file_head, window), window
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,20 +278,20 @@ class _Next:
     more: bool
 
 
-def _next(path: Path, a: _Archived | None) -> _Next | None:
+def _next(path: Path, archived: _Archived | None) -> _Next | None:
     fd = os.open(path, os.O_RDONLY)
     try:
         st = os.fstat(fd)
         settled = _settled(st)
         generation, cursor, window = 0, 0, b""
-        if a is not None:
-            match _look(fd, a, st.st_size, settled):
+        if archived is not None:
+            match _look(fd, archived, st.st_size, settled):
                 case (Plan.UNCHANGED | Plan.COPY_IN_PROGRESS, _):
                     return None
                 case (Plan.APPEND, window):
-                    generation, cursor = a.generation, a.cursor
+                    generation, cursor = archived.generation, archived.cursor
                 case (Plan.NEW_GENERATION, _):
-                    generation = a.generation + 1
+                    generation = archived.generation + 1
         chunk, more = next_segment(fd, cursor, st.st_size, settled)
     finally:
         os.close(fd)
@@ -638,8 +639,8 @@ class Archive:
         return done
 
     def _ingest_segment(self, f: TranscriptFile) -> tuple[_Delta, bool]:
-        a = self._archived(f.path).get(f.path)
-        if (n := _next(f.path, a)) is None:
+        archived = self._archived(f.path).get(f.path)
+        if (n := _next(f.path, archived)) is None:
             return _Delta(), False
         archived_at = now()
         if n.cursor == 0:
@@ -649,7 +650,7 @@ class Archive:
                 (str(f.path), n.generation, f.session_id, f.agent_id, n.chunk[:1024], archived_at),
             ).fetchone()
         else:
-            source_id = a.source_id
+            source_id = archived.source_id
         before = self._line(source_id, n.cursor - 1) if n.window and not n.window.endswith(b"\n") else ()
         tail_sha256 = hashlib.sha256((n.window + n.chunk[-TAIL_BYTES:])[-TAIL_BYTES:]).digest()
         self._db.execute(
