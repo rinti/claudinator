@@ -123,7 +123,7 @@ details[open] > summary::before { content: "▾"; }
   summary:hover, summary:hover b { color: var(--ink); }
 }
 
-:target { background: color-mix(in oklch, var(--highlight) 30%, transparent); }
+:target::after { content: ""; position: absolute; inset-block: 0; inset-inline-start: -3px; inline-size: 5px; background: var(--highlight); }
 
 .top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.75rem 2.5rem; max-inline-size: var(--wide); margin-block-end: 1.25rem; }
 .top h1 a { color: var(--ink); }
