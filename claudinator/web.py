@@ -123,7 +123,7 @@ class _Handler(BaseHTTPRequestHandler):
                     return _message(404, str(e), root)
                 except (ArchiveError, sqlite3.Error, OSError) as e:
                     return _message(500, str(e), root)
-        return _message(404, "Nothing is here.", root)
+        return _message(404, "Nothing is at this address.", root)
 
     def _send(self, response: Response) -> None:
         try:
@@ -146,7 +146,10 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def _message(status: int, text: str, root: str | None = None) -> Response:
-    return Response(status, HTML, _document(page(root, HTTPStatus(status).phrase, el("p", {"class": "banner"}, text))))
+    back = el("p", None, el("a", {"href": "./"}, "All sessions")) if root else None
+    return Response(
+        status, HTML, _document(page(root, HTTPStatus(status).phrase, el("p", {"class": "banner"}, text), back))
+    )
 
 
 @contextmanager
@@ -313,19 +316,25 @@ def sessions_page(
         "claudinator",
         _top(form),
         _banner(swept, error),
-        None if error else el("p", {"class": "muted"}, _plural(len(rows), "session")),
-        el("table", {"class": "sessions"}, *(_session_row(s) for s in rows)),
+        None if error else el("p", {"class": "count"}, _plural(len(rows), "session")),
+        *_days(_session_days(rows)),
     )
+
+
+def _session_days(rows: Sequence[SessionSummary]) -> Iterator[tuple[datetime | None, Html]]:
+    for _, run in groupby(rows, key=lambda s: None if s.last_ts is None else _local(s.last_ts).date()):
+        day = list(run)
+        yield _local(day[0].last_ts), el("ol", {"class": "sessions"}, *map(_session_row, day))
 
 
 def search_page(root: str, hits: Sequence[SessionHit], form: Form, swept: SweepReport | None) -> Html:
     found = _plural(len(hits), "session") + (" or more" if len(hits) == SEARCH_LIMIT else "")
     return page(
         root,
-        f"{form.q} · claudinator",
+        f"{form.q} in claudinator",
         _top(form),
         _banner(swept, ""),
-        el("p", {"class": "muted"}, found),
+        el("p", {"class": "count"}, found),
         el("ol", {"class": "hits"}, *(_hit(hit, form.q) for hit in hits)),
     )
 
@@ -634,7 +643,7 @@ def _plural(n: int, noun: str) -> str:
 def _top(form: Form) -> Html:
     return el(
         "header",
-        None,
+        {"class": "top"},
         el("h1", None, el("a", {"href": "./"}, "claudinator")),
         el(
             "form",
@@ -643,8 +652,13 @@ def _top(form: Form) -> Html:
             el("input", {"name": "project", "value": form.project, "placeholder": "project"}),
             el("input", {"name": "since", "value": form.since, "placeholder": "since: 2026-10-01, 7d"}),
             el("input", {"name": "until", "value": form.until, "placeholder": "until"}),
-            el("label", None, el("input", {"type": "checkbox", "name": "tools", "checked": form.tools}), " tools"),
-            el("button", None, "search"),
+            el(
+                "label",
+                None,
+                el("input", {"type": "checkbox", "name": "tools", "checked": form.tools}),
+                " include tools",
+            ),
+            el("button", None, "Search"),
         ),
     )
 
@@ -659,38 +673,47 @@ def _banner(swept: SweepReport | None, error: str) -> Html | None:
 
 
 def _session_row(s: SessionSummary) -> Html:
-    where = human.short(s.cwd)
-    project = el("a", {"href": "./?" + urlencode({"project": s.cwd}), "title": where}, where) if s.cwd else where
+    when, where = _local(s.last_ts), human.short(s.cwd)
+    title = el("a", {"href": href_transcript(s.id)}, human.clip(s.title or s.id[:8], 120))
+    if s.cwd:
+        project = el("a", {"class": "project", "href": "./?" + urlencode({"project": s.cwd}), "title": where}, where)
+    else:
+        project = el("span", {"class": "project"}, where)
     return el(
-        "tr",
+        "li",
         None,
-        el("td", {"class": "muted"}, human.when(s.last_ts)),
-        el(
-            "td",
-            {"class": "title"},
-            el("a", {"href": href_transcript(s.id)}, human.clip(s.title or s.id[:8], 120)),
-            None if s.on_disk else el("span", {"class": "gone"}, " gone"),
-        ),
-        el("td", {"class": "project"}, project),
-        el("td", {"class": "muted"}, _plural(s.prompts, "prompt")),
-        el("td", {"class": "muted"}, _plural(s.subagents, "agent") if s.subagents else ""),
+        el("time", None, f"{when:%H:%M}" if when else ""),
+        el("span", {"class": "title"}, title, None if s.on_disk else el("span", {"class": "gone"}, " gone")),
+        project,
+        el("span", {"class": "count"}, _plural(s.prompts, "prompt")),
+        el("span", {"class": "count"}, _plural(s.subagents, "subagent") if s.subagents else ""),
     )
+
+
+KINDS = {
+    Kind.PROMPT: "a prompt",
+    Kind.REPLY: "a reply",
+    Kind.TOOL_CALL: "a tool call",
+    Kind.TOOL_OUTPUT: "a tool's output",
+    Kind.TITLE: "the title",
+}
 
 
 def _hit(hit: SessionHit, q: str) -> Html:
     s, best = hit.session, hit.best
     at = None if best.kind is Kind.TITLE else Key(best.line_off, best.block)
-    where = best.kind.value.replace("_", " ") + (f" in subagent {best.agent_id[:8]}" if best.agent_id else "")
+    when = _local(s.last_ts)
+    found = KINDS[best.kind] + (f" in subagent {best.agent_id[:8]}" if best.agent_id else "")
+    count = f"{_plural(hit.hits, 'hit')}, best in {found}" if hit.hits > 1 else f"1 hit, in {found}"
+    about = (f"{when:%H:%M} on {when.day} {when:%b %Y} " if when else "") + f"in {human.short(s.cwd)}, {count}"
     return el(
         "li",
         None,
         el("a", {"href": href_transcript(s.id)}, s.title or s.id[:8]),
-        el("span", {"class": "muted"}, f" {human.when(s.last_ts)} · {human.short(s.cwd)} · {_plural(hit.hits, 'hit')}"),
+        el("p", None, about),
         el(
             "a",
             {"class": "excerpt", "href": href_transcript(s.id, best.agent_id, at, q)},
-            el("span", {"class": "label"}, where),
-            " ",
             marked(best.text, best.marks),
         ),
     )

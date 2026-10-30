@@ -364,18 +364,34 @@ def test_a_transcript_header_says_where_and_when_how_much_and_how_to_resume(serv
     assert "<p>In /Users/me/dev/demo, 29 Oct 08:00 to 08:20.</p><p>1 prompt. Claude Code has deleted its copy, and resuming puts it back. Resume it with " in gone
 
 
-def test_the_list_counts_its_sessions_and_reads_date_title_project_prompts_agents(served):
+def test_the_list_groups_sessions_by_day_and_reads_time_title_project_and_counts(served):
+    sid3 = "3c0ffee0-0000-4000-8000-000000000003"
     append(transcript(), user("hello", ts="2026-10-01T10:00:00Z"))
-    append(transcript(agent=AID), user("subagent"))
-    append(transcript(SID2, slug="-tmp-elsewhere"), user("again", ts="2026-10-02T10:00:00Z", cwd="/tmp/elsewhere"), user("more"))
+    append(transcript(agent=AID), user("subagent", ts="2026-10-01T10:00:00Z"))
+    elsewhere = {"cwd": "/tmp/elsewhere"}
+    append(transcript(SID2, slug="-tmp-elsewhere"), user("again", ts="2026-10-02T09:00:00Z", **elsewhere), user("more", ts="2026-10-02T09:30:00Z", **elsewhere))
+    append(transcript(sid3), user("early", ts="2026-10-02T08:00:00Z"))
     shown = page(served, "/")
-    assert shown.index("<p class=\"muted\">2 sessions</p>") < shown.index("<table")
-    rows = [
-        [re.sub(r"<[^>]*>", "", cell) for cell in re.findall(r"<td[^>]*>(.*?)</td>", row)]
-        for row in re.findall(r"<tr>(.*?)</tr>", shown)
+    assert shown.index('<p class="count">3 sessions</p>') < shown.index('<h2 class="day">')
+    assert re.findall(r'<h2 class="day">(.*?)</h2>|<time>(.*?)</time>', shown) == [
+        ("Friday 2 October 2026", ""), ("", "09:30"), ("", "08:00"), ("Thursday 1 October", ""), ("", "10:00"),
     ]
-    assert [row[1:] for row in rows] == [["again", "/tmp/elsewhere", "2 prompts", ""], ["hello", "/Users/me/dev/demo", "1 prompt", "1 agent"]]
-    assert all(re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d", row[0]) for row in rows)
+    assert '</ol><h2 class="day">Thursday 1 October</h2><ol class="sessions">' in shown
+    assert (
+        f'<li><time>10:00</time><span class="title"><a href="s/{SID}">hello</a></span>'
+        '<a class="project" href="./?project=%2FUsers%2Fme%2Fdev%2Fdemo" title="/Users/me/dev/demo">/Users/me/dev/demo</a>'
+        '<span class="count">1 prompt</span><span class="count">1 subagent</span></li>'
+    ) in shown
+    assert '>/tmp/elsewhere</a><span class="count">2 prompts</span><span class="count"></span></li>' in shown
+
+
+def test_a_search_hit_says_when_and_where_and_where_its_best_hit_is(served):
+    append(transcript(), user("first", ts="2026-10-01T10:00:00Z"), reply("the quokka line", ts="2026-10-01T10:05:00Z"), reply("another quokka", ts="2026-10-01T10:06:00Z"))
+    append(transcript(agent=AID), user("a wombat in a subagent", ts="2026-10-01T10:06:00Z"))
+    append(transcript(SID2), user("nothing to see", ts="2026-10-02T08:00:00Z"), ai_title("Zebracorn hunt"))
+    assert "<p>10:06 on 1 Oct 2026 in /Users/me/dev/demo, 2 hits, best in a reply</p>" in page(served, "/?q=quokka")
+    assert "<p>10:06 on 1 Oct 2026 in /Users/me/dev/demo, 1 hit, in a prompt in subagent a7c9c203</p>" in page(served, "/?q=wombat")
+    assert "<p>08:00 on 2 Oct 2026 in /Users/me/dev/demo, 1 hit, in the title</p>" in page(served, "/?q=zebracorn")
 
 
 def test_a_search_hit_opens_its_transcript_at_the_matching_step_with_the_words_marked(served):
