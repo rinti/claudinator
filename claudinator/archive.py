@@ -80,14 +80,18 @@ tail from a crashed writer. The sweep archives that tail so nothing on disk
 is left unarchived. A live writer never leaves a partial line for an hour."""
 
 
-def _next_segment(fd: int, start: int, size: int, settled: bool) -> bytes:
+def _next_segment(fd: int, start: int, size: int, settled: bool) -> tuple[bytes, bool]:
     """The bytes of the next segment of a file, from start: through the
     first newline at or past SEGMENT_BYTES, else through the last newline
     before size, else, once the file has settled, through size. So every
     segment ends with a newline except a settled tail, and no line is split
     across segments except a settled tail and its later continuation. Reads
     at most one line past SEGMENT_BYTES, so memory follows the longest line,
-    not the file."""
+    not the file.
+
+    Also whether another segment may follow before size: only when this one
+    stopped at SEGMENT_BYTES with bytes left. Otherwise it read through
+    size, and what it left is at most an unfinished line."""
     buf = bytearray()
     while start + len(buf) < size:
         searched = len(buf)
@@ -96,8 +100,8 @@ def _next_segment(fd: int, start: int, size: int, settled: bool) -> bytes:
             break
         buf += part
         if len(buf) >= SEGMENT_BYTES and (newline := buf.find(b"\n", max(searched, SEGMENT_BYTES - 1))) >= 0:
-            return bytes(buf[: newline + 1])
-    return bytes(buf if settled else buf[: buf.rfind(b"\n") + 1])
+            return bytes(buf[: newline + 1]), start + newline + 1 < size
+    return bytes(buf if settled else buf[: buf.rfind(b"\n") + 1]), False
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +418,7 @@ class _Next:
     window: bytes  # file bytes [cursor - TAIL_BYTES, cursor), matched against the archive's tail
     chunk: bytes  # its bytes, never empty
     settled: bool  # the file has not changed for SETTLE_SECONDS
+    more: bool  # another segment may follow it within the size this was planned against
 
 
 def _next(path: Path, a: _Archived | None) -> _Next | None:
@@ -437,10 +442,10 @@ def _next(path: Path, a: _Archived | None) -> _Next | None:
                     generation, cursor = a.generation, a.cursor
                 case (Plan.NEW_GENERATION, _):
                     generation = a.generation + 1
-        chunk = _next_segment(fd, cursor, st.st_size, settled)
+        chunk, more = _next_segment(fd, cursor, st.st_size, settled)
     finally:
         os.close(fd)
-    return _Next(generation, cursor, window, chunk, settled) if chunk else None
+    return _Next(generation, cursor, window, chunk, settled, more) if chunk else None
 
 
 def _doc_stat(path: Path, stored: tuple[int, int] | None) -> os.stat_result | None:
@@ -827,7 +832,7 @@ class Archive:
         segment per write transaction, so neither memory nor the time the
         lock is held grows with the file. hint is what the archive held
         before the sweep; a file with nothing to archive against it takes
-        no lock.
+        no lock, and any other takes it once per segment.
 
         Concurrency: each transaction reads the archived state, reads the
         file, and writes, all under BEGIN IMMEDIATE. A second process
@@ -843,23 +848,22 @@ class Archive:
         from that cursor."""
         done = _Delta()
         try:
-            if _next(f.path, hint) is None:
-                return done
-            while True:
+            more = _next(f.path, hint) is not None
+            while more:
                 with self._write(wait=wait):
-                    step = self._ingest_segment(f)
-                if step is None:
-                    return done
+                    step, more = self._ingest_segment(f)
                 done += step
         except Exception as e:
             return done + _failed(str(f.path), e)
+        return done
 
-    def _ingest_segment(self, f: TranscriptFile) -> _Delta | None:
+    def _ingest_segment(self, f: TranscriptFile) -> tuple[_Delta, bool]:
         """Archive and project the next segment of a file inside the caller's
-        transaction, or return None when there is nothing to archive yet."""
+        transaction, if there is one, and say whether another may follow,
+        so the caller takes the lock again only then."""
         a = self._archived(f.path).get(f.path)
         if (n := _next(f.path, a)) is None:
-            return None
+            return _Delta(), False
         archived_at = now()
         if n.cursor == 0:
             (source_id,) = self._db.execute(
@@ -876,7 +880,7 @@ class Archive:
             (source_id, n.cursor, n.cursor + len(n.chunk), tail, zstd.compress(n.chunk), archived_at),
         )
         self._project(source_id, _records([(n.cursor, n.chunk)], before))
-        return _Delta(len(n.chunk), rewritten=n.generation > 0 and n.cursor == 0)
+        return _Delta(len(n.chunk), rewritten=n.generation > 0 and n.cursor == 0), n.more
 
     def _project(self, source_id: int, records: Iterable[tuple[int, Record, bool]]) -> None:
         """Fold records into the projection. Shared by _ingest and rebuild;

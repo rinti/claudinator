@@ -232,3 +232,22 @@ def test_a_sweep_that_waited_out_the_lock_once_does_not_wait_again_to_record_its
         "another claudinator process is writing to the archive and held its lock for 1 s; try again when it finishes",
     )
     assert elapsed < 1.8
+
+
+LINE = user("a line of about a kilobyte " + "w" * 1000)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [LINE, LINE + user("still being written")[:20], LINE * 3000],
+    ids=["one line", "a line and an unfinished one", "three segments"],
+)
+def test_a_sweep_takes_the_write_lock_once_per_segment_it_archives(data):
+    append(transcript(), data)
+    with open_archive() as archive:
+        statements = []
+        archive._db.set_trace_callback(statements.append)
+        assert archive.sweep(wait=False).errors == ()
+        archive._db.set_trace_callback(None)
+        (segments,) = archive._db.execute("SELECT COUNT(*) FROM segment").fetchone()
+    assert statements.count("BEGIN IMMEDIATE") == segments
