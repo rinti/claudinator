@@ -866,7 +866,7 @@ def test_a_long_subagent_list_can_be_scrolled_to_its_end_while_the_aside_sticks(
 
 
 FLIP = """<script>
-const seen = () => Object.fromEntries([".prompt", ".reply", ".box", ".minute", ".date"].map(css => [css, [...document.querySelectorAll(css)].map(found => found.checkVisibility())]));
+const seen = () => Object.fromEntries([".prompt", ".reply", ".box", ".minute", ".date", ".note"].map(css => [css, [...document.querySelectorAll(css)].map(found => found.checkVisibility())]));
 const drawn = step => {
   step.scrollIntoView({block: "center"});
   const box = step.getBoundingClientRect(), time = step.parentElement.querySelector(":scope > time").getBoundingClientRect();
@@ -884,7 +884,7 @@ addEventListener("load", () => {
 
 
 @pytest.mark.skipif(not CHROME.exists(), reason="needs Google Chrome in /Applications")
-def test_icons_say_who_wrote_each_message_and_the_switch_hides_tool_rows_but_not_a_landed_hit(served, tmp_path):
+def test_icons_say_who_wrote_each_message_and_the_switch_hides_tool_rows_but_not_a_note_or_a_landed_hit(served, tmp_path):
     lines = (
         user("delegate", ts="2026-10-01T10:00:00Z"),
         tool_call("Bash", {"command": "ls"}, tool_use_id="toolu_1", ts="2026-10-01T10:00:10Z"),
@@ -894,16 +894,18 @@ def test_icons_say_who_wrote_each_message_and_the_switch_hides_tool_rows_but_not
         tool_call("Grep", {"pattern": "b"}, tool_use_id="toolu_3", ts="2026-10-01T10:01:20Z"),
         reply("on it", ts="2026-10-01T10:02:00Z"),
         tool_call("Bash", {"command": "make"}, tool_use_id="toolu_4", ts="2026-10-02T09:00:00Z"),
+        tool_call("Bash", {"command": "make test"}, tool_use_id="toolu_5", ts="2026-10-03T08:00:00Z"),
+        user("[Request interrupted by user for tool use]", ts="2026-10-03T08:00:05Z"),
     )
     append(transcript(), *lines)
     append(transcript(agent=AID), user("find the cursor"), reply("found it"))
     keyboard, robot = '"\u2328\ufe0f" / ""', '"\U0001f916" / ""'
     shown = json.loads(measured(served, tmp_path, f"/s/{SID}", FLIP))
     assert shown["icons"] == [[keyboard, True], [robot, True]]
-    every = {".prompt": [True], ".reply": [True], ".box": [True] * 3, ".minute": [True] * 4, ".date": [True] * 2}
+    every = {".prompt": [True], ".reply": [True], ".box": [True] * 4, ".minute": [True] * 5, ".date": [True] * 3, ".note": [True]}
     assert shown["before"] == every
-    assert shown["after"] == every | {".box": [False] * 3, ".minute": [True, False, True, False], ".date": [True, False]}
+    assert shown["after"] == every | {".box": [False] * 4, ".minute": [True, False, True, False, True], ".date": [True, False, True]}
     at = f"{offsets(*lines)[7]}.0"
     landed = json.loads(measured(served, tmp_path, f"/s/{SID}?at={at}", FLIP, f"#m{at}"))
-    assert landed["after"] == every | {".box": [False, False, True], ".minute": [True, False, True, True]}
+    assert landed["after"] == every | {".box": [False, False, True, False], ".minute": [True, False, True, True, True]}
     assert json.loads(measured(served, tmp_path, f"/s/{SID}/{AID}", FLIP))["icons"] == [[robot, True], [robot, True]]
