@@ -586,12 +586,10 @@ class Archive:
             pending, unreadable = [], []
             for loc in found.transcripts:
                 try:
-                    p = _pending(loc.path, known.get(loc.path))
+                    if (waiting := _pending(loc.path, known.get(loc.path))) is not None:
+                        pending.append(waiting)
                 except OSError as e:
                     unreadable += _failed(str(loc.path), e).errors
-                    continue
-                if p is not None:
-                    pending.append(p)
             last, refused = self._meta("last_sweep"), self._meta("last_refused")
             return Status(
                 checked_at=now(),
