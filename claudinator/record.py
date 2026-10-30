@@ -261,8 +261,6 @@ def _title(value: object, custom: bool, ts: Millis | None) -> Title | None:
 
 
 def _observe(facts: Facts, ts: Millis | None, cwd: str | None) -> Facts:
-    if ts is None and (cwd is None or facts.cwd is not None):
-        return facts
     return replace(
         facts,
         cwd=facts.cwd if facts.cwd is not None else cwd,
