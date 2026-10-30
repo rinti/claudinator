@@ -28,7 +28,6 @@ from claudinator.record import (
     Millis,
     Record,
     SessionId,
-    Turn,
     Unparsed,
     desktop_session,
     project,
@@ -109,15 +108,6 @@ class SessionHit:
     session: SessionSummary
     hits: int  # matching units in this session (main + subagents)
     best: Excerpt
-
-
-@dataclass(frozen=True, slots=True)
-class Message:
-    ts: Millis | None
-    kind: Kind
-    text: str
-    tool: str | None = None
-    spawned: AgentId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -558,25 +548,6 @@ class Archive:
                     )
                 )
         return Session(summary, tuple(agents))
-
-    def conversation(self, session_id: SessionId, agent_id: AgentId | None = None) -> Iterator[Message]:
-        """The transcript in file order, from the archive, whether or not the
-        file still exists on disk. The transcript, its subagent links, and
-        its segments are fixed in one snapshot when this is called, and the
-        messages are read as the caller iterates."""
-        with self._snapshot():
-            source_id = self._source(session_id, agent_id)
-            spawned = {}
-            for aid, body in self._docs(session_id, DocRole.SUBAGENT_META):
-                if tool_use_id := subagent_meta(body).tool_use_id:
-                    spawned[tool_use_id] = aid
-            segments = self._segments(source_id)
-        return (
-            Message(rec.ts, b.kind, b.text, b.tool, spawned.get(b.tool_use_id) if b.kind is Kind.TOOL_CALL else None)
-            for _, rec, _ in records(segments)
-            if isinstance(rec, Turn)
-            for _, b in rec.blocks
-        )
 
     def lines(self, session_id: SessionId, agent_id: AgentId | None = None) -> Iterator[tuple[int, Record]]:
         """Every line of the transcript's latest generation as (offset, record),

@@ -107,6 +107,32 @@ def test_show_prints_the_conversation_with_tool_summaries_and_agent_pointers(cap
     )
 
 
+def test_show_prints_each_output_right_after_its_own_call_when_calls_ran_in_parallel(capsys):
+    append(
+        transcript(),
+        user("read both"),
+        tool_call("Read", {"file_path": "a"}, tool_use_id="toolu_1"),
+        tool_call("Bash", {"command": "b"}, tool_use_id="toolu_2"),
+        tool_result("two", tool_use_id="toolu_2"),
+        tool_result("one", tool_use_id="toolu_1"),
+    )
+    assert run(capsys, "show", "8f2d43fe") == (
+        0,
+        '8f2d43fe-dbb7-45bd-a6e3-1682089cd088  /Users/me/dev/demo  "read both"\n'
+        "2026-10-01 10:00 to 2026-10-01 10:00, 1 prompt, on disk (claudinator resume 8f2d43fe)\n"
+        "\n"
+        "2026-10-01 10:00  you\n"
+        "  read both\n"
+        "\n"
+        "2026-10-01 10:00  claude\n"
+        '  > Read {"file_path":"a"}\n'
+        "  < one\n"
+        '  > Bash {"command":"b"}\n'
+        "  < two\n",
+        "",
+    )
+
+
 def test_show_full_prints_tool_output_and_agent_prints_the_subagent(capsys):
     cursor_hunt()
     assert "  < line one\n    line two\n    line three\n" in run(capsys, "show", "8f2d43fe", "--full")[1]

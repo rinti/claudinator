@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from claudinator.archive import AmbiguousSession, EmptyQuery, Filters, Query, Subagent, UnknownSession
-from claudinator.record import Kind, parse
+from claudinator.record import Kind, Turn, parse
 from helpers import (
     AID,
     SID,
@@ -194,30 +194,6 @@ def test_session_lists_subagents_with_their_meta():
     assert agents == (Subagent(AID, "Find the cursor", "Explore", 1790848809000, "toolu_77", None),)
 
 
-def test_conversation_reads_the_archive_in_file_order_and_links_spawned_agents():
-    append(
-        transcript(),
-        user("look into it"),
-        assistant({"type": "thinking", "thinking": "hmm"}),
-        tool_call("Agent", {"description": "Find the cursor"}, tool_use_id="toolu_77"),
-        tool_result("done", tool_use_id="toolu_77"),
-        reply("found it"),
-    )
-    append(transcript(agent=AID), user("subagent task"))
-    write_meta(SID, AID, agentType="Explore", description="Find the cursor", toolUseId="toolu_77")
-    with open_archive() as archive:
-        archive.sweep()
-        transcript().unlink()
-        messages = [(m.kind, m.text, m.tool, m.spawned) for m in archive.conversation(SID)]
-        assert [m.text for m in archive.conversation(SID, AID)] == ["subagent task"]
-    assert messages == [
-        (Kind.PROMPT, "look into it", None, None),
-        (Kind.TOOL_CALL, 'Agent {"description":"Find the cursor"}', "Agent", AID),
-        (Kind.TOOL_OUTPUT, "done", None, None),
-        (Kind.REPLY, "found it", None, None),
-    ]
-
-
 def test_search_finds_a_session_whose_words_are_in_different_turns():
     append(transcript(), user("the zebracorn escaped", ts="2026-10-01T10:00:00.000Z"), reply("found it by the quokka"))
     append(transcript(SID2), user("only a zebracorn here"))
@@ -276,7 +252,7 @@ def test_a_slash_command_titles_a_session_as_typed_and_shell_lines_are_not_promp
         archive.sweep()
         (summary,) = archive.sessions()
         assert (summary.title, summary.prompts) == ("/pstack:arena Find a good solution", 2)
-        assert [(m.kind, m.text) for m in archive.conversation(SID)] == [
+        assert [(b.kind, b.text) for _, rec in archive.lines(SID) if isinstance(rec, Turn) for _, b in rec.blocks] == [
             (Kind.PROMPT, "/pstack:arena Find a good solution"),
             (Kind.PROMPT, "! git status"),
             (Kind.TOOL_OUTPUT, "<bash-stdout>On branch main</bash-stdout><bash-stderr></bash-stderr>"),

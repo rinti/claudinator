@@ -25,6 +25,7 @@ from claudinator.archive import (
     UnknownSession,
     now,
 )
+from claudinator.conversation import Call, Output, Said, build
 from claudinator.layout import AGENT_ID, Config, staged
 from claudinator.record import AgentId, Kind, Millis, cleanup_period_days
 
@@ -140,27 +141,34 @@ def cmd_show(cfg: Config, args: argparse.Namespace) -> int:
             if agent is None or a.id == agent:
                 _emit(f"agent {a.id[:8]}  {a.agent_type or ''}  {a.description or ''}".rstrip())
         speaker = None
-        for m in archive.conversation(s.id, agent):
-            if not m.text.strip() and m.kind is not Kind.TOOL_OUTPUT:
-                continue
-            if (who := "you" if m.kind is Kind.PROMPT else "claude") != speaker:
-                _emit(f"\n{_when(m.ts)}  {who}")
-                speaker = who
-            match m.kind:
-                case Kind.TOOL_CALL:
-                    _emit(f"  > {_clip(' '.join(m.text.split()), 200)}")
-                    if m.spawned:
-                        _emit(f"    (subagent: claudinator show {s.id[:8]} --agent {m.spawned[:8]})")
-                case Kind.TOOL_OUTPUT:
-                    lines = m.text.splitlines() or [""]
-                    if args.full:
-                        _emit("  < " + "\n    ".join(lines))
-                    else:
-                        more = f"  ({len(lines)} lines)" if len(lines) > 1 else ""
-                        _emit(f"  < {_clip(lines[0], 160)}{more}")
+        for step in build(archive.lines(s.id, agent), session.agents, agent):
+            match step:
+                case Said(ts=ts, kind=kind, text=text):
+                    who, out = "you" if kind is Kind.PROMPT else "claude", [_indent(text)]
+                case Call(ts=ts, text=text, spawned=spawned, result=result):
+                    who, out = "claude", [f"  > {_clip(' '.join(text.split()), 200)}"]
+                    if spawned:
+                        out.append(f"    (subagent: claudinator show {s.id[:8]} --agent {spawned.id[:8]})")
+                    if result:
+                        out.append(_output(result.text, args.full))
+                case Output(ts=ts, text=text):
+                    who, out = "claude", [_output(text, args.full)]
                 case _:
-                    _emit(_indent(m.text))
+                    continue
+            if who != speaker:
+                _emit(f"\n{_when(ts)}  {who}")
+                speaker = who
+            for line in out:
+                _emit(line)
     return 0
+
+
+def _output(text: str, full: bool) -> str:
+    lines = text.splitlines() or [""]
+    if full:
+        return "  < " + "\n    ".join(lines)
+    more = f"  ({len(lines)} lines)" if len(lines) > 1 else ""
+    return f"  < {_clip(lines[0], 160)}{more}"
 
 
 def cmd_resume(cfg: Config, args: argparse.Namespace) -> int:

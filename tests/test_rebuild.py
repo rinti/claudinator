@@ -172,9 +172,9 @@ def test_a_line_left_open_by_a_settled_tail_projects_once_and_the_same_on_rebuil
         assert exported(archive) == path.read_bytes()
         assert archive.status().unparsed_lines == unparsed
         assert {word: hit_count(archive, word) for word in shown + hidden} == {word: 1 for word in shown} | {word: 0 for word in hidden}
-        shown_by_show = [m.text for m in archive.conversation(SID)]
+        shown_by_show = [b.text for _, rec in archive.lines(SID) if isinstance(rec, Turn) for _, b in rec.blocks]
         incremental = entry_rows(archive)
         archive.rebuild(force=True)
         assert entry_rows(archive) == incremental
-        assert [m.text for m in archive.conversation(SID)] == shown_by_show
+        assert [b.text for _, rec in archive.lines(SID) if isinstance(rec, Turn) for _, b in rec.blocks] == shown_by_show
     assert all(any(word in text for text in shown_by_show) for word in shown)
