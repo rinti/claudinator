@@ -276,30 +276,25 @@ def transcript_page(
     swept: SweepReport | None,
 ) -> Html:
     s = session.summary
-    terms = searchable(search.terms())
-    agent = None if aid is None else next((a for a in session.agents if a.id == aid), None)
+    results = _back(href_list(search), f"Results for “{search.q}”") if search.q else None
+    toggle = _toggle(href_transcript(s.id, aid, at, search, not hidden), sum(map(_folded, steps)), hidden)
+    actions = el("div", {"class": "actions"}, _download(s.id, aid), toggle)
     if aid is None:
-        heading = s.title or s.id[:8]
+        heading, back = s.title or s.id[:8], results or _back("./", "All sessions")
+        span, counts = (s.first_ts, s.last_ts), (s.prompts, s.subagents)
+        aside = _session_aside(session, actions)
     else:
+        agent = next((a for a in session.agents if a.id == aid), None)
         heading = (agent and agent.description) or f"Subagent {aid[:8]}"
-    if search.q:
-        back = _back(href_list(search), f"Results for “{search.q}”")
-    elif aid:
-        back = _back(href_transcript(s.id), s.title or s.id[:8])
-    else:
-        back = _back("./", "All sessions")
-    if aid is None:
-        span = s.first_ts, s.last_ts
-    else:
+        back = results or _back(href_transcript(s.id), s.title or s.id[:8])
         stamps = [step.ts for step in steps if not isinstance(step, Marker) and step.ts is not None]
-        span = min(stamps, default=None), max(stamps, default=None)
-    header = el("header", {"class": "session"}, el("h1", None, heading), _facts(s, *span, main=aid is None))
+        span, counts = (min(stamps, default=None), max(stamps, default=None)), None
+        aside = _subagent_aside(s, agent, actions)
+    header = el("header", {"class": "session"}, el("h1", None, heading), _facts(s.cwd, *span, counts))
     prompts = (step.key for step in steps if isinstance(step, Said) and step.kind is Kind.PROMPT)
     numbers = {key: n for n, key in enumerate(prompts, 1)}
-    shown = [step for step in steps if hidden or not _folded(step)]
-    toggle = _toggle(href_transcript(s.id, aid, at, search, not hidden), sum(map(_folded, steps)), hidden)
-    aside = _aside(session, aid, agent, el("div", {"class": "actions"}, _download(s.id, aid), toggle))
-    body = el("div", {"class": "steps"}, *_dated(_View(s.id, aid, at, terms, numbers), shown))
+    view = _View(s.id, aid, at, searchable(search.terms()), numbers)
+    body = el("div", {"class": "steps"}, *_dated(view, [step for step in steps if hidden or not _folded(step)]))
     return page(
         root,
         heading,
@@ -319,20 +314,21 @@ def _back(href: str, label: str) -> Html:
     return el("a", {"class": "back", "href": href}, el("span", {"aria-hidden": "true"}, "←"), label)
 
 
-def _facts(s: SessionSummary, start: Millis | None, end: Millis | None, *, main: bool) -> Html:
+def _facts(cwd: str | None, start: Millis | None, end: Millis | None, counts: tuple[int, int] | None) -> Html:
     first, last = _local(start), _local(end)
     span = duration = None
     if first and last:
-        end = f"{last:%H:%M}" if last.date() == first.date() else _stamp(last)
-        span, duration = f"{_stamp(first)} – {end}", _duration(last - first)
+        until = f"{last:%H:%M}" if last.date() == first.date() else _stamp(last)
+        span, duration = f"{_stamp(first)} – {until}", _duration(last - first)
+    prompts, subagents = counts or (0, 0)
     return el(
         "p",
         {"class": "facts"},
-        el("span", None, *_where(s.cwd)),
+        el("span", None, *_where(cwd)),
         el("span", None, span) if span else None,
         el("span", {"class": "faint"}, duration) if duration else None,
-        el("span", None, _plural(s.prompts, "prompt")) if main else None,
-        el("span", None, _plural(s.subagents, "subagent")) if main and s.subagents else None,
+        el("span", None, _plural(prompts, "prompt")) if counts else None,
+        el("span", None, _plural(subagents, "subagent")) if subagents else None,
     )
 
 
@@ -346,22 +342,8 @@ def _duration(span: timedelta) -> str:
     return f"{days}d {hours}h" if days else f"{hours}h {minutes}m" if hours else f"{minutes}m"
 
 
-def _aside(session: Session, aid: AgentId | None, agent: Subagent | None, actions: Html) -> Html:
+def _session_aside(session: Session, actions: Html) -> Html:
     s = session.summary
-    if aid is not None:
-        about = [el("h2", None, "Subagent")]
-        if agent and agent.agent_type:
-            about.append(el("p", {"class": "kind"}, agent.agent_type))
-        about.append(el("p", None, "In ", el("a", {"href": href_transcript(s.id)}, s.title or s.id[:8])))
-        if agent and agent.tool_use_id:
-            about.append(
-                el(
-                    "p",
-                    None,
-                    el("a", {"href": href_call(s.id, agent.parent, agent.tool_use_id)}, "See the call that started it"),
-                )
-            )
-        return el("aside", None, el("section", None, *about, actions))
     command = el(
         "p",
         {"class": "command"},
@@ -369,16 +351,31 @@ def _aside(session: Session, aid: AgentId | None, agent: Subagent | None, action
         el("code", None, f"claudinator resume {s.id[:8]}"),
     )
     gone = None if s.on_disk else el("p", {"class": "gone"}, "Claude Code deleted its copy. Resuming puts it back.")
-    resume = el("section", None, el("h2", None, "Resume"), command, gone, actions)
-    if not session.agents:
-        return el("aside", None, resume)
     agents = el(
         "section",
         None,
         el("h2", None, "Subagents ", el("span", {"class": "n"}, f"{len(session.agents):,}")),
         el("ul", {"class": "agents"}, *(_agent(s.id, a) for a in session.agents)),
     )
-    return el("aside", None, resume, agents)
+    resume = el("section", None, el("h2", None, "Resume"), command, gone, actions)
+    return el("aside", None, resume, agents if session.agents else None)
+
+
+def _subagent_aside(s: SessionSummary, agent: Subagent | None, actions: Html) -> Html:
+    call = agent and agent.tool_use_id and href_call(s.id, agent.parent, agent.tool_use_id)
+    return el(
+        "aside",
+        None,
+        el(
+            "section",
+            None,
+            el("h2", None, "Subagent"),
+            el("p", {"class": "kind"}, agent.agent_type) if agent and agent.agent_type else None,
+            el("p", None, "In ", el("a", {"href": href_transcript(s.id)}, s.title or s.id[:8])),
+            el("p", None, el("a", {"href": call}, "See the call that started it")) if call else None,
+            actions,
+        ),
+    )
 
 
 def _agent(sid: SessionId, a: Subagent) -> Html:
