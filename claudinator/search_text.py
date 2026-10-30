@@ -50,8 +50,6 @@ def _term_pattern(term: str) -> re.Pattern[str]:
 
 
 def marks(text: str, terms: tuple[str, ...]) -> tuple[tuple[int, int], ...]:
-    """The [start, end) spans in text of every match of terms, as searchable
-    keeps them, merged where they overlap."""
     folded = text.translate(_FOLD)
     spans = sorted(m.span() for t in terms for m in _term_pattern(t).finditer(folded))
     merged: list[tuple[int, int]] = []
@@ -64,9 +62,6 @@ def marks(text: str, terms: tuple[str, ...]) -> tuple[tuple[int, int], ...]:
 
 
 def excerpt(text: str, terms: tuple[str, ...], width: int = 160) -> tuple[str, tuple[tuple[int, int], ...]]:
-    """Window of `width` chars around the first match of terms, as searchable
-    keeps them, whitespace collapsed, with the [start, end) spans of every
-    match inside the window."""
     flat = " ".join(text.split())
     merged = marks(flat, terms)
     first = merged[0][0] if merged else 0

@@ -82,8 +82,8 @@ class Subagent:
     description: str | None
     agent_type: str | None
     first_ts: Millis | None
-    tool_use_id: str | None  # the Agent call that started it
-    parent: AgentId | None  # the subagent whose transcript holds that call; None for the main one
+    tool_use_id: str | None
+    parent: AgentId | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +97,7 @@ class Excerpt:
     kind: Kind
     ts: Millis | None
     agent_id: AgentId | None
-    line_off: int  # with block, where the unit sits in its transcript
+    line_off: int
     block: int
     text: str  # ~160 chars around the first matched term, single line
     marks: tuple[tuple[int, int], ...]  # [start, end) spans of matched terms in text
@@ -362,11 +362,7 @@ class Archive:
     def open(cls, cfg: Config, *, readonly: bool = False) -> Archive:
         """Open the database, creating it if it does not exist, and make the
         projection current. When both versions are current this takes no
-        write lock, so a reader never waits for a sweep in another process.
-
-        readonly: never create or change the file. SQLite refuses every
-        write on the connection, and an archive stamped by any other
-        claudinator, older or newer, is an ArchiveError."""
+        write lock, so a reader never waits for a sweep in another process."""
         if not cfg.db.exists():
             if readonly:
                 raise ArchiveError(f"no archive at {cfg.db}; run claudinator install")
@@ -550,17 +546,11 @@ class Archive:
         return Session(summary, tuple(agents))
 
     def lines(self, session_id: SessionId, agent_id: AgentId | None = None) -> Iterator[tuple[int, Record]]:
-        """Every line of the transcript's latest generation as (offset, record),
-        in file order, from the archive whether or not the file is still on
-        disk. The transcript and its segments are fixed in one snapshot when
-        this is called, and lines are read as the caller iterates."""
         with self._snapshot():
             segments = self._segments(self._source(session_id, agent_id))
         return ((off, rec) for off, rec, _ in records(segments))
 
     def line(self, session_id: SessionId, agent_id: AgentId | None, offset: int) -> bytes | None:
-        """The bytes of the line that starts at offset in the transcript's
-        latest generation, without its newline, or None if none starts there."""
         with self._snapshot():
             pieces = self._line(self._source(session_id, agent_id), offset)
         if not pieces or pieces[0][0] != offset:

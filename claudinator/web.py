@@ -1,7 +1,3 @@
-"""claudinator serve: the archive in a browser, on 127.0.0.1, with no
-JavaScript. Every request reads through its own read-only Archive, and text
-from transcripts becomes markup only through text() and el()."""
-
 from __future__ import annotations
 
 import hmac
@@ -48,7 +44,6 @@ IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 SEARCH_LIMIT = 50
 FOLD_LINES, FOLD_CHARS = 3, 300
 INLINE_CHARS = 1 << 20
-"""Per block; the largest on this Mac is 75 KB. Past it a page links the raw line."""
 HTML = "text/html; charset=utf-8"
 STYLE = resources.files("claudinator").joinpath("web.css").read_bytes()
 
@@ -69,8 +64,6 @@ class Server(ThreadingHTTPServer):
 
 
 def bind(cfg: Config, port: int = 0) -> Server:
-    """Check that this claudinator reads the archive as it is, which neither
-    creates nor rebuilds it, then listen on 127.0.0.1 with a new token."""
     Archive.open(cfg, readonly=True).close()
     return Server(cfg, port)
 
@@ -163,10 +156,6 @@ def _message(status: int, text: str) -> Response:
 
 @contextmanager
 def _reading(cfg: Config, *, sweep: bool) -> Iterator[tuple[Archive, SweepReport | None]]:
-    """A read-only Archive for one request. With sweep, new bytes are archived
-    first, as every CLI read command does, on a second connection opened
-    only once the read-only one accepted the stamps. wait=False gives up at
-    a busy lock and is never recorded, so last_sweep stays the sweeper's."""
     with Archive.open(cfg, readonly=True) as archive:
         swept = None
         if sweep:
@@ -174,9 +163,6 @@ def _reading(cfg: Config, *, sweep: bool) -> Iterator[tuple[Archive, SweepReport
                 swept = writer.sweep(wait=False)
         yield archive, swept
 
-
-# Routes. Each pattern sits beside the function that writes links to it.
-# Ids are checked here, so a session id is always a whole one.
 
 SID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 AID = AGENT_ID.pattern
@@ -204,8 +190,6 @@ TRANSCRIPT = re.compile(rf"/s/({SID})(?:/({AID}))?")
 def href_transcript(
     sid: SessionId, aid: AgentId | None = None, at: Key | None = None, q: str = "", hidden: bool = False
 ) -> str:
-    """The transcript, opened and marked at the step `at` names, which the
-    fragment scrolls to, and with its hidden lines shown if `hidden`."""
     path = f"/s/{sid}" + (f"/{aid}" if aid else "")
     landed = {} if at is None else {"at": str(at)} | ({"q": q} if q else {})
     query = landed | ({"hidden": "1"} if hidden else {})
@@ -213,7 +197,6 @@ def href_transcript(
 
 
 def href_call(sid: SessionId, parent: AgentId | None, tool_use_id: str) -> str:
-    """The call that started a subagent, in the transcript that holds it."""
     return f"/s/{sid}" + (f"/{quote(parent, safe='')}" if parent else "") + f"?{urlencode({'call': tool_use_id})}"
 
 
@@ -240,7 +223,6 @@ def href_raw(sid: SessionId, aid: AgentId | None, line_off: int) -> str:
 
 
 def raw(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
-    """The line pretty-printed and ASCII-escaped, so no character in it can hide or reorder."""
     with _reading(cfg, sweep=False) as (archive, _):
         line = archive.line(SessionId(m[1]), m[2] and AgentId(m[2]), int(m[3]))
     if line is None:
@@ -260,7 +242,6 @@ def href_image(sid: SessionId, aid: AgentId | None, key: Key, part: int | None) 
 
 
 def picture(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
-    """Raster types only, because an SVG can carry script."""
     with _reading(cfg, sweep=False) as (archive, _):
         line = archive.line(SessionId(m[1]), m[2] and AgentId(m[2]), int(m[3]))
     found = line and image(line, int(m[4]), m[5] and int(m[5]))
@@ -297,7 +278,6 @@ FAVICON = re.compile(r"/favicon\.ico")
 
 
 def favicon(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
-    """No icon, and no 404 in the console for the one a browser asks for."""
     return Response(HTTPStatus.NO_CONTENT, HTML, b"")
 
 
@@ -314,8 +294,6 @@ ROUTES: tuple[tuple[re.Pattern[str], Callable[[Config, Mapping[str, str], re.Mat
 
 @dataclass(frozen=True, slots=True)
 class Form:
-    """The list page's form as typed, echoed back into its inputs."""
-
     q: str = ""
     project: str = ""
     since: str = ""
@@ -328,7 +306,6 @@ class Form:
         return cls(*fields, tools="tools" in query)
 
     def terms(self) -> tuple[str, ...]:
-        """Words, and each "quoted phrase" as one term."""
         return tuple(phrase or word for phrase, word in re.findall(r'"([^"]*)"|(\S+)', self.q))
 
     def filters(self, at: Millis) -> Filters:
@@ -339,9 +316,6 @@ class Form:
                 raise ValueError(f"{name}: {e}") from None
 
         return Filters(self.project or None, when("since", self.since), when("until", self.until))
-
-
-# Pages: pure functions of their data.
 
 
 def sessions_page(rows: Sequence[SessionSummary], form: Form, swept: SweepReport | None, error: str = "") -> Html:
@@ -435,7 +409,6 @@ def _agent(sid: SessionId, a: Subagent) -> Html:
 
 
 def _folded(step: Step) -> int:
-    """How many lines a hidden-run marker folds; 0 for every other step."""
     match step:
         case Marker(shows=Hidden(lines)):
             return len(lines)
@@ -516,8 +489,6 @@ def _step(sid: SessionId, aid: AgentId | None, step: Step, at: Key | None, terms
 
 
 def _gist(given: str) -> str:
-    """A call's input on one line: its first string field, such as Bash's
-    command or Read's file_path, else its compact JSON."""
     value = json.loads(given)
     fields = value.values() if isinstance(value, dict) else ()
     first = next((v for v in fields if isinstance(v, str) and v.strip()), None)
@@ -640,19 +611,14 @@ def _hit(hit: SessionHit, q: str) -> Html:
     )
 
 
-# HTML
-
-
 class Html(str):
-    """Markup this module wrote. Only text(), el(), and marked() make one."""
+    pass
 
 
 _VOID = frozenset({"meta", "link", "img", "input"})
 
 
 def text(s: str) -> Html:
-    """s as HTML text, each human.HIDDEN character shown as its escape, so a
-    bidi override or an ESC cannot hide or reorder what is around it."""
     out, at = [], 0
     for m in human.HIDDEN.finditer(s):
         out += (html.escape(s[at : m.start()]), f'<span class="esc">{human.escape(m[0])}</span>')
@@ -671,9 +637,6 @@ def marked(s: str, spans: Sequence[tuple[int, int]]) -> Html:
 
 
 def el(tag: str, attrs: Mapping[str, str | bool | None] | None = None, *children: Html | str | None) -> Html:
-    """<tag attrs>children</tag>. A str child becomes text; an attribute value
-    is printable() and escaped; True is a bare attribute, and None, False, and
-    "" drop it. Tag and attribute names are literals in this module."""
     out = [f"<{tag}"]
     for name, value in (attrs or {}).items():
         if value is True:

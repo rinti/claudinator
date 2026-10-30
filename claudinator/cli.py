@@ -161,8 +161,6 @@ def cmd_serve(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def _browse(url: str) -> None:
-    """On macOS, webbrowser hands the URL to osascript on stdin, so the token
-    is in no process's argv."""
     webbrowser.open(url)
 
 

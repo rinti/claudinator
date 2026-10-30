@@ -9,14 +9,9 @@ LARGEST = 2**62
 a time that far back can still be subtracted from now."""
 
 HIDDEN = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]")
-"""Every C0 and C1 control character except newline and tab, every bidi
-control, zero-width character, line or paragraph separator, and the
-byte-order mark: what a terminal or a browser would act on or hide."""
 
 
 def escape(char: str) -> str:
-    """A HIDDEN character as a visible \\xNN escape for a control character,
-    else \\uNNNN."""
     n = ord(char)
     return f"\\x{n:02x}" if n < 0xA0 else f"\\u{n:04x}"
 
@@ -26,7 +21,6 @@ def printable(text: str) -> str:
 
 
 def parse_when(text: str, now: Millis) -> Millis:
-    """'2026-10-01' (local midnight), '2026-10-01T14:00' (local), '7d', '12h' (ago)."""
     if m := re.fullmatch(r"(\d+)([dh])", text):
         if (ago := int(m[1]) * {"d": 86_400_000, "h": 3_600_000}[m[2]]) > LARGEST:
             raise ValueError(f"{text!r} is out of range")

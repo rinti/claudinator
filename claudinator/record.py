@@ -36,7 +36,7 @@ class Block:
     kind: Kind
     text: str
     tool: str | None = None
-    tool_use_id: str | None = None  # a call's own id, or on a result the id of the call it answers
+    tool_use_id: str | None = None
     error: bool = False
 
 
@@ -47,9 +47,6 @@ class Thinking:
 
 @dataclass(frozen=True, slots=True)
 class Picture:
-    """A base64 image: a content item of its own (part None), or part `part`
-    of a tool result's content. image() decodes it from the raw line."""
-
     media_type: str
     part: int | None
     size: int
@@ -60,12 +57,7 @@ Extra = Thinking | Picture
 
 @dataclass(frozen=True, slots=True)
 class Turn:
-    """A `user` or `assistant` line that carries content worth showing.
-
-    blocks and extras pair each item with its index in message.content (0
-    when content is a string), so entry.block can find it again in the raw
-    line. blocks are indexed; extras, thinking with text and images, are
-    only shown. Blank text, and unknown block types, are dropped here."""
+    """A `user` or `assistant` line that carries content worth showing."""
 
     ts: Millis | None
     cwd: str | None
@@ -81,13 +73,11 @@ class Title:
 
 
 class Notice(enum.StrEnum):
-    """A line the index leaves out that changes how a conversation reads."""
-
-    QUEUED = "queued"  # a prompt typed while Claude was busy
+    QUEUED = "queued"
     COMPACTED = "compacted"
     INTERRUPTED = "interrupted"
     API_ERROR = "api error"
-    NOTIFICATION = "notification"  # an agent or a background task reporting back
+    NOTIFICATION = "notification"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,9 +91,7 @@ class Other:
     """Any other JSON object: system, attachment, api-request*, mode,
     file-history-*, isMeta user lines, non-human user origins, compaction
     summaries, and every type Claude Code adds later. Archived, never
-    indexed. Contributes ts/cwd to Facts so first/last activity stays right.
-    type is the line's own; note, which project() never reads, is set for
-    the few a reader should see."""
+    indexed. Contributes ts/cwd to Facts so first/last activity stays right."""
 
     ts: Millis | None
     cwd: str | None
@@ -200,7 +188,6 @@ def text_of(record: Record, block: int) -> str:
 
 
 def line_type(record: Other | Title | Unparsed) -> str:
-    """The type a line that shows nothing is counted under."""
     match record:
         case Other(type=name):
             return name
@@ -211,28 +198,21 @@ def line_type(record: Other | Title | Unparsed) -> str:
 
 
 def tool_input(block: Block) -> str:
-    """The compact JSON input of a TOOL_CALL block, as _block wrote it after the tool's name."""
     return block.text[len(block.tool) + 1 :]
 
 
 def printed(text: str) -> tuple[tuple[str, bool], ...] | None:
-    """What a `!` command or a slash command printed, as (text, is stderr)
-    for each non-blank stream, without Claude Code's wrapper tags. None when
-    text holds anything besides those wrappers."""
     if not _STREAM.match(text) or _STREAM.sub("", text).strip():
         return None
     return tuple((out, stream == "err") for _, stream, out in _STREAM.findall(text) if out.strip())
 
 
 def task_summary(text: str) -> str | None:
-    """The <summary> of a background task's notification."""
     m = _TASK_SUMMARY.search(text)
     return m[1] if m else None
 
 
 def image(line: bytes, block: int, part: int | None) -> tuple[str, bytes] | None:
-    """The declared media type and decoded bytes of the Picture at (block,
-    part) of a raw line, or None when there is none or it is not base64."""
     message = _json_object(line).get("message")
     raw = _item(message.get("content") if isinstance(message, dict) else None, block)
     if part is not None:
@@ -250,7 +230,7 @@ class SubagentMeta:
     description: str | None
     agent_type: str | None
     tool_use_id: str | None
-    parent: AgentId | None  # the subagent that started this one; None for the main transcript
+    parent: AgentId | None
 
 
 def subagent_meta(body: bytes) -> SubagentMeta:
