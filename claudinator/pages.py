@@ -335,7 +335,7 @@ def transcript_page(
         _top(search.q, replace(search, q="").params()),
         el(
             "main",
-            {"class": "transcript"},
+            {"class": "transcript" if aid is None else "transcript subagent"},
             back,
             header,
             _banner(swept, ""),

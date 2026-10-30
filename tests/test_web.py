@@ -1,5 +1,6 @@
 import ast
 import base64
+import html
 import http.client
 import json
 import re
@@ -647,6 +648,14 @@ def test_hidden_lines_stay_out_of_the_way_until_asked_for_and_notices_always_sho
     assert "Hidden lines" not in page(served, f"/s/{SID2}")
 
 
+def test_only_a_subagent_page_marks_its_main_as_a_subagent(served):
+    append(transcript(), user("delegate"))
+    append(transcript(agent=AID), user("find the cursor"))
+    main = r'<main class="([^"]*)">'
+    assert re.findall(main, page(served, f"/s/{SID}")) == ["transcript"]
+    assert re.findall(main, page(served, f"/s/{SID}/{AID}")) == ["transcript subagent"]
+
+
 def test_a_raw_line_is_its_json_in_ascii(served):
     said = user("café ‮gpj.exe")
     append(transcript(), said, b"torn \x1b[2J \xe2\x80\xae line\n")
@@ -810,6 +819,16 @@ def test_a_real_browser_renders_a_hostile_transcript_as_text_and_refuses_nothing
     assert '<span class="esc">\\u202e</span>gpj.exe' in dom
 
 
+def measured(served, tmp_path: Path, target: str, script: str, fragment: str = "") -> str:
+    shown = page(served, target).replace(f'<base href="{served.root}">', "").replace("</body>", script + "</body>")
+    (tmp_path / "page.html").write_text(shown)
+    (tmp_path / "web.css").write_bytes(web.STYLE)
+    flags = ["--headless=new", "--disable-gpu", "--no-first-run", "--use-mock-keychain", f"--user-data-dir={tmp_path / 'profile'}"]
+    browser = [CHROME, *flags, "--window-size=1400,700", "--dump-dom", (tmp_path / "page.html").as_uri() + fragment]
+    dom = subprocess.run(browser, capture_output=True, text=True, timeout=60).stdout
+    return html.unescape(re.search(r'data-at="([^"]*)"', dom)[1])
+
+
 MEASURE = """<script>
 scrollTo(0, 2500);
 const list = document.querySelector(".agents");
@@ -825,11 +844,20 @@ def test_a_long_subagent_list_can_be_scrolled_to_its_end_while_the_aside_sticks(
     for n in range(40):
         append(transcript(agent=f"a{n:016x}"), user("go"))
         write_meta(SID, f"a{n:016x}", agentType="Explore", description=f"Survey part {n}")
-    shown = page(served, f"/s/{SID}").replace(f'<base href="{served.root}">', "").replace("</body>", MEASURE + "</body>")
-    (tmp_path / "page.html").write_text(shown)
-    (tmp_path / "web.css").write_bytes(web.STYLE)
-    flags = ["--headless=new", "--disable-gpu", "--no-first-run", "--use-mock-keychain", f"--user-data-dir={tmp_path / 'profile'}"]
-    browser = [CHROME, *flags, "--window-size=1400,700", "--dump-dom", (tmp_path / "page.html").as_uri()]
-    dom = subprocess.run(browser, capture_output=True, text=True, timeout=60).stdout
-    top, last, height = map(int, re.search(r'data-at="([^"]*)"', dom)[1].split(","))
+    top, last, height = map(int, measured(served, tmp_path, f"/s/{SID}", MEASURE).split(","))
     assert 0 < top and last <= height, (top, last, height)
+
+
+ICONS = """<script>
+const icons = [...document.querySelectorAll(".prompt, .reply")].map(step => getComputedStyle(step, "::after").content);
+document.body.dataset.at = JSON.stringify(icons);
+</script>"""
+
+
+@pytest.mark.skipif(not CHROME.exists(), reason="needs Google Chrome in /Applications")
+def test_a_keyboard_marks_what_the_user_typed_and_a_robot_what_an_agent_wrote(served, tmp_path):
+    append(transcript(), user("delegate"), reply("on it"))
+    append(transcript(agent=AID), user("find the cursor"), reply("found it"))
+    keyboard, robot = '"\u2328\ufe0f" / ""', '"\U0001f916" / ""'
+    assert json.loads(measured(served, tmp_path, f"/s/{SID}", ICONS)) == [keyboard, robot]
+    assert json.loads(measured(served, tmp_path, f"/s/{SID}/{AID}", ICONS)) == [robot, robot]
