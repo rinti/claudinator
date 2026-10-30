@@ -49,12 +49,10 @@ def _term_pattern(term: str) -> re.Pattern[str]:
     return re.compile(r"(?<![^\W_])" + r"[\W_]+".join(map(re.escape, tokens)) + end)
 
 
-def excerpt(text: str, terms: tuple[str, ...], width: int = 160) -> tuple[str, tuple[tuple[int, int], ...]]:
-    """Window of `width` chars around the first match of terms, as searchable
-    keeps them, whitespace collapsed, with the [start, end) spans of every
-    match inside the window."""
-    flat = " ".join(text.split())
-    folded = flat.translate(_FOLD)
+def marks(text: str, terms: tuple[str, ...]) -> tuple[tuple[int, int], ...]:
+    """The [start, end) spans in text of every match of terms, as searchable
+    keeps them, merged where they overlap."""
+    folded = text.translate(_FOLD)
     spans = sorted(m.span() for t in terms for m in _term_pattern(t).finditer(folded))
     merged: list[tuple[int, int]] = []
     for s, e in spans:
@@ -62,10 +60,19 @@ def excerpt(text: str, terms: tuple[str, ...], width: int = 160) -> tuple[str, t
             merged[-1] = (merged[-1][0], max(e, merged[-1][1]))
         else:
             merged.append((s, e))
+    return tuple(merged)
+
+
+def excerpt(text: str, terms: tuple[str, ...], width: int = 160) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Window of `width` chars around the first match of terms, as searchable
+    keeps them, whitespace collapsed, with the [start, end) spans of every
+    match inside the window."""
+    flat = " ".join(text.split())
+    merged = marks(flat, terms)
     first = merged[0][0] if merged else 0
     start = max(0, min(first - width // 4, len(flat) - width))
     end = min(len(flat), start + width)
     lead = "..." if start > 0 else ""
     shift = len(lead) - start
-    marks = tuple((s + shift, e + shift) for s, e in merged if start <= s and e <= end)
-    return lead + flat[start:end] + ("..." if end < len(flat) else ""), marks
+    shown = tuple((s + shift, e + shift) for s, e in merged if start <= s and e <= end)
+    return lead + flat[start:end] + ("..." if end < len(flat) else ""), shown

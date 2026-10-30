@@ -1,7 +1,7 @@
 import sqlite3
 
 import claudinator.archive as archive_module
-from claudinator.search_text import excerpt, searchable
+from claudinator.search_text import excerpt, marks, searchable
 
 SAMPLE = "".join(map(chr, [*range(0x20, 0x7F), *range(0xA0, 0x180)])) + "åäöÅÄÖﬁﬂ"
 
@@ -31,3 +31,8 @@ def test_excerpt_marks_the_words_fts5_matches():
         expected[term] = tuple((2 * i, 2 * i + 1) for i, (_, token) in enumerate(words) if token == term)
         marked[term] = excerpt(text, (term,), width=len(text))[1]
     assert marked == expected
+
+
+def test_marks_spans_matches_in_text_as_written_across_lines_and_case():
+    text = "Run  the\n\n  Launchd\nagent; launchd-agents differ, and so does Ådalen"
+    assert [text[s:e] for s, e in marks(text, ("launchd agent", "adalen"))] == ["Launchd\nagent", "Ådalen"]
