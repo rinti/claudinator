@@ -359,7 +359,7 @@ def _extras(raw: object) -> tuple[Extra, ...]:
 def _picture(raw: object, part: int | None) -> Picture | None:
     source = raw.get("source") if isinstance(raw, dict) and raw.get("type") == "image" else None
     if isinstance(source, dict) and source.get("type") == "base64" and isinstance(data := source.get("data"), str):
-        return Picture(_str(source.get("media_type")) or "", part, len(data) * 3 // 4)
+        return Picture(_str(source.get("media_type")) or "", part, len(data) * 3 // 4 - data[-2:].count("="))
     return None
 
 
