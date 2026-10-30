@@ -162,6 +162,7 @@ class Status:
     multi_generation: int  # files that were rewritten at least once
     unparsed_lines: int
     pending: tuple[Pending, ...]
+    unreadable: tuple[str, ...]  # transcripts left out of pending, as "path: error"
     unclassified: tuple[Path, ...]  # *.jsonl under projects/ in no known layout, so never archived
     last_sweep: SweepReport | None  # the last sweep that waited for the lock and was not refused
     last_refused: Refusal | None  # the last sweep that waited for the lock and was refused
@@ -583,11 +584,12 @@ class Archive:
             mains = [Path(p) for (p,) in self._db.execute("SELECT DISTINCT path FROM source WHERE agent_id IS NULL")]
             known = self._archived()
             found = discover(self.cfg)
-            pending = []
+            pending, unreadable = [], []
             for loc in found.transcripts:
                 try:
                     p = _pending(loc.path, known.get(loc.path))
-                except OSError:
+                except OSError as e:
+                    unreadable += _failed(str(loc.path), e).errors
                     continue
                 if p is not None:
                     pending.append(p)
@@ -604,6 +606,7 @@ class Archive:
                 multi_generation=rewritten,
                 unparsed_lines=unparsed,
                 pending=tuple(pending),
+                unreadable=tuple(unreadable),
                 unclassified=found.unclassified,
                 last_sweep=_report(json.loads(last)) if last else None,
                 last_refused=_known(Refusal, json.loads(refused)) if refused else None,

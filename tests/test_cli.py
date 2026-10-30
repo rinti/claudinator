@@ -688,6 +688,27 @@ def test_status_reports_a_directory_its_own_sweep_cannot_list_and_exits_1(capsys
     assert f"\n          {hidden.parent}: PermissionError(13, 'Permission denied')\n" in out
 
 
+def test_status_names_a_transcript_it_cannot_read_while_its_own_sweep_is_busy_and_exits_1(capsys):
+    busy, unreadable = transcript(SID2), transcript()
+    append(busy, user("archived"))
+    append(unreadable, user("archived"))
+    assert run(capsys, "install")[0] == 0
+    append(busy, user("new bytes behind a held lock"))
+    locker = subprocess.Popen(
+        [sys.executable, "-c", LOCKER, str(Config.from_env().db)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    unreadable.chmod(0)
+    try:
+        assert locker.stdout.readline() == "locked\n"
+        code, out, _ = run(capsys, "status")
+    finally:
+        unreadable.chmod(0o600)
+        locker.stdin.close()
+        locker.wait(timeout=10)
+    line = f"unread    1 transcript could not be read to count unarchived bytes: {unreadable}: PermissionError(13, 'Permission denied')\n"
+    assert (code, line in out) == (1, True), out
+
+
 def no_archive(path: Path) -> None:
     pass
 

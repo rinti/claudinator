@@ -257,13 +257,16 @@ def _print_status(st: Status, swept: SweepReport, cleanup_days: int | None) -> i
     for p in st.pending:
         if p.settled:
             _emit(f"warning   {_short(str(p.path))} has bytes the sweeper has not archived for an hour")
+    if n := len(st.unreadable):
+        files = "transcript" if n == 1 else "transcripts"
+        _emit(f"unread    {n} {files} could not be read to count unarchived bytes: {st.unreadable[0]}")
     if n := len(st.unclassified):
         files = "file under projects/ matches" if n == 1 else "files under projects/ match"
         _emit(f"unknown   {n} .jsonl {files} no known layout and {'is' if n == 1 else 'are'} not archived: {st.unclassified[0]}")
     setting, days = (f"is {cleanup_days}", cleanup_days) if cleanup_days is not None else ("is unset", 30)
     _emit(f"note      cleanupPeriodDays {setting}, so Claude Code deletes transcripts after {days} days.")
     _emit("          The archive keeps them, and `claudinator resume` restores one before resuming it.")
-    return 1 if not loaded or failed or failed_now or refused or stale or st.unclassified else 0
+    return 1 if not loaded or failed or failed_now or refused or stale or st.unreadable or st.unclassified else 0
 
 
 def cmd_install(cfg: Config, args: argparse.Namespace) -> int:
