@@ -825,7 +825,9 @@ class Archive:
         ).fetchone()
         if row is None:
             what = f"agent {agent_id} of session {session_id}" if agent_id else f"session {session_id}"
-            raise UnknownSession(f"no archived transcript for {what}" + (f" generation {generation}" if generation is not None else ""))
+            if generation is not None:
+                what += f" generation {generation}"
+            raise UnknownSession(f"no archived transcript for {what}")
         return row[0]
 
     def _store_docs(self, docs: Iterable[SideFile], wait: bool) -> _Delta:
@@ -872,8 +874,7 @@ class Archive:
             " ON CONFLICT (path) DO UPDATE SET role = excluded.role, session_id = excluded.session_id,"
             " agent_id = excluded.agent_id, sha256 = excluded.sha256, body = excluded.body,"
             " size = excluded.size, mtime_ns = excluded.mtime_ns, archived_at = excluded.archived_at",
-            (str(d.path), d.role.value, session_id, d.agent_id, digest, body,
-             st.st_size, st.st_mtime_ns, now()),
+            (str(d.path), d.role.value, session_id, d.agent_id, digest, body, st.st_size, st.st_mtime_ns, now()),
         )
         return _Delta(docs=1)
 
@@ -891,9 +892,8 @@ class Archive:
         return report
 
     def _newer(self) -> NewerArchive | None:
-        if (self._meta_int("archive_schema") or 0) > ARCHIVE_SCHEMA or (
-            self._meta_int("projection_version") or 0
-        ) > PROJECTION_VERSION:
+        schema, projection = self._meta_int("archive_schema"), self._meta_int("projection_version")
+        if (schema or 0) > ARCHIVE_SCHEMA or (projection or 0) > PROJECTION_VERSION:
             return NewerArchive("this archive was written by a newer claudinator")
         return None
 

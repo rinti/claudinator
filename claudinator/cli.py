@@ -396,8 +396,10 @@ def _executable() -> Path:
 
 def _note(report: SweepReport) -> None:
     if n := len(report.errors):
-        _emit(f"claudinator: {n} error{'' if n == 1 else 's'} while archiving new bytes, the first: {report.errors[0]}",
-              file=sys.stderr)
+        _emit(
+            f"claudinator: {n} error{'' if n == 1 else 's'} while archiving new bytes, the first: {report.errors[0]}",
+            file=sys.stderr,
+        )
     if report.refused:
         _emit(f"claudinator: {report.refused}; showing what it archived", file=sys.stderr)
     elif report.busy:
