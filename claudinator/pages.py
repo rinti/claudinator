@@ -48,6 +48,21 @@ def href_export(sid: SessionId, aid: AgentId | None) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class Filter:
+    name: str
+    label: str
+    scope: str
+    placeholder: str
+
+
+FILTERS = (
+    Filter("project", "Project", "in", "any"),
+    Filter("since", "Since", "since", "7d"),
+    Filter("until", "Until", "until", "any"),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class Form:
     q: str = ""
     project: str = ""
@@ -57,12 +72,14 @@ class Form:
 
     @classmethod
     def read(cls, query: Mapping[str, str]) -> Form:
-        fields = (query.get(name, "") for name in ("q", "project", "since", "until"))
-        return cls(*fields, tools="tools" in query)
+        return cls(query.get("q", ""), **{f.name: query.get(f.name, "") for f in FILTERS}, tools="tools" in query)
+
+    def values(self) -> tuple[tuple[Filter, str], ...]:
+        return tuple((f, getattr(self, f.name)) for f in FILTERS)
 
     def params(self) -> dict[str, str]:
-        given = {"q": self.q, "project": self.project, "since": self.since, "until": self.until}
-        return {name: value for name, value in given.items() if value} | ({"tools": "on"} if self.tools else {})
+        given = {"q": self.q, **{f.name: value for f, value in self.values()}, "tools": "on" if self.tools else ""}
+        return {name: value for name, value in given.items() if value}
 
     def terms(self) -> tuple[str, ...]:
         return tuple(phrase or word for phrase, word in re.findall(r'"([^"]*)"|(\S+)', self.q))
@@ -240,24 +257,21 @@ def _toolbar(form: Form, count: str, about: str, *, clear: bool) -> Html:
         el(
             "div",
             {"class": "pills"},
-            _pill("Project", "project", form.project, "any"),
-            _pill("Since", "since", form.since, "7d"),
-            _pill("Until", "until", form.until, "any"),
+            *(_pill(f, value) for f, value in form.values()),
             el("label", {"class": "pill tools"}, tools, "Include tools"),
         ),
     )
 
 
-def _pill(word: str, name: str, value: str, placeholder: str) -> Html:
+def _pill(f: Filter, value: str) -> Html:
     field = el(
-        "input", {"name": name, "form": "find", "value": value, "placeholder": placeholder, "spellcheck": "false"}
+        "input", {"name": f.name, "form": "find", "value": value, "placeholder": f.placeholder, "spellcheck": "false"}
     )
-    return el("label", {"class": "pill"}, word, field)
+    return el("label", {"class": "pill"}, f.label, field)
 
 
 def _scope(form: Form) -> str:
-    said = (("in", form.project), ("since", form.since), ("until", form.until))
-    return " ".join(f"{word} {value}" for word, value in said if value)
+    return " ".join(f"{f.scope} {value}" for f, value in form.values() if value)
 
 
 def href_list(form: Form) -> str:
