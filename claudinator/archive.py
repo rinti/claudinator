@@ -16,7 +16,7 @@ from typing import BinaryIO
 from compression import zstd
 
 from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, discover
-from claudinator.lines import line_at, next_segment, pread, records, segments_end
+from claudinator.lines import line_at, next_segment, pread, record_at, records, segments_end
 from claudinator.record import (
     CONVERSATION,
     PROJECTION_VERSION,
@@ -806,9 +806,8 @@ class Archive:
         )
 
     def _entry_text(self, source_id: int, line_off: int, block: int) -> str:
-        made = [rec for off, rec, _ in records(self._line(source_id, line_off)) if off == line_off]
         try:
-            return text_of(made[-1], block)
+            return text_of(record_at(self._line(source_id, line_off), line_off), block)
         except LookupError:
             raise ArchiveError(
                 f"the archive is damaged: entry {block} of the line at byte {line_off} of source {source_id} has no text"

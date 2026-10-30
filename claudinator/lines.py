@@ -96,6 +96,17 @@ def records(
         yield from found
 
 
+def record_at(line: Iterable[tuple[int, bytes]], offset: int) -> Record:
+    """The record the pieces of a line (line_at) make at offset: the last
+    one records yields there, because a line a settled tail left open
+    yields its Unparsed tail first. Unparsed when it yields none there."""
+    found = Unparsed()
+    for off, rec, _ in records(line):
+        if off == offset:
+            found = rec
+    return found
+
+
 def _chunk_records(
     start: int, chunk: bytes, left: _Open | None
 ) -> tuple[list[tuple[int, Record, bool]], _Open | None]:

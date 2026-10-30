@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from claudinator.lines import SEGMENT_BYTES, line_at, next_segment, records, segments_end
+from claudinator.lines import SEGMENT_BYTES, line_at, next_segment, record_at, records, segments_end
 from claudinator.record import Other, Turn, Unparsed
 from helpers import line, user
 
@@ -42,6 +42,12 @@ def test_records_are_the_lines_of_a_segment_in_order_and_skip_empty_lines():
 def test_a_line_a_settled_tail_left_open_is_read_across_the_segment_boundary(tail, then, expected):
     assert shapes(records([(0, tail), (len(tail), then)])) == expected
     assert shapes(records([(len(tail), then)], before=[(0, tail)])) == [r for r in expected if r != expected[0]]
+
+
+def test_the_record_at_an_offset_is_the_line_a_paused_writer_finished():
+    assert isinstance(record_at([(0, PAUSED[:40]), (40, PAUSED[40:])], 0), Turn)
+    assert isinstance(record_at([(0, PAUSED[:40]), (40, WHOLE)], 0), Unparsed)
+    assert isinstance(record_at([(0, PAUSED)], 1), Unparsed)
 
 
 @pytest.fixture
