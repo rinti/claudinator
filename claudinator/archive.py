@@ -172,7 +172,7 @@ class Pending:
     """A file a sweep would archive bytes of now."""
 
     path: Path
-    unarchived_bytes: int  # its next segment: about lines.SEGMENT_BYTES at most, the rest follows segment by segment
+    unarchived_bytes: int  # the length of its next segment, so a lower bound when more segments follow
     settled: bool  # unchanged for SETTLE_SECONDS, so no writer is about to finish it
 
 
@@ -834,10 +834,13 @@ class Archive:
         projects as it reads, and once its DDL has run, the ROLLBACK TO
         with which _project drops a refused record aborts every statement
         open on the connection."""
-        starts = self._db.execute(
-            "SELECT byte_start FROM segment WHERE source_id = ? ORDER BY byte_start", (source_id,)
-        ).fetchall()
-        return ((start, self._payload(source_id, start)) for (start,) in starts)
+        starts = self._starts(source_id)
+        return ((start, self._payload(source_id, start)) for start in starts)
+
+    def _starts(self, source_id: int) -> list[int]:
+        """The first byte of every segment of a source, in file order."""
+        rows = self._db.execute("SELECT byte_start FROM segment WHERE source_id = ? ORDER BY byte_start", (source_id,))
+        return [start for (start,) in rows.fetchall()]
 
     def _payload(self, source_id: int, start: int) -> bytes:
         """The bytes of one segment. A lookup by primary key, so fetching its
@@ -906,9 +909,7 @@ class Archive:
     def _line(self, source_id: int, offset: int) -> list[tuple[int, bytes]]:
         """The pieces of the line that holds byte offset, as the segments
         hold it (lines.line_at), reading only the segments it touches."""
-        starts = [start for (start,) in self._db.execute(
-            "SELECT byte_start FROM segment WHERE source_id = ? ORDER BY byte_start", (source_id,)
-        ).fetchall()]
+        starts = self._starts(source_id)
         return line_at(starts, lambda k: self._payload(source_id, starts[k]), offset)
 
     def _docs(self, session_id: SessionId, role: DocRole) -> list[tuple[AgentId | None, bytes]]:
@@ -963,7 +964,7 @@ class Archive:
         caller's transaction. DESKTOP docs get their session id from the
         body."""
         row = self._db.execute("SELECT size, mtime_ns, sha256 FROM doc WHERE path = ?", (str(d.path),)).fetchone()
-        if (st := _doc_stat(d.path, row and row[:2])) is None:
+        if (st := _doc_stat(d.path, row[:2] if row else None)) is None:
             return _Delta()
         body = d.path.read_bytes()  # after the stat, so a write during the read shows up as a change next time
         digest = hashlib.sha256(body).digest()
