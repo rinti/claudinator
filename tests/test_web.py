@@ -482,7 +482,7 @@ def test_a_transcript_shows_the_time_once_a_minute_and_a_heading_where_the_day_c
     append(transcript(), *lines)
     at = offsets(*lines)
     steps = page(served, f"/s/{SID}").partition('<div class="steps">')[2]
-    found = re.findall(r'<h2 class="day">(.*?)</h2>|<time>(.*?)</time>|<div class="step [^"]*" id="m(\d+)\.0"', steps)
+    found = re.findall(r'<h2 class="date">(.*?)</h2>|<time>(.*?)</time>|<div class="step [^"]*" id="m(\d+)\.0"', steps)
     assert [day or time or int(step) for day, time, step in found] == [
         "Thursday 29 October 2026", "22:38", at[0], at[1], at[2], "22:39", at[3],
         "Friday 30 October 2026", "00:01", at[4],
@@ -531,9 +531,9 @@ def test_the_list_groups_sessions_by_day_and_reads_time_title_project_and_counts
         f'<li><time>10:00</time><span class="title"><a class="open" href="s/{SID}">hello</a></span>'
         '<a class="project" href="./?project=%2FUsers%2Fme%2Fdev%2Fdemo" title="/Users/me/dev/demo">'
         '<span class="dir">/Users/me/dev/</span><span class="leaf">demo</span></a>'
-        '<span class="count"><span class="n">1</span> prompt</span><span class="count"><span class="n">1</span> subagent</span></li>'
+        '<span class="count prompts"><span class="n">1</span> prompt</span><span class="count subagents"><span class="n">1</span> subagent</span></li>'
     ) in shown
-    assert '<span class="leaf">elsewhere</span></a><span class="count"><span class="n">2</span> prompts</span><span></span></li>' in shown
+    assert '<span class="leaf">elsewhere</span></a><span class="count prompts"><span class="n">2</span> prompts</span></li>' in shown
 
 
 def test_a_title_sets_a_leading_slash_command_and_heading_apart_from_the_rest(served):
@@ -564,7 +564,7 @@ def test_a_search_result_counts_its_hits_and_says_when_where_and_where_the_best_
     append(transcript(agent=AID), user("a wombat in a subagent", ts="2026-10-01T10:06:00Z"))
     append(transcript(SID2), user("nothing to see", ts="2026-10-02T08:00:00Z"), ai_title("Zebracorn hunt"))
     where = '<span><span class="dir">/Users/me/dev/</span><span class="leaf">demo</span></span>'
-    result = r'<p class="tally"><span class="n">(\d+)</span> <span>(\w+)</span></p>.*?<p class="meta"><span>(.*?)</span>(.*?)<span class="tag">(.*?)</span></p>'
+    result = r'<p class="tally"><span class="n">(\d+)</span> <span>(\w+)</span></p>.*?<p class="meta"><span>(.*?)</span>(.*?)<span class="best">(.*?)</span></p>'
     assert re.findall(result, page(served, "/?q=quokka")) == [("2", "hits", "Thu 1 Oct 2026 · 10:06", where, "best in a reply")]
     assert re.findall(result, page(served, "/?q=wombat")) == [("1", "hit", "Thu 1 Oct 2026 · 10:06", where, "in a prompt · subagent a7c9c203")]
     assert re.findall(result, page(served, "/?q=zebracorn")) == [("1", "hit", "Fri 2 Oct 2026 · 08:00", where, "in the title")]

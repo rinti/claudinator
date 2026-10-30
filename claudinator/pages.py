@@ -153,7 +153,7 @@ def _session_row(s: SessionSummary) -> Html:
         title,
         project,
         _tally(s.prompts, "prompt"),
-        _tally(s.subagents, "subagent") if s.subagents else el("span", None),
+        _tally(s.subagents, "subagent") if s.subagents else None,
     )
 
 
@@ -191,7 +191,7 @@ def _where(cwd: str | None) -> tuple[Html | None, Html]:
 
 
 def _tally(n: int, noun: str) -> Html:
-    return el("span", {"class": "count"}, el("span", {"class": "n"}, f"{n:,}"), " ", _noun(n, noun))
+    return el("span", {"class": f"count {noun}s"}, el("span", {"class": "n"}, f"{n:,}"), " ", _noun(n, noun))
 
 
 def search_page(root: str, hits: Sequence[SessionHit], form: Form, swept: SweepReport | None) -> Html:
@@ -229,7 +229,7 @@ def _hit(hit: SessionHit, form: Form) -> Html:
         {"class": "meta"},
         el("span", None, f"{when:%a} {when.day} {when:%b %Y} · {when:%H:%M}") if when else None,
         el("span", None, *_where(s.cwd)),
-        el("span", {"class": "tag"}, found + (f" · subagent {best.agent_id[:8]}" if best.agent_id else "")),
+        el("span", {"class": "best"}, found + (f" · subagent {best.agent_id[:8]}" if best.agent_id else "")),
     )
     title = el("a", {"class": "open", "href": href_transcript(s.id, best.agent_id, at, form)}, s.title or s.id[:8])
     return el(
@@ -468,7 +468,7 @@ def _dated(view: _View, steps: Sequence[Step]) -> Iterator[Html]:
     for minute, run in _minutes(steps):
         if minute is not None and minute.date() != seen:
             seen = minute.date()
-            yield el("h2", {"class": "day"}, _day(seen, year=True))
+            yield el("h2", {"class": "date"}, _day(seen, year=True))
         parts: list[Html] = []
         for machine, group in groupby(run, key=lambda step: isinstance(step, Call | Output | Thought)):
             made = [_step(view, step) for step in group]

@@ -74,6 +74,7 @@ mark { padding-inline: 0.1875rem; border-radius: 0.25rem; background: var(--mark
 ::selection { background: color-mix(in oklch, var(--acc) 30%, transparent); }
 .esc { color: var(--ink3); font-family: var(--mono); font-size: 0.85em; }
 .text, pre { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: isolate; }
+.sessions .open, .project, .command code, .agents .name, .agents .type, .gist, .note .kinds { overflow: clip; white-space: nowrap; text-overflow: ellipsis; }
 
 .top {
   position: sticky;
@@ -228,7 +229,7 @@ mark { padding-inline: 0.1875rem; border-radius: 0.25rem; background: var(--mark
   position: relative;
   display: grid;
   grid-template-columns: 3.25rem minmax(0, 2.4fr) minmax(0, 1fr) 5.25rem 6.5rem;
-  grid-template-areas: "time title project prompts agents";
+  grid-template-areas: "time title project prompts subagents";
   align-items: center;
   gap: 1.25rem;
   padding-block: 0.6875rem;
@@ -237,10 +238,10 @@ mark { padding-inline: 0.1875rem; border-radius: 0.25rem; background: var(--mark
 }
 .sessions time { grid-area: time; color: var(--ink3); font-family: var(--mono); font-size: 0.78125rem; font-variant-numeric: tabular-nums; }
 .sessions .title { grid-area: title; display: flex; align-items: baseline; gap: 0.8125rem; }
-.sessions .open { overflow: clip; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; letter-spacing: -0.005em; }
+.sessions .open { font-weight: 500; letter-spacing: -0.005em; }
 .sessions .project { grid-area: project; }
-.sessions li > :nth-child(4) { grid-area: prompts; }
-.sessions li > :nth-child(5) { grid-area: agents; }
+.sessions .prompts { grid-area: prompts; }
+.sessions .subagents { grid-area: subagents; }
 .open::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
 .open:focus-visible { outline: 2px solid transparent; }
 :is(.sessions, .hits) li:has(.open:focus-visible) { outline: 2px solid var(--acc); outline-offset: -2px; }
@@ -266,7 +267,7 @@ mark { padding-inline: 0.1875rem; border-radius: 0.25rem; background: var(--mark
   color: var(--ink3);
   font-family: var(--mono); font-size: 0.6875rem;
 }
-.project { overflow: clip; white-space: nowrap; text-overflow: ellipsis; font-family: var(--mono); font-size: 0.78125rem; }
+.project { font-family: var(--mono); font-size: 0.78125rem; }
 a.project { position: relative; z-index: 1; }
 a.project:active .leaf { color: var(--acc); }
 .dir { color: var(--ink3); }
@@ -298,7 +299,7 @@ a.project:active .leaf { color: var(--acc); }
 .found { display: flex; flex-direction: column; gap: 0.5rem; }
 .found h2 { font-size: 1.125rem; font-weight: 600; line-height: 1.3; letter-spacing: -0.018em; }
 .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.375rem 1rem; color: var(--ink3); font-family: var(--mono); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
-.meta .tag { padding-block: 0.125rem; padding-inline: 0.5rem; border-radius: 999px; font-size: inherit; letter-spacing: 0; text-transform: none; translate: none; }
+.best { padding-block: 0.125rem; padding-inline: 0.5rem; border-radius: 999px; background: var(--accbg); color: var(--acc); }
 .excerpt { max-inline-size: 70ch; margin-block-start: 0.375rem; color: var(--ink2); font-size: 0.96875rem; line-height: 1.7; text-wrap: pretty; }
 .none {
   display: flex;
@@ -345,7 +346,7 @@ aside h2 .n { font-size: 0.75rem; letter-spacing: 0; }
   font-family: var(--mono); font-size: 0.78125rem;
 }
 .command > span { color: var(--ink3); }
-.command code { flex: 1; overflow: clip; white-space: nowrap; text-overflow: ellipsis; user-select: all; -webkit-user-select: all; }
+.command code { flex: 1; user-select: all; -webkit-user-select: all; }
 .gone { color: var(--ink3); font-size: 0.8125rem; }
 .kind { color: var(--ink2); font-family: var(--mono); font-size: 0.78125rem; }
 aside section > p > a { color: var(--acc); }
@@ -380,14 +381,14 @@ aside section > p > a:active { color: var(--ink); }
 .agents a { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.0625rem 0.75rem; padding-block: 0.4375rem; padding-inline: 0.625rem; border-radius: 0.5rem; }
 .agents a:focus-visible { outline-offset: -2px; }
 .agents a:active { background: var(--bg3); }
-.agents .name { overflow: clip; white-space: nowrap; text-overflow: ellipsis; font-size: 0.84375rem; font-weight: 500; }
+.agents .name { font-size: 0.84375rem; font-weight: 500; }
 .agents .id, .agents .type { color: var(--ink3); font-family: var(--mono); font-size: 0.71875rem; }
-.agents .type { grid-column: 1 / -1; overflow: clip; white-space: nowrap; text-overflow: ellipsis; }
+.agents .type { grid-column: 1 / -1; }
 
 .steps { display: flex; flex-direction: column; gap: 0.875rem; }
-.steps > .day { display: flex; align-items: center; gap: 1rem; margin-block: 0 0.625rem; color: var(--ink2); font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.02em; }
-.steps > .day::after { content: ""; flex: 1; block-size: 1px; background: var(--line); }
-.steps > .day:not(:first-child) { margin-block-start: 2rem; }
+.steps > .date { display: flex; align-items: center; gap: 1rem; margin-block-end: 0.625rem; color: var(--ink2); font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.02em; }
+.steps > .date::after { content: ""; flex: 1; block-size: 1px; background: var(--line); }
+.steps > .date:not(:first-child) { margin-block-start: 2rem; }
 .minute { display: grid; grid-template-columns: var(--gutter) minmax(0, 1fr); align-items: baseline; gap: 0.875rem var(--gap); }
 .minute > time { color: var(--ink3); font: 0.75rem/1.125rem var(--mono); font-variant-numeric: tabular-nums; }
 .minute > :not(time) { grid-column: 2; }
@@ -424,7 +425,7 @@ aside section > p > a:active { color: var(--ink); }
 .code .info { display: block; margin-block-end: 0.25rem; color: var(--ink3); font-size: 0.6875rem; }
 .image img { border: 1px solid var(--line); border-radius: 0.625rem; }
 
-.box { display: flex; flex-direction: column; gap: 1px; overflow: clip; border: 1px solid var(--line); border-radius: 0.625rem; background: var(--line); }
+.box { --row: 2.125rem; display: flex; flex-direction: column; gap: 1px; overflow: clip; border: 1px solid var(--line); border-radius: 0.625rem; background: var(--line); }
 .box > .step { background: var(--bg); }
 summary { list-style: none; cursor: pointer; }
 summary::-webkit-details-marker { display: none; }
@@ -433,7 +434,7 @@ summary::-webkit-details-marker { display: none; }
   grid-template-columns: 0.625rem auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.625rem;
-  min-block-size: 2.125rem;
+  min-block-size: var(--row);
   padding-inline: 0.75rem;
   font-family: var(--mono); font-size: 0.78125rem;
 }
@@ -442,12 +443,12 @@ summary::-webkit-details-marker { display: none; }
 .box summary:active { background: var(--bg3); }
 .box summary:focus-visible { outline-offset: -2px; }
 .box b { font-weight: 500; }
-.gist { overflow: clip; white-space: nowrap; text-overflow: ellipsis; color: var(--ink2); }
+.gist { color: var(--ink2); }
 .size { color: var(--ink3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .size.error { display: flex; align-items: center; gap: 0.375rem; color: var(--err); }
 .size.error::before { content: ""; inline-size: 0.375rem; block-size: 0.375rem; border-radius: 50%; background: currentColor; }
 .spawns summary { padding-inline-end: 6.5rem; }
-.spawned { position: absolute; inset-block-start: 0; inset-inline-end: 0.75rem; display: flex; align-items: center; block-size: 2.125rem; color: var(--acc); font-family: var(--mono); font-size: 0.78125rem; }
+.spawned { position: absolute; inset-block-start: 0; inset-inline-end: 0.75rem; display: flex; align-items: center; block-size: var(--row); color: var(--acc); font-family: var(--mono); font-size: 0.78125rem; }
 .spawned:active { color: var(--ink); }
 .panel {
   padding-block: 0.625rem 0.875rem;
@@ -459,8 +460,8 @@ summary::-webkit-details-marker { display: none; }
 }
 .panel, .panel > .output { position: relative; }
 .panel > :not(.raw, .output), .panel > .output > :not(.raw) { margin-inline-end: 2.5rem; }
-.panel > .raw, .panel > .output > .raw { inset-block-start: 0.625rem; inset-inline-end: 0.875rem; }
-.panel > .output > .raw { inset-inline-end: 0; }
+.panel > .raw, .panel > .output > .raw { inset-block-start: 0.625rem; }
+.panel > .raw { inset-inline-end: 0.875rem; }
 .panel > .output { margin-block-start: 0.625rem; padding-block-start: 0.625rem; border-block-start: 1px dashed var(--line2); }
 .panel .input { color: var(--ink3); }
 .stderr { color: var(--err); }
@@ -478,7 +479,7 @@ summary::-webkit-details-marker { display: none; }
 .note pre, .note ul { margin-block: 0.25rem 0.5rem; padding-inline: 1.8125rem 3rem; color: var(--ink2); font: 0.75rem/1.6 var(--mono); }
 .note ul { columns: 3; list-style: none; }
 .note ul a { color: var(--acc); }
-.note .kinds { flex: 1; overflow: clip; white-space: nowrap; text-overflow: ellipsis; }
+.note .kinds { flex: 1; }
 .hidden .badge { border-style: dashed; font-size: 0.625rem; letter-spacing: 0.08em; text-transform: uppercase; }
 
 /* Opacity, not visibility, so a hidden raw link stays in the tab order and shows once it holds focus. */
@@ -521,7 +522,7 @@ summary::-webkit-details-marker { display: none; }
 @container (inline-size < 40rem) {
   .sessions li {
     grid-template-columns: 2.75rem minmax(0, 1fr) auto auto;
-    grid-template-areas: "time title title title" ". project prompts agents";
+    grid-template-areas: "time title title title" ". project prompts subagents";
     gap: 0.25rem 0.75rem;
     padding-inline: 0.5rem;
   }
