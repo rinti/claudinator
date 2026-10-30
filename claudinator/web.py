@@ -136,9 +136,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _send(self, response: Response) -> None:
         try:
             self.send_response(response.status)
+            empty = response.status == HTTPStatus.NO_CONTENT
             for name, value in (
                 ("Content-Type", response.content_type),
-                ("Content-Length", str(len(response.body))),
+                *(() if empty else (("Content-Length", str(len(response.body))),)),
                 ("Content-Security-Policy", response.policy),
                 ("X-Content-Type-Options", "nosniff"),
                 ("Referrer-Policy", "no-referrer"),
@@ -292,6 +293,14 @@ def stylesheet(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Respo
     return Response(200, "text/css; charset=utf-8", STYLE)
 
 
+FAVICON = re.compile(r"/favicon\.ico")
+
+
+def favicon(cfg: Config, query: Mapping[str, str], m: re.Match[str]) -> Response:
+    """No icon, and no 404 in the console for the one a browser asks for."""
+    return Response(HTTPStatus.NO_CONTENT, HTML, b"")
+
+
 ROUTES: tuple[tuple[re.Pattern[str], Callable[[Config, Mapping[str, str], re.Match[str]], Response]], ...] = (
     (HOME, home),
     (TRANSCRIPT, transcript),
@@ -299,6 +308,7 @@ ROUTES: tuple[tuple[re.Pattern[str], Callable[[Config, Mapping[str, str], re.Mat
     (IMAGE, picture),
     (EXPORT, export),
     (STYLESHEET, stylesheet),
+    (FAVICON, favicon),
 )
 
 

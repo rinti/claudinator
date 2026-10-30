@@ -91,6 +91,7 @@ def test_a_wrong_token_or_a_missing_cookie_is_refused(served):
     assert get(served, "/", cookie=None)[0] == 403
     assert get(served, "/", cookie=f"claudinator-{served.port}={'x' * 43}")[0] == 403
     assert get(served, "/web.css", cookie=None)[0] == 403
+    assert get(served, "/favicon.ico", cookie=None)[0] == 403
 
 
 def test_only_this_server_as_127_0_0_1_or_localhost_gets_an_answer(served):
@@ -108,6 +109,7 @@ def test_every_response_forbids_scripts_and_caching(served):
     answers = {
         "page": get(served, f"/s/{SID}"),
         "stylesheet": get(served, "/web.css"),
+        "favicon": get(served, "/favicon.ico"),
         "raw": get(served, f"/raw/{SID}/0"),
         "image": get(served, f"/image/{SID}/0.0"),
         "download": get(served, f"/export/{SID}"),
@@ -119,6 +121,7 @@ def test_every_response_forbids_scripts_and_caching(served):
     assert {name: status for name, (status, _, _) in answers.items()} == {
         "page": 200,
         "stylesheet": 200,
+        "favicon": 204,
         "raw": 200,
         "image": 200,
         "download": 200,
@@ -136,6 +139,7 @@ def test_every_response_forbids_scripts_and_caching(served):
             "no-referrer",
         ), name
     assert all(answers[name][1]["content-security-policy"].endswith("; sandbox") for name in ("raw", "image", "download"))
+    assert (answers["favicon"][2], "content-length" in answers["favicon"][1]) == (b"", False)
 
 
 def test_a_transcript_shows_each_result_inside_the_call_it_answers(served):
