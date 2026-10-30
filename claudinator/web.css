@@ -1,7 +1,8 @@
 :root { color-scheme: light dark; --you: #eef3ff; --muted: #888; --error: #b3261e; --line: #ccc; --mark: #ffe58a; }
 @media (prefers-color-scheme: dark) { :root { --you: #1d2733; --line: #444; --mark: #6b5a00; } }
 body { font: 15px/1.45 system-ui, sans-serif; max-width: 64rem; margin: 0 auto; padding: 1rem; }
-a { color: inherit; }
+a { color: inherit; text-decoration: none; }
+a:hover { text-decoration: underline; }
 
 /* Transcript text keeps its line breaks, wraps anywhere, and is isolated so right-to-left text cannot reorder the page around it. */
 .text, pre { white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: isolate; }
@@ -36,9 +37,11 @@ mark { background: var(--mark); color: inherit; }
 header .find { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0 1rem; }
 header .find input[type="search"] { flex: 1 1 16rem; }
 table.sessions { width: 100%; border-collapse: collapse; }
-table.sessions td { padding: 0.2rem 0.4rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.sessions td { padding: 0.2rem 0.4rem; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+table.sessions td.title { width: 100%; white-space: normal; }
+.sessions .project a { display: inline-block; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
 .hits li { margin: 0.6rem 0; }
-.excerpt { display: block; text-decoration: none; }
+.excerpt { display: block; }
 .muted, .gone { color: var(--muted); }
 .banner { background: #fff4e5; color: #222; padding: 0.5rem; border-radius: 4px; }
 .agents { margin: 0.3rem 0; }

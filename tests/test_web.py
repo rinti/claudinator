@@ -219,6 +219,20 @@ def test_an_agent_call_links_its_subagent_and_the_subagent_links_back(served):
     assert get(served, f"/s/{SID}/{AID}?call=toolu_88")[1]["location"] == f"/s/{SID}/{AID}?at={inner}.0#m{inner}.0"
 
 
+def test_the_list_counts_its_sessions_and_reads_date_title_project_prompts_agents(served):
+    append(transcript(), user("hello", ts="2026-10-01T10:00:00Z"))
+    append(transcript(agent=AID), user("subagent"))
+    append(transcript(SID2, slug="-tmp-elsewhere"), user("again", ts="2026-10-02T10:00:00Z", cwd="/tmp/elsewhere"), user("more"))
+    shown = page(served, "/")
+    assert shown.index("<p class=\"muted\">2 sessions</p>") < shown.index("<table")
+    rows = [
+        [re.sub(r"<[^>]*>", "", cell) for cell in re.findall(r"<td[^>]*>(.*?)</td>", row)]
+        for row in re.findall(r"<tr>(.*?)</tr>", shown)
+    ]
+    assert [row[1:] for row in rows] == [["again", "/tmp/elsewhere", "2 prompts", ""], ["hello", "/Users/me/dev/demo", "1 prompt", "1 agent"]]
+    assert all(re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d", row[0]) for row in rows)
+
+
 def test_a_search_hit_opens_its_transcript_at_the_matching_step_with_the_words_marked(served):
     lines = (user("first"), reply("the quokka line"))
     append(transcript(), *lines)

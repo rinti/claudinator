@@ -339,6 +339,7 @@ def sessions_page(rows: Sequence[SessionSummary], form: Form, swept: SweepReport
         "claudinator",
         _top(form),
         _banner(swept, error),
+        None if error else el("p", {"class": "muted"}, _plural(len(rows), "session")),
         el("table", {"class": "sessions"}, *(_session_row(s) for s in rows)),
     )
 
@@ -592,18 +593,19 @@ def _banner(swept: SweepReport | None, error: str) -> Html | None:
 
 
 def _session_row(s: SessionSummary) -> Html:
-    project = el("a", {"href": "/?" + urlencode({"project": s.cwd})}, human.short(s.cwd)) if s.cwd else "?"
+    where = human.short(s.cwd)
+    project = el("a", {"href": "/?" + urlencode({"project": s.cwd}), "title": where}, where) if s.cwd else where
     return el(
         "tr",
         None,
         el("td", {"class": "muted"}, human.when(s.last_ts)),
-        el("td", None, project),
         el(
             "td",
-            None,
+            {"class": "title"},
             el("a", {"href": href_transcript(s.id)}, human.clip(s.title or s.id[:8], 120)),
             None if s.on_disk else el("span", {"class": "gone"}, " gone"),
         ),
+        el("td", {"class": "project"}, project),
         el("td", {"class": "muted"}, _plural(s.prompts, "prompt")),
         el("td", {"class": "muted"}, _plural(s.subagents, "agent") if s.subagents else ""),
     )
