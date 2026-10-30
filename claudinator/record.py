@@ -18,7 +18,7 @@ Millis = NewType("Millis", int)  # epoch milliseconds, UTC
 class Kind(enum.StrEnum):
     """What a searchable unit is."""
 
-    PROMPT = "prompt"  # human-typed (main) or parent-written (subagent) user text
+    PROMPT = "prompt"  # the user's (main: typed, or sent by a `claude -p` script) or parent-written (subagent) user text
     REPLY = "reply"  # assistant text block
     TOOL_CALL = "tool_call"  # assistant tool_use: name + compact JSON input
     TOOL_OUTPUT = "tool_output"
