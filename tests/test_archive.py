@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from claudinator.archive import TAIL_BYTES, ArchiveError, NewerArchive, Plan, plan
+from claudinator.archive import TAIL_BYTES, Archive, ArchiveError, NewerArchive, Plan, plan
 from claudinator.layout import Config, DocRole, SideFile, TranscriptFile, classify
 from claudinator.lines import SEGMENT_BYTES
 import claudinator.archive as archive_module
@@ -627,3 +627,48 @@ def test_a_sweep_racing_another_never_leaves_an_older_side_file_body_stamped_as_
             assert description(archive) == "first"
     finally:
         other.close()
+
+
+def test_a_read_only_open_never_creates_an_archive():
+    cfg = Config.from_env()
+    with pytest.raises(ArchiveError, match="run claudinator install"):
+        Archive.open(cfg, readonly=True)
+    assert not cfg.db.parent.exists()
+
+
+STAMPS = {
+    "older index": ("projection_version", PROJECTION_VERSION - 1, "run this claudinator's sweep once first"),
+    "newer index": ("projection_version", PROJECTION_VERSION + 1, "restart serve with it"),
+    "newer archive schema": ("archive_schema", archive_module.ARCHIVE_SCHEMA + 1, "restart serve with it"),
+}
+
+
+@pytest.mark.parametrize(("key", "stamp", "fix"), STAMPS.values(), ids=STAMPS)
+def test_a_read_only_open_refuses_another_version_and_leaves_the_file_as_it_was(key, stamp, fix):
+    append(transcript(), user("archived quokka"))
+    with open_archive() as archive:
+        archive.sweep()
+    set_meta(key, str(stamp))
+    db = Config.from_env().db
+    before = db.read_bytes()
+    with pytest.raises(ArchiveError) as refused:
+        Archive.open(Config.from_env(), readonly=True)
+    assert str(refused.value).endswith(fix)
+    assert db.read_bytes() == before
+    with sqlite3.connect(db) as check:
+        assert check.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone() == (str(stamp),)
+
+
+def test_a_read_only_archive_reads_and_cannot_write():
+    append(transcript(), user("archived quokka"))
+    with open_archive() as archive:
+        archive.sweep()
+    append(transcript(), user("a zebracorn written later"))
+    with Archive.open(Config.from_env(), readonly=True) as archive:
+        assert hit_count(archive, "quokka") == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            archive.rebuild(force=True)
+        assert archive.sweep(wait=False).bytes_archived == 0
+        assert hit_count(archive, "quokka") == 1
+    with open_archive() as archive:
+        assert hit_count(archive, "zebracorn") == 0

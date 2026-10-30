@@ -83,6 +83,8 @@ class Subagent:
     description: str | None
     agent_type: str | None
     first_ts: Millis | None
+    tool_use_id: str | None  # the Agent call that started it
+    parent: AgentId | None  # the subagent whose transcript holds that call; None for the main one
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +98,8 @@ class Excerpt:
     kind: Kind
     ts: Millis | None
     agent_id: AgentId | None
+    line_off: int  # with block, where the unit sits in its transcript
+    block: int
     text: str  # ~160 chars around the first matched term, single line
     marks: tuple[tuple[int, int], ...]  # [start, end) spans of matched terms in text
 
@@ -365,20 +369,26 @@ class Archive:
     _db: sqlite3.Connection = field(repr=False)
 
     @classmethod
-    def open(cls, cfg: Config) -> Archive:
+    def open(cls, cfg: Config, *, readonly: bool = False) -> Archive:
         """Open the database, creating it if it does not exist, and make the
         projection current. When both versions are current this takes no
-        write lock, so a reader never waits for a sweep in another process."""
+        write lock, so a reader never waits for a sweep in another process.
+
+        readonly: never create or change the file. SQLite refuses every
+        write on the connection, and an archive stamped by any other
+        claudinator, older or newer, is an ArchiveError."""
         if not cfg.db.exists():
+            if readonly:
+                raise ArchiveError(f"no archive at {cfg.db}; run claudinator install")
             _create(cfg.db)
-        db = sqlite3.connect(cfg.db.as_uri() + "?mode=rw", uri=True, autocommit=True)
+        db = sqlite3.connect(cfg.db.as_uri() + ("?mode=ro" if readonly else "?mode=rw"), uri=True, autocommit=True)
         try:
             db.execute(f"PRAGMA busy_timeout = {BUSY_MS}")
             db.execute("PRAGMA synchronous = NORMAL")
             db.execute("PRAGMA foreign_keys = ON")
             db.create_function("casefold", 1, lambda text: text and text.casefold(), deterministic=True)
             archive = cls(cfg, db)
-            archive._converge()
+            archive._converge(readonly)
         except BaseException:
             db.close()
             raise
@@ -393,7 +403,7 @@ class Archive:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    def _converge(self) -> None:
+    def _converge(self, readonly: bool) -> None:
         if not self._db.execute("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'meta'").fetchone():
             raise ArchiveError(f"{self.cfg.db} is not a claudinator archive")
         schema, projection = self._meta_int("archive_schema"), self._meta_int("projection_version")
@@ -402,6 +412,13 @@ class Archive:
         if schema < ARCHIVE_SCHEMA:
             raise ArchiveError(
                 f"{self.cfg.db} has archive schema {schema}, and this claudinator reads schema {ARCHIVE_SCHEMA} only"
+            )
+        if readonly and (schema, projection) != (ARCHIVE_SCHEMA, PROJECTION_VERSION):
+            raise ArchiveError(
+                f"{self.cfg.db} was written by a newer claudinator; restart serve with it"
+                if self._newer()
+                else f"{self.cfg.db} has index version {projection} and this claudinator reads {PROJECTION_VERSION};"
+                " run this claudinator's sweep once first"
             )
         if schema == ARCHIVE_SCHEMA and projection < PROJECTION_VERSION:
             try:
@@ -502,7 +519,7 @@ class Archive:
             sessions = {row["session_id"]: self._summary(row) for row in self._session_rows(Filters(), None, ids=ids)}
             for row in rows:
                 text, marks = excerpt(self._entry_text(row["source_id"], row["line_off"], row["block"]), terms)
-                best = Excerpt(Kind(row["kind"]), row["ts"], row["agent_id"], text, marks)
+                best = Excerpt(Kind(row["kind"]), row["ts"], row["agent_id"], row["line_off"], row["block"], text, marks)
                 hits.append(SessionHit(sessions[row["session_id"]], row["hits"], best))
         return hits
 
@@ -530,7 +547,16 @@ class Archive:
                 (summary.id,),
             ):
                 meta = metas.get(aid)
-                agents.append(Subagent(aid, meta and meta.description, meta and meta.agent_type, first_ts))
+                agents.append(
+                    Subagent(
+                        aid,
+                        meta and meta.description,
+                        meta and meta.agent_type,
+                        first_ts,
+                        meta and meta.tool_use_id,
+                        meta and meta.parent,
+                    )
+                )
         return Session(summary, tuple(agents))
 
     def conversation(self, session_id: SessionId, agent_id: AgentId | None = None) -> Iterator[Message]:
@@ -551,6 +577,24 @@ class Archive:
             if isinstance(rec, Turn)
             for _, b in rec.blocks
         )
+
+    def lines(self, session_id: SessionId, agent_id: AgentId | None = None) -> Iterator[tuple[int, Record]]:
+        """Every line of the transcript's latest generation as (offset, record),
+        in file order, from the archive whether or not the file is still on
+        disk. The transcript and its segments are fixed in one snapshot when
+        this is called, and lines are read as the caller iterates."""
+        with self._snapshot():
+            segments = self._segments(self._source(session_id, agent_id))
+        return ((off, rec) for off, rec, _ in records(segments))
+
+    def line(self, session_id: SessionId, agent_id: AgentId | None, offset: int) -> bytes | None:
+        """The bytes of the line that starts at offset in the transcript's
+        latest generation, without its newline, or None if none starts there."""
+        with self._snapshot():
+            pieces = self._line(self._source(session_id, agent_id), offset)
+        if not pieces or pieces[0][0] != offset:
+            return None
+        return b"".join(data for _, data in pieces).removesuffix(b"\n")
 
     def export(
         self,

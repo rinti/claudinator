@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from claudinator.archive import AmbiguousSession, EmptyQuery, Filters, Query, Subagent, UnknownSession
-from claudinator.record import Kind
+from claudinator.record import Kind, parse
 from helpers import (
     AID,
     SID,
@@ -191,7 +191,7 @@ def test_session_lists_subagents_with_their_meta():
     with open_archive() as archive:
         archive.sweep()
         agents = archive.session(SID[:8]).agents
-    assert agents == (Subagent(AID, "Find the cursor", "Explore", 1790848809000),)
+    assert agents == (Subagent(AID, "Find the cursor", "Explore", 1790848809000, "toolu_77", None),)
 
 
 def test_conversation_reads_the_archive_in_file_order_and_links_spawned_agents():
@@ -370,3 +370,40 @@ def test_status_reads_one_snapshot_while_a_sweep_commits_partway(monkeypatch):
         other.close()
     assert not armed[0]
     assert (status.transcripts, status.last_sweep) == (1, before)
+
+
+def test_lines_and_line_read_back_every_line_of_the_archived_transcript():
+    first, second = user("look into it"), tool_call("Bash", {"command": "ls"})
+    append(transcript(), first, second, reply("found the quokka"))
+    with open_archive() as archive:
+        archive.sweep()
+        transcript().unlink()
+        offsets = [off for off, _ in archive.lines(SID)]
+        assert offsets == [0, len(first), len(first) + len(second)]
+        assert [parse(archive.line(SID, None, off)) for off in offsets] == [rec for _, rec in archive.lines(SID)]
+        assert archive.line(SID, None, len(first)) == second.removesuffix(b"\n")
+        assert archive.line(SID, None, 1) is None
+        with pytest.raises(UnknownSession):
+            archive.lines(SID, AID)
+
+
+def test_a_search_hit_names_the_line_and_block_of_its_best_unit():
+    before = user("nothing here")
+    append(transcript(), before, assistant({"type": "thinking", "thinking": ""}, {"type": "text", "text": "the quokka"}))
+    with open_archive() as archive:
+        archive.sweep()
+        (hit,) = archive.search(Query(("quokka",)))
+    assert (hit.best.line_off, hit.best.block) == (len(before), 1)
+
+
+def test_a_subagent_knows_the_call_that_started_it_and_whose_transcript_holds_it():
+    append(transcript(), user("delegate it"))
+    nested = "b0b0b0b0b0b0b0b0b"
+    append(transcript(agent=AID), user("find the cursor"))
+    append(transcript(agent=nested), user("look deeper"))
+    write_meta(SID, AID, toolUseId="toolu_77")
+    write_meta(SID, nested, toolUseId="toolu_78", parentAgentId=AID)
+    with open_archive() as archive:
+        archive.sweep()
+        agents = {a.id: (a.tool_use_id, a.parent) for a in archive.session(SID).agents}
+    assert agents == {AID: ("toolu_77", None), nested: ("toolu_78", AID)}
