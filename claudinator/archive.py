@@ -921,7 +921,12 @@ class Archive:
         (blob,) = self._db.execute(
             "SELECT zstd FROM segment WHERE source_id = ? AND byte_start = ?", (source_id, start)
         ).fetchone()
-        return zstd.decompress(blob)
+        try:
+            return zstd.decompress(blob)
+        except zstd.ZstdError as e:
+            raise ArchiveError(
+                f"the archive is damaged: segment {start} of source {source_id} does not decompress ({e})"
+            ) from e
 
     def _session_rows(
         self, filters: Filters, limit: int | None, prefix: str | None = None, ids: str | None = None
@@ -963,9 +968,16 @@ class Archive:
         )
 
     def _entry_text(self, source_id: int, line_off: int, block: int) -> str:
-        """The text of one entry, from the record _records() made at line_off."""
-        *_, rec = (rec for off, rec, _ in _records(self._line(source_id, line_off)) if off == line_off)
-        return text_of(rec, block)
+        """The text of one entry, from the record _records() makes at
+        line_off: the last one there, which replaces a torn tail's Unparsed
+        when the line was mended."""
+        made = [rec for off, rec, _ in _records(self._line(source_id, line_off)) if off == line_off]
+        try:
+            return text_of(made[-1], block)
+        except LookupError:  # no record starts at line_off, or it has no such block
+            raise ArchiveError(
+                f"the archive is damaged: entry {block} of the line at byte {line_off} of source {source_id} has no text"
+            ) from None
 
     def _line(self, source_id: int, offset: int) -> list[tuple[int, bytes]]:
         """The bytes from offset through the end of its line, as the

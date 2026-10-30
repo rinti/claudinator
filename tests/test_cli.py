@@ -377,6 +377,37 @@ def test_an_unusable_database_directory_is_a_message_not_a_traceback(capsys, tmp
     assert err.startswith("claudinator: [Errno ") and str(tmp_path / "a-file") in err
 
 
+@pytest.mark.parametrize("argv", [["show", "8f2d"], ["search", "quokka"], ["sessions"], ["export", "8f2d"], ["rebuild"]])
+def test_a_segment_that_does_not_decompress_is_a_message_not_a_traceback(capsys, argv):
+    append(transcript(), user("one quokka"))
+    run(capsys, "sweep")
+    db = sqlite3.connect(Config.from_env().db)
+    db.execute("DROP TRIGGER segment_no_update")
+    db.execute("UPDATE segment SET zstd = x'00ff00ff'")
+    db.commit()
+    db.close()
+    code, _, err = run(capsys, *argv)
+    assert code == 1
+    assert err.startswith("claudinator: the archive is damaged: "), err
+
+
+@pytest.mark.parametrize(("line_off", "block"), [(10**9, 0), (0, 7)], ids=["past the archived end", "no such block"])
+def test_an_entry_that_names_no_text_is_a_message_not_a_traceback(capsys, line_off, block):
+    append(transcript(), user("one quokka"))
+    run(capsys, "sweep")
+    db = sqlite3.connect(Config.from_env().db)
+    (entry_id,) = db.execute(
+        "INSERT INTO entry (source_id, line_off, block, kind, ts) VALUES (1, ?, ?, 'prompt', NULL) RETURNING id",
+        (line_off, block),
+    ).fetchone()
+    db.execute("INSERT INTO entry_fts (rowid, text) VALUES (?, 'zebracorn')", (entry_id,))
+    db.commit()
+    db.close()
+    code, out, err = run(capsys, "search", "zebracorn")
+    assert (code, out) == (1, "")
+    assert err.startswith("claudinator: the archive is damaged: "), err
+
+
 def test_rebuild_while_another_process_holds_the_lock_names_it(capsys, monkeypatch):
     append(transcript(), user("quokka"))
     run(capsys, "sweep")
